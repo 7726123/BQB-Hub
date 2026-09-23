@@ -154,13 +154,13 @@ describe('比奇面板：DOM 行为', () => {
     expect(panel.style.height).toBe('84%');
   });
 
-  it('输入框聚焦 → 占满可视区（kb-open 且清掉内联高度，让位给 CSS）+ 滚到底', () => {
+  it('输入框聚焦 → 保留当前比例（不再变整屏）+ 挂 kb-open + 滚到底', () => {
     const { panel, input } = setupDom();
     BiqiAgent.open();
     expect(panel.style.height).toBe('50%');
     input._fire('focus');
     expect(panel.classList.contains('kb-open')).toBe(true);
-    expect(panel.style.height).toBe('');                 // 内联高度让位，CSS .kb-open{height:100%} 生效
+    expect(panel.style.height).toBe('50%');              // 用户要求：焦点不改变占比（原来是让位给 100% 的 CSS）
     expect(els['biqiMessages'].scrollTop).toBe(els['biqiMessages'].scrollHeight);
     input._fire('blur');
     expect(panel.classList.contains('kb-open')).toBe(false);
@@ -173,7 +173,7 @@ describe('比奇面板：DOM 行为', () => {
     els['biqiInput']._fire('focus');
     grip._fire('pointerdown', { clientY: 100, preventDefault: () => undefined });
     expect(BiqiAgent._snapped).toBe(false);
-    expect(panel.style.height).toBe('');
+    expect(panel.style.height).toBe('50%');   // 输入中拖动被拒，高度仍是当前比例
   });
 
   it('关窗清掉 open/kb-open/full 三个状态；再开窗仍是半屏', () => {
@@ -221,6 +221,32 @@ describe('比奇面板：DOM 行为', () => {
     fireDoc('pointermove', { clientY: 240 });   // 再上拖 80px = 10%：与手指 1:1 → 0.90-0.10 = 80%（算重会到 70%）
     expect(panel.style.height).toBe('80%');
     fireDoc('pointerup', {});
+  });
+  it('点输入框不变整屏：保留用户比例（用户要求）——键盘把可视区压低时只压不涨', () => {
+    const { panel, input } = setupDom();
+    BiqiAgent.open();                                     // open() 会把比例重置成半屏
+    BiqiAgent._ratio = 0.8; BiqiAgent._snapped = false; BiqiAgent._applyHeight();
+    expect(panel.style.height).toBe('80%');
+    input._fire('focus');                    // 聚焦 = 软键盘弹起
+    expect(panel._classes.has('kb-open')).toBe(true);
+    expect(panel.style.height).toBe('80%');  // 关键：不再是 100%
+    input._fire('blur');
+    expect(panel.style.height).toBe('80%');
+    expect(panel._classes.has('kb-open')).toBe(false);
+  });
+
+  it('键盘弹起且可视高度不足时：把高度压到看得见输入行（只压不涨，失焦恢复比例）', () => {
+    const { panel, input } = setupDom();
+    g.window = { visualViewport: { height: 300 }, innerHeight: 300 };
+    panel.getBoundingClientRect = () => ({ top: 100, height: 400, bottom: 500, left: 0, right: 0, width: 300 });
+    BiqiAgent.open();
+    BiqiAgent._ratio = 0.9; BiqiAgent._snapped = false; BiqiAgent._applyHeight();
+    input._fire('focus');
+    // 可视 300 - 顶部 100 - 输入行 64 - 8 = 128 → 但下限 160，所以压到 160px
+    expect(panel.style.height).toBe('160px');
+    input._fire('blur');
+    expect(panel.style.height).toBe('90%');   // 失焦恢复比例
+    delete (g as any).window;
   });
   it('开窗不自动聚焦输入框（真机反馈：聚焦会进输入中模式 → 开窗即整屏，与「半屏 + 可拖 25%~90%」冲突）', () => {
     const { panel, input } = setupDom();

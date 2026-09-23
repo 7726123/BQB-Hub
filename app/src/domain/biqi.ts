@@ -69,6 +69,7 @@ export const BiqiAgent: {
   _kbOpen: boolean;        // 输入中（软键盘/输入框聚焦）→ 面板占满可视区
   isEnabled(): boolean;
   _applyHeight(): void;
+  _clampForKeyboard(): void;
   _bindPanel(): void;
   _setKbMode(on: boolean): void;
   _scrollMessagesToBottom(): void;
@@ -188,9 +189,27 @@ export const BiqiAgent: {
   _applyHeight(): void {
     const panel = document.getElementById('biqiPanel');
     if (!panel) return;
-    if (this._kbOpen) { panel.style.height = ''; return; }
     panel.classList.toggle('full', this._snapped);
     panel.style.height = this._snapped ? '100%' : (Math.round(this._ratio * 100) + '%');
+    if (this._kbOpen) this._clampForKeyboard();
+  },
+
+  // 键盘弹出后（WebView 被 adjustResize 压矮）：**保留用户设的比例**（用户要求，不再跳成整屏），
+  // 只兜底一件事——按比例算出的高度若会让底部输入行落到键盘下面，就压到刚好看得见输入行为止。
+  // 只压不涨；失焦时 _applyHeight() 会按比例恢复。
+  _clampForKeyboard(): void {
+    const panel = document.getElementById('biqiPanel');
+    const wrap = panel && panel.parentElement;
+    if (!panel || !wrap) return;
+    if (typeof panel.getBoundingClientRect !== 'function') return;   // 测试桩/异常环境直接跳过
+    const w = (typeof window !== 'undefined' ? window : null) as any;
+    const vv = w && w.visualViewport;
+    const visH = (vv && vv.height) ? Number(vv.height) : (w && w.innerHeight ? Number(w.innerHeight) : 0);
+    if (!(visH > 0)) return;
+    const top = Number(panel.getBoundingClientRect().top) || 0;
+    const rowH = 64;                                   // 面板底部输入行（含内边距）的估算高度
+    const maxH = Math.max(160, Math.round(visH - top - rowH - 8));
+    if (Number(panel.getBoundingClientRect().height) > maxH) panel.style.height = maxH + 'px';
   },
 
   // 绑定胶囊拖拽（幂等）。拖动期间用 document 级 pointermove/pointerup，和列表拖拽同一套写法；
@@ -252,8 +271,12 @@ export const BiqiAgent: {
     this._kbOpen = !!on;
     const panel = document.getElementById('biqiPanel');
     if (panel) panel.classList.toggle('kb-open', this._kbOpen);
-    this._applyHeight();   // 键盘态：清掉内联高度（否则内联会压过 .kb-open 的 CSS 高度）；非键盘态：按比例落地
-    if (this._kbOpen) this._scrollMessagesToBottom();
+    this._applyHeight();   // 保留当前比例（不再变整屏）；比例过高时只压到看得见输入行
+    if (this._kbOpen) {
+      // 键盘弹起会改变可视高度（visualViewport 变矮），稍后再校准一次
+      setTimeout(() => { if (this._kbOpen) this._applyHeight(); }, 300);
+      this._scrollMessagesToBottom();
+    }
   },
 
   _scrollMessagesToBottom(): void {
