@@ -201,6 +201,27 @@ describe('比奇面板：DOM 行为', () => {
     expect(panel._classes.has('kb-open')).toBe(false);
   });
 
+  it('拖动跟手：连续 pointermove 与手指位移 1:1（回归：基准比例被每帧重置 → 位移算重、越拖越快）', () => {
+    const { grip, panel, wrap, fireDoc } = setupDom();
+    wrap.clientHeight = 800;
+    BiqiAgent._ratio = 0.5; BiqiAgent._snapped = false; BiqiAgent._kbOpen = false;
+    BiqiAgent.open();
+    grip._fire('pointerdown', { clientY: 100, preventDefault: () => undefined });
+    fireDoc('pointermove', { clientY: 180 });   // +80px = 容器 10% → 0.50 + 0.10
+    expect(panel.style.height).toBe('60%');
+    fireDoc('pointermove', { clientY: 260 });   // 累计 +160px = 20% → 0.70（算重的话会到 80% 以上）
+    expect(panel.style.height).toBe('70%');
+    fireDoc('pointermove', { clientY: 340 });   // 累计 +240px = 30% → 0.80
+    expect(panel.style.height).toBe('80%');
+    fireDoc('pointermove', { clientY: 440 });   // 累计 +340px = 42.5% → r=0.925 > 0.90 → 吸附整屏
+    expect(panel.style.height).toBe('100%');
+    expect(panel._classes.has('full')).toBe(true);
+    fireDoc('pointermove', { clientY: 320 });   // 上拖 120px = 15% → r=0.85 < 0.88 → 解除吸附（回到 90% 基准）
+    expect(panel.style.height).toBe('90%');
+    fireDoc('pointermove', { clientY: 240 });   // 再上拖 80px = 10%：与手指 1:1 → 0.90-0.10 = 80%（算重会到 70%）
+    expect(panel.style.height).toBe('80%');
+    fireDoc('pointerup', {});
+  });
   it('开窗不自动聚焦输入框（真机反馈：聚焦会进输入中模式 → 开窗即整屏，与「半屏 + 可拖 25%~90%」冲突）', () => {
     const { panel, input } = setupDom();
     input.focus = () => input._fire('focus');   // 模拟真实聚焦：迷你 DOM 默认 focus 是空操作，上一轮正是因此漏判了这个 bug

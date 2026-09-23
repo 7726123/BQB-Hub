@@ -206,8 +206,10 @@ export const BiqiAgent: {
         const containerH = wrap ? wrap.clientHeight : 0;
         if (!containerH) return;
         e.preventDefault();
-        // base* 是"当前状态的基准"：吸附/解除的那一刻以手指当前位置重新起算，
-        // 否则从整屏往回拖会按整段位移直接跳到 63% 这类值（高度会跳一截，实测手感很差）。
+        // base* 是本次拖动的**固定基准**（起点比例 / 起点是否吸附 / 起点手指位置）：
+        // 位移一律按 (当前 y - baseY) 算，中间**不能**改基准比例——否则位移会被算重
+        // （实测：手指拖 160px 面板走 200px 以上，越拖越快，就是"不跟手"）。
+        // 只有状态翻转（吸附 / 解除吸附）那一下才重设基准：以手指当前位置为新起点。
         let baseRatio = this._ratio;
         let baseSnapped = this._snapped;
         let baseY = Number(e.clientY) || 0;
@@ -215,14 +217,13 @@ export const BiqiAgent: {
           const y = Number(ev.clientY) || 0;
           const next = biqiResolveDrag(baseRatio, baseSnapped, y - baseY, containerH);
           if (next.snapped !== baseSnapped) {
-            // 切换状态：高度落在该状态的起点（吸附=整屏、解除=90%），并以手指当前位置重新起算，
-            // 注意这里要用起点值而不是切换前的计算值（否则解除瞬间会跳到 63% 这种数）
+            // 翻转点：吸附态的内部基准是 1（整屏）；解除吸附时基准回到常态上限 90%，
+            // 手指当前位置作为新起点（这样 100% → 90% 的视觉跳变最小，之后继续 1:1 跟手）
             baseSnapped = next.snapped;
             baseRatio = next.snapped ? 1 : BIQI_MAX_RATIO;
             baseY = y;
             this._ratio = BIQI_MAX_RATIO;
           } else {
-            baseRatio = next.ratio;
             this._ratio = next.snapped ? BIQI_MAX_RATIO : next.ratio;
           }
           this._snapped = next.snapped;
