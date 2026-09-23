@@ -16,5 +16,6 @@ import './assistant.entry';
 import './biqi.entry';
 import './modals.entry';
 import './feedback.entry';
+import './chatmode.entry';
 import './community.entry';
 import './app.entry';

@@ -7,6 +7,7 @@ export function tabForView(viewName: string): string {
     plugins: 'plugins', memory: 'memory', world: 'world',
     protagonist: 'protagonist',
     feedback: 'feedback',
+    chat: 'chat',
     cardwriter: 'cardwriter', usageassist: 'usageassist',
     usage: 'usage', settings: 'advanced'
   };
@@ -105,6 +106,10 @@ export const MobileUI: {
     document.querySelectorAll('#sidebar .nav-item').forEach(b => {
       b.classList.toggle('active', (b as HTMLElement).dataset.view === viewName);
     });
+    // 「写作」是「小说模式 / 对话模式」两个子模块的父项：进任一个都让父项保持高亮
+    // （否则在对话模式下侧栏看不出当前属于写作这一块）
+    const writingParent = document.getElementById('navWriting');
+    if (writingParent) writingParent.classList.toggle('active', viewName === 'writing' || viewName === 'chat');
 
     const editorArea = document.getElementById('editor-area');
     const panel = document.getElementById('panel');
@@ -131,6 +136,15 @@ export const MobileUI: {
       // 记忆：刷新「正文窗口 + 世界书 + 回读」的估算上限（数字随当前世界书变化）
       // 反馈：进入时刷新字数计数与本机留档
       if (viewName === 'feedback' && typeof Feedback !== 'undefined' && Feedback.render) Feedback.render();
+      // 对话模式：进入时绑定一次 + 按当前书重载（记录按书分开，切书不串台）
+      if (viewName === 'chat' && typeof ChatMode !== 'undefined' && ChatMode.init) ChatMode.init();
+      // 比奇跟着视图走：对话模式的面板挂在对话页、用对话模式的会话与临时世界书；其余视图回到正文区
+      try {
+        if (typeof BiqiAgent !== 'undefined' && BiqiAgent.panelHost) {
+          BiqiAgent.panelHost(viewName === 'chat' ? 'chat' : 'novel');
+          BiqiAgent.setMode?.(viewName === 'chat' ? 'chat' : 'novel');
+        }
+      } catch (e) { /* 比奇未就绪时忽略 */ }
       if (viewName === 'memory' && typeof UIManager !== 'undefined' && UIManager.renderCtxBudgetHint) UIManager.renderCtxBudgetHint();
       // 设置：每次进入都回到「我的」主页并刷新动态状态
       if (viewName === 'settings' && typeof UIManager !== 'undefined' && UIManager.switchSubTab) {

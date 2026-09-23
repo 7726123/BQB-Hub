@@ -60,6 +60,9 @@ export const BiqiAgent: {
   _status: string;
   _steps: string[];
   _open: boolean;
+  _mode: 'novel' | 'chat';
+  setMode(m: 'novel' | 'chat'): void;
+  panelHost(host: 'novel' | 'chat'): void;
   _loadedKey: string;
   _ratio: number;          // 常态高度比例（不持久化：每次开窗回到半屏）
   _snapped: boolean;       // 是否吸附成整屏
@@ -95,10 +98,23 @@ export const BiqiAgent: {
   _status: '',
   _steps: [],
   _open: false,
+  _mode: 'novel' as 'novel' | 'chat',   // 小说模式 / 对话模式各一份会话与临时世界书
   _loadedKey: '',   // 当前内存里的对话属于哪本书的存档键（换书时据此切会话）
   _ratio: BIQI_DEFAULT_RATIO,
   _snapped: false,
   _kbOpen: false,
+
+  // 面板宿主：小说模式挂在正文区（#editor-wrap），对话模式挂进对话页（#chatBody）。
+  // 面板是绝对定位（top:0; height:50%），所以直接挪 DOM 节点即可，不需要两套实现；
+  // 拖动改高度在拖动时读 parentElement.clientHeight，换宿主后自然按新容器算。
+  panelHost(host: 'novel' | 'chat'): void {
+    const panel = document.getElementById('biqiPanel');
+    const target = document.getElementById(host === 'chat' ? 'chatBody' : 'editor-wrap');
+    if (!panel || !target || panel.parentElement === target) return;
+    // 挪窝前先收窗：半屏窗突然出现在另一个视图会很突兀
+    if (this._open) { this._open = false; this._kbOpen = false; panel.classList.remove('open', 'kb-open', 'full'); }
+    target.appendChild(panel);
+  },
 
   isEnabled(): boolean {
     try { return typeof PluginManager !== 'undefined' && PluginManager.isEnabled('biqi'); } catch (e) { return false; }
@@ -108,7 +124,21 @@ export const BiqiAgent: {
   _historyKey(): string {
     let id = 'none';
     try { id = (typeof WorldBookManager !== 'undefined' && WorldBookManager.getActiveId && WorldBookManager.getActiveId()) || 'none'; } catch (e) { /* ignore */ }
-    return 'biqiHistory_' + id;
+    // 对话模式有自己的一份比奇会话（用户要求：两种模式不能共用同一个比奇）
+    return 'biqiHistory_' + id + (this._mode === 'chat' ? '_chat' : '');
+  },
+
+  // 切换模式：先把当前会话存回它自己的键，再载入目标模式的会话。
+  // 临时世界书 overlay 由 SettingSyncManager 按模式分键（那边 setMode 一次整套隔离）。
+  setMode(m: 'novel' | 'chat'): void {
+    const next = (m === 'chat') ? 'chat' : 'novel';
+    if (next === this._mode) return;
+    this._save();
+    this._mode = next;
+    try { SettingSyncManager.setMode(next); } catch (e) { /* ignore */ }
+    this._loadedKey = '';
+    this.reloadForBook();
+    this.render();
   },
 
   init(): void {
@@ -313,6 +343,8 @@ export const BiqiAgent: {
 
   // ReAct：最多 4 轮工具调用，最后一轮必须给文字结论
   async _runLoop(_userText: string): Promise<void> {
+    // 本轮属于哪个模式，就写哪个模式的临时世界书（overlay/待裁决表都带模式后缀）
+    try { SettingSyncManager.setMode(this._mode); } catch (e) { /* ignore */ }
     const msgs: any[] = [{ role: 'system', content: BIQI_SYSTEM }].concat(
       this.messages.slice(-20).filter(m => String(m.content || '').trim()).map(m => ({ role: m.role, content: m.content }))
     );
@@ -569,6 +601,12 @@ export const BiqiAgent: {
 
   readStory(): string {
     try {
+      // 对话模式：比奇看的"最近剧情"是最近的演出记录（正文可能还没写到这里）
+      if (this._mode === 'chat') {
+        const chat = (typeof ChatMode !== 'undefined' && ChatMode.recentContext) ? String(ChatMode.recentContext() || '') : '';
+        const text = chat.slice(-STORY_CHAR_LIMIT);
+        return JSON.stringify({ ok: true, chapter: '（对话模式）', chars: text.length, note: '对话模式：这是最近的演出记录', text });
+      }
       const story = (typeof App !== 'undefined' && App.collectRecentStoryText)
         ? App.collectRecentStoryText()
         : { recentText: '' };

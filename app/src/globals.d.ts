@@ -67,6 +67,21 @@ declare const BiqiAgent: {
   _open?: boolean;
 };
 
+// 对话模式（domain/chatmode.ts）：内联 onclick 与 mobile.ts 的切页钩子都按全局访问
+declare const ChatMode: {
+  [k: string]: any;
+  init(): void;
+  render(): void;
+  reload(): void;
+  send(): void;
+  undo(id: string): void;
+  openProfile(name: string): void;
+  closeProfile(): void;
+  clearAll(): void;
+  loadMore(): void;
+  switchBook(id: string): void;
+};
+
 declare const UIManager: {
   [k: string]: any;
   populateSystemPromptUI(): void;

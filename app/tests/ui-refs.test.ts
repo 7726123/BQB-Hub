@@ -19,6 +19,7 @@ import '../src/domain/assistant';
 import '../src/domain/update';
 import '../src/domain/plugins';
 import '../src/domain/feedback';   // 反馈页的内联 onclick（Feedback.submit/render/onInput）
+import '../src/domain/chatmode';   // 对话模式的内联 onclick（ChatMode.send/continueIt/openProfile/...）
 import '../src/domain/settingsync';
 import '../src/lib/variables';
 import '../src/boot/compat'; // 白名单挂载（D1：字符串 onclick 引用的名字在此可解析）

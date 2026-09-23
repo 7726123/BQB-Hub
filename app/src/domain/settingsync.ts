@@ -230,13 +230,21 @@ export const SettingSyncManager = {
   },
 
   // ---- 按书隔离键 ----
+  // 模式后缀：对话模式的临时世界书与小说模式**各存各的**（用户要求）。默认 'novel'，
+  // 键名与旧版完全一致（零迁移）；只有对话模式的入口显式 setMode('chat')。
+  // 五个键（overlay/待裁决/日志/快照/元信息）全部派生自 _bookId()，所以一处切换整套隔离。
+  _mode: 'novel' as 'novel' | 'chat',
+  mode(): 'novel' | 'chat' { return this._mode === 'chat' ? 'chat' : 'novel'; },
+  setMode(m: 'novel' | 'chat'): void { this._mode = (m === 'chat') ? 'chat' : 'novel'; },
+
   _bookId(): string {
+    let id = 'none';
     try {
       if (typeof WorldBookManager !== 'undefined') {
-        return WorldBookManager.getActiveId() || 'none';
+        id = WorldBookManager.getActiveId() || 'none';
       }
     } catch (e) { /* ignore */ }
-    return 'none';
+    return this.mode() === 'chat' ? id + '_chat' : id;
   },
   _pendingKey(): string { return 'settingDeltaPending_' + this._bookId(); },
   _overlayKey(): string { return 'settingOverlay_' + this._bookId(); },

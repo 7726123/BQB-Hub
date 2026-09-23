@@ -366,6 +366,7 @@ const App: AppShape = {
       ArchiveStore._kickHeadEnrich(); // 启动时为存量无头块补头（后台静默）
     }
     EditorManager.init(); UIManager.init(); MobileUI.init(); PresetManager.initDefaults(); BookManager.migrateFromLegacy();
+    try { (ChatMode as any)?.init?.(); } catch (e) { /* 对话模式初始化失败不影响启动 */ }
     ProtagonistManager.migrateFromLegacy(); WorldBookManager.initDefaults();
     // 「开头」条目类型已废弃：存量条目一次性删除（内容备份在 removedOpeningEntriesBackup，可找回）。
     // 必须先于 migrateEntryTypes——否则旧类型迁移会把「开头」改写成「其他」，这批条目就删不掉了。
@@ -949,6 +950,8 @@ const App: AppShape = {
   // Core AI generation with world book support
 
   async generate(mode: any) {
+    // 小说模式生成一律按小说模式的临时世界书来（对话模式可能刚把模式切成 chat，见 chatmode.ts）
+    try { SettingSyncManager.setMode('novel'); } catch (e) { /* ignore */ }
     if (this.isGenerating) return;
     const apiConfig = PresetManager.getActiveAPIConfig();
     if (!apiConfig.apiKey) { App.toast('请先在高级设置中配置 API Key'); return; }
@@ -3895,6 +3898,11 @@ const App: AppShape = {
       text += '\n' + '='.repeat(40) + '\n\n';
     }
     (d.chapters||[]).forEach((ch: any) => { const _html = (EditorManager.stripThinking ? EditorManager.stripThinking(ch.content||'') : (ch.content||'')); text += '## ' + (ch.title||'未命名') + '\n\n' + htmlToPlainText(_html) + '\n\n'; });
+    // 对话模式的演出记录（用户确认：导出要包含）——剥掉说话人前缀，按时间顺序附在正文之后
+    try {
+      const _chatProse = (typeof ChatMode !== 'undefined' && ChatMode.toProseText) ? ChatMode.toProseText() : '';
+      if (_chatProse) text += '## 对话演出（对话模式）\n\n' + _chatProse + '\n\n';
+    } catch (e) { /* 导出不能因为对话记录失败而中断 */ }
     const saved = await this.downloadFile((d.title||'小说') + '.txt', text, 'text/plain'); App.toast('TXT 导出完成' + (saved ? ' → ' + saved : ''));
   },
 
