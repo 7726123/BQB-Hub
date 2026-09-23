@@ -1,0 +1,68 @@
+apply plugin: 'com.android.application'
+
+android {
+    namespace "com.novelwriter.app"
+    compileSdk rootProject.ext.compileSdkVersion
+    defaultConfig {
+        applicationId "com.novelwriter.app"
+        minSdkVersion rootProject.ext.minSdkVersion
+        targetSdkVersion rootProject.ext.targetSdkVersion
+        versionCode 157
+        versionName "1.5.97"
+        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+        aaptOptions {
+             // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
+             // Default: https://android.googlesource.com/platform/frameworks/base/+/282e181b58cf72b6ca770dc7ca5f91f135444502/tools/aapt/AaptAssets.cpp#61
+            ignoreAssetsPattern '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
+        }
+    }
+    signingConfigs {
+        // release 签名配置（本轮不切换，仅供将来发布正式包）：
+        // 密钥信息只从 ~/.gradle/gradle.properties（不入库）读取，未配置时不生效——
+        // 当前分发的仍是 assembleDebug 产物，切换时机由维护者决定（切换后老用户须卸载重装）。
+        //   BQB_RELEASE_STORE_FILE / BQB_RELEASE_STORE_PASSWORD / BQB_RELEASE_KEY_ALIAS / BQB_RELEASE_KEY_PASSWORD
+        release {
+            if (project.hasProperty('BQB_RELEASE_STORE_FILE')) {
+                storeFile file(project.property('BQB_RELEASE_STORE_FILE'))
+                storePassword project.property('BQB_RELEASE_STORE_PASSWORD')
+                keyAlias project.property('BQB_RELEASE_KEY_ALIAS')
+                keyPassword project.property('BQB_RELEASE_KEY_PASSWORD')
+            }
+        }
+    }
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+            if (project.hasProperty('BQB_RELEASE_STORE_FILE')) {
+                signingConfig signingConfigs.release
+            }
+        }
+    }
+    // JVM 单测（LocalProxyServer 纯函数等）：android.jar 方法未被调用时返回默认值而非抛错
+    testOptions {
+        unitTests.returnDefaultValues = true
+    }
+}
+
+repositories {
+    flatDir{
+        dirs '../capacitor-cordova-android-plugins/src/main/libs', 'libs'
+    }
+}
+
+dependencies {
+    implementation fileTree(include: ['*.jar'], dir: 'libs')
+    implementation "androidx.appcompat:appcompat:$androidxAppCompatVersion"
+    implementation "androidx.coordinatorlayout:coordinatorlayout:$androidxCoordinatorLayoutVersion"
+    implementation "androidx.core:core-splashscreen:$coreSplashScreenVersion"
+    implementation "androidx.webkit:webkit:$androidxWebkitVersion"
+    testImplementation "junit:junit:$junitVersion"
+    androidTestImplementation "androidx.test.ext:junit:$androidxJunitVersion"
+    androidTestImplementation "androidx.test.espresso:espresso-core:$androidxEspressoCoreVersion"
+    implementation project(':capacitor-android')
+    implementation project(':capacitor-cordova-android-plugins')
+}
+
+
+apply from: 'capacitor.build.gradle'

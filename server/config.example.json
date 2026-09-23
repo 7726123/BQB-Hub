@@ -1,0 +1,16 @@
+{
+  "_说明": "复制为 config.json 并填入你的邮箱 SMTP 信息。pass 填「授权码」而不是登录密码。",
+  "_QQ邮箱示例":  "host=smtp.qq.com  port=465  secure=true  user=你的QQ号@qq.com  pass=授权码（设置→账号→开启SMTP服务后获得）",
+  "_163邮箱示例": "host=smtp.163.com  port=465  secure=true  user=你的账号@163.com  pass=授权码",
+  "_adminKey说明": "客户端错误上报查看口令（GET /api/client-logs 需 x-admin-key 头）。留空=查看接口关闭。",
+  "_HTTPS说明": "HTTPS 用自签证书（certs/server.crt + server.key，由 certs/ca.crt 签发），App 内置同一张 CA 作信任锚。端口由 TLS_PORT 控制（默认 80，需在部署方安全组放行）。证书文件缺失时自动只跑 HTTP。生成/续期命令见部署侧本地文档（不入库）。改端口后需同步 App 端 app/src/lib/server-url.ts 的 HTTPS_PORT 再发版。",
+  "adminKey": "",
+  "smtp": {
+    "host": "smtp.qq.com",
+    "port": 465,
+    "secure": true,
+    "user": "",
+    "pass": "",
+    "from": ""
+  }
+}

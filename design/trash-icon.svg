@@ -1,0 +1,68 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <defs>
+    <!-- 底板渐变：左上淡蓝 → 右下淡紫（对齐参考图） -->
+    <linearGradient id="tile" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#a3cbf7"/>
+      <stop offset="0.45" stop-color="#bcb9f5"/>
+      <stop offset="1" stop-color="#dab6f2"/>
+    </linearGradient>
+    <!-- 桶身：上白下微紫，模拟受光 -->
+    <linearGradient id="body" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="0.7" stop-color="#f2effb"/>
+      <stop offset="1" stop-color="#dcd5f4"/>
+    </linearGradient>
+    <!-- 盖子 -->
+    <linearGradient id="lid" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#e4def7"/>
+    </linearGradient>
+    <!-- 镂空条（内凹感） -->
+    <linearGradient id="slot" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#c6bde8"/>
+      <stop offset="1" stop-color="#d9d2f0"/>
+    </linearGradient>
+    <filter id="soft" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="1.6"/>
+    </filter>
+    <filter id="tileShadow" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="1.5" stdDeviation="2" flood-color="#7a6fd0" flood-opacity="0.35"/>
+    </filter>
+    <filter id="lidShadow" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="1.2" stdDeviation="1" flood-color="#7a6fd0" flood-opacity="0.4"/>
+    </filter>
+  </defs>
+
+  <!-- 玻璃底板 -->
+  <g filter="url(#tileShadow)">
+    <rect x="4" y="4" width="56" height="56" rx="16" fill="url(#tile)" stroke="rgba(255,255,255,0.9)" stroke-width="1.6"/>
+  </g>
+  <!-- 玻璃高光：左上大弧 + 右下小点 -->
+  <ellipse cx="16.5" cy="12.5" rx="8.5" ry="4" fill="#ffffff" opacity="0.6" filter="url(#soft)" transform="rotate(-24 16.5 12.5)"/>
+  <ellipse cx="51" cy="51.5" rx="3.4" ry="1.7" fill="#ffffff" opacity="0.5" filter="url(#soft)" transform="rotate(-24 51 51.5)"/>
+
+  <!-- 桶底投影 -->
+  <ellipse cx="31.5" cy="52.5" rx="14" ry="2.6" fill="#7f6fc7" opacity="0.38" filter="url(#soft)"/>
+
+  <!-- 掀开的盖子（左端翘起，右端搭在桶沿右角） -->
+  <g transform="rotate(18 44 25)" filter="url(#lidShadow)">
+    <rect x="20.5" y="21.8" width="25.5" height="6.4" rx="3.2" fill="url(#lid)" stroke="#cfc7ef" stroke-width="0.5"/>
+    <rect x="27.5" y="16.4" width="9" height="5.4" rx="2.7" fill="url(#lid)" stroke="#cfc7ef" stroke-width="0.5"/>
+    <rect x="28.8" y="17.6" width="6.6" height="2" rx="1" fill="#ffffff" opacity="0.85"/>
+  </g>
+
+  <!-- 桶沿（唇边） -->
+  <rect x="15.5" y="25.5" width="32" height="6.2" rx="3.1" fill="url(#body)" stroke="#cfc7ef" stroke-width="0.5"/>
+  <rect x="16.9" y="26.7" width="29.2" height="2" rx="1" fill="#ffffff" opacity="0.9"/>
+
+  <!-- 桶身（梯形微收） -->
+  <path d="M18.2 31.7 L45.8 31.7 L44.2 48.6 Q43.9 51.4 41.1 51.4 L22.9 51.4 Q20.1 51.4 19.8 48.6 Z"
+        fill="url(#body)" stroke="#cfc7ef" stroke-width="0.5"/>
+  <!-- 桶身右侧暗面 -->
+  <path d="M42 31.7 L45.8 31.7 L44.2 48.6 Q43.9 51.4 41.1 51.4 L37.8 51.4 Q40.3 42 39.6 31.7 Z" fill="#e0d9f6" opacity="0.75"/>
+
+  <!-- 三条镂空竖条 -->
+  <rect x="23.4" y="35" width="3.8" height="13" rx="1.9" fill="url(#slot)"/>
+  <rect x="30.1" y="35" width="3.8" height="13" rx="1.9" fill="url(#slot)"/>
+  <rect x="36.8" y="35" width="3.8" height="13" rx="1.9" fill="url(#slot)"/>
+</svg>

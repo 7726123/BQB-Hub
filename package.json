@@ -1,0 +1,17 @@
+{
+  "name": "novel-writer",
+  "version": "1.0.0",
+  "description": "BQB Hub（Android 宿主：Capacitor 依赖与 CLI；桌面 Electron 版已移除）",
+  "license": "MIT",
+  "private": true,
+  "scripts": {
+    "cap": "cap"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^6.2.1"
+  },
+  "dependencies": {
+    "@capacitor/android": "^6.2.1",
+    "@capacitor/core": "^6.2.1"
+  }
+}

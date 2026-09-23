@@ -1,0 +1,63 @@
+# 依赖
+node_modules/
+
+# Android 构建产物
+android/app/build/
+android/build/
+android/.gradle/
+android/.idea/
+android/capacitor-cordova-android-plugins/build/
+android/app/src/main/assets/public/
+
+# 前端构建产物（工程化后 web/ 由 app/ 构建生成，构建产物不入库）
+app/dist/
+app/node_modules/
+# web/modules 由 app/ 的 `npm run sync:legacy` 生成；出包前必须先构建（见 README）
+web/modules/
+web/cordova.js
+web/cordova_plugins.js
+
+# 服务端运行时数据（数据库/上传/日志，不入库）
+server/data/
+server/uploads/
+server/apk/
+server/node_modules/
+server/*.log
+# 运行时配置含 SMTP 授权码等敏感信息，禁止入库（模板见 config.example.json）
+server/config.json
+server/config.json.bak
+deploy_bundle/
+
+# 环境与密钥
+*.local
+.env
+.env.*
+
+# TLS 私钥（CA 私钥泄露无法吊销，只能重签 + 发版；公钥证书 ca.crt/server.crt 可入库）
+*.key
+server/certs/
+android/app/src/main/res/raw/*.key
+
+# 热更新签名私钥（离线保管。泄露 = 任何人可向全部用户下发任意 JS，见交接文档「热更新」章节；
+# 私钥文件名也被上面的 *.key 覆盖，公钥硬编码在 HotBundlePlugin.java 里、可入库）
+keys/
+
+# 服务端热更新包（打包产物，由 scripts/hot-bundle.mjs 生成后上传服务器，不入库）
+server/web-bundles/
+
+# 其他
+dist/
+*.log
+.DS_Store
+Thumbs.db
+# 部署临时产物
+*.zip
+.idea/
+
+# 本地运维 / 审查文档：含服务器地址与运维细节，只在本地保留，不入库
+docs/部署与提交流程.md
+TECH_DEBT_AUDIT.md
+OPENSOURCE_AUDIT.md
+
+# 旧仓库历史的本地归档（换仓库时保留，勿入库）
+.git-old/

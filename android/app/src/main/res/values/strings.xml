@@ -1,0 +1,7 @@
+﻿<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">BQB Hub</string>
+    <string name="title_activity_main">BQB Hub</string>
+    <string name="package_name">com.novelwriter.app</string>
+    <string name="custom_url_scheme">com.novelwriter.app</string>
+</resources>

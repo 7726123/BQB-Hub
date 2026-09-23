@@ -1,0 +1,7 @@
+{
+  "appId": "com.novelwriter.app",
+  "appName": "BQB Hub",
+  "webDir": "web",
+  "server": { "cleartext": true, "allowNavigation": ["*"] },
+  "plugins": { "CapacitorHttp": { "enabled": false } }
+}

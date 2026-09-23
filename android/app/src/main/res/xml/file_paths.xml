@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- FileProvider 暴露面：只开放缓存目录（分享导出文件、下载的更新包都写在这里）。
+     原模板自带的 <external-path path="." /> 把整个外部存储根目录纳入共享范围，本项目用不到，已移除。 -->
+<paths xmlns:android="http://schemas.android.com/apk/res/android">
+    <cache-path name="my_cache_images" path="." />
+</paths>

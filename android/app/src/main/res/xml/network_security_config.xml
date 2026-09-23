@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  网络安全配置：App 内置自签 CA 的信任锚（社区服务 HTTPS，见 lib/server-url.ts）。
+
+  只在访问社区服务器 IP 时启用内置 CA + 禁止明文；其余域名一律保持系统默认
+  （信任公共 CA、允许明文），避免误伤：
+    - 用户自配置的大模型端点（http://192.168.x.x:11434 的 Ollama、局域网 LM Studio 等）
+    - App 内置 LocalProxyServer（http://127.0.0.1:PORT，绕过 WebView CORS 用）
+    - 各类第三方 API 域名（api.deepseek.com 等）
+
+  生效范围：Android 7.0（API 24）及以上。低版本系统忽略本文件——
+  lib/server-url.ts 据此让老设备继续走明文端口，保证社区功能不中断。
+-->
+<network-security-config>
+    <!-- 默认策略：允许明文（用户自配的本地推理端点必须是明文），信任系统 CA -->
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+
+    <!-- 社区服务器：信任系统 CA + App 内置的自签 CA；且强制加密（不允许明文回退） -->
+    <domain-config cleartextTrafficPermitted="false">
+        <domain includeSubdomains="false">43.155.128.242</domain>
+        <trust-anchors>
+            <certificates src="system" />
+            <certificates src="@raw/bqb_ca" />
+        </trust-anchors>
+    </domain-config>
+</network-security-config>

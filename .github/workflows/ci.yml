@@ -1,0 +1,113 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master, 'feature/**']
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  server-test:
+    name: 服务器测试（node:test）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+      - run: npm ci
+        working-directory: server
+      - run: npm test
+        working-directory: server
+
+  web-build:
+    name: Web 构建（Vite + TS 类型检查 + 前端单测）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - run: npm ci
+        working-directory: app
+      # 单测里 ui-ids.test.ts 会校验 web/index.html 引用的本地脚本确实存在，而
+      # web/modules/main.js 是构建产物（不入库）→ 全新检出必须先构建，否则必然失败
+      # （历史：CI 13 次全红、android job 因此被跳过，产物里一个 APK 都没有）。
+      - name: 生成前端模块 web/modules（sync:legacy）
+        run: npm run sync:legacy
+        working-directory: app
+      - run: npm test
+        working-directory: app
+      - run: npm run build
+        working-directory: app
+      # 产物上传不是构建的一部分：账号 Actions 存储配额（Free 500MB）被打满时 GitHub 会直接
+      # 拒绝 CreateArtifact，若照常报错会把整条 CI 拖红（android job 随之被跳过）。
+      # 配额腾出后无需改回来，产物会自动重新出现。
+      - uses: actions/upload-artifact@v4
+        continue-on-error: true
+        with:
+          name: web-dist
+          path: app/dist
+          if-no-files-found: ignore
+
+  android-apk:
+    name: Android APK 构建
+    runs-on: ubuntu-latest
+    needs: [server-test, web-build]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      # 只装 platform-tools：该 action 默认还要装已从 SDK 仓库移除的 `tools` 包，
+      # sdkmanager 会以 "Failed to find package 'tools'" 退出 1，把整个 android job 拖红。
+      # 其余 SDK 平台 / build-tools 由 runner 镜像预装（compileSdk 34 在列），Gradle 会自行解析。
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+      - uses: gradle/actions/setup-gradle@v4
+      # web/modules 是构建产物（不入库）：CI runner 是全新检出，必须先 sync:legacy 生成，
+      # 否则 cap sync 打包出的 APK 缺全部前端模块（打开即空白）
+      - name: 生成前端模块 web/modules（sync:legacy）
+        working-directory: app
+        run: |
+          npm ci
+          npm run sync:legacy
+      # Capacitor 同步：把 web 目录拷贝进 Android assets（webDir = web）
+      - run: npm ci
+      - run: npx cap sync android
+      # wrapper 的 distributionUrl 指向腾讯云镜像（本地开发快），但 runner 在境外，
+      # 拉取 gradle-*-all.zip 有超时风险 → CI 内临时换回官方源。GRADLE_MIRRORS=false
+      # 只管 Maven 仓库、管不到 wrapper 自身，所以这里单独替换（仅 runner 生效，不提交）。
+      # 只换 host+path，保留 properties 里原有的 `https\://` 转义写法（Gradle 会解析为 https://）。
+      - name: Gradle wrapper 换官方源（仅 CI）
+        run: |
+          sed -i 's|mirrors\.cloud\.tencent\.com/gradle/|services.gradle.org/distributions/|' android/gradle/wrapper/gradle-wrapper.properties
+          grep distributionUrl android/gradle/wrapper/gradle-wrapper.properties
+      # JVM 单测：LocalProxyServer 纯函数（端口解析/头透传/重定向）；不依赖设备
+      - run: ./gradlew testDebugUnitTest
+        working-directory: android
+        env:
+          GRADLE_MIRRORS: "false"
+      - run: ./gradlew assembleDebug
+        working-directory: android
+        env:
+          GRADLE_MIRRORS: "false"  # 官方仓库，避免国内镜像在 runner 上不稳定
+      # 同 web-dist：配额满时只跳过产物，不让 CI 变红（APK 本体已由上面两步构建成功）
+      - uses: actions/upload-artifact@v4
+        continue-on-error: true
+        with:
+          name: bqb-hub-apk
+          path: android/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: ignore

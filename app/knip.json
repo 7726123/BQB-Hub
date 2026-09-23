@@ -1,0 +1,5 @@
+{
+  "$schema": "https://unpkg.com/knip@5/schema.json",
+  "entry": ["src/legacy/*.entry.ts", "src/main.ts", "scripts/*.mjs"],
+  "ignore": ["app/index.html"]
+}

@@ -1,0 +1,1916 @@
+  <!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="manifest" href="manifest.json">
+<title>BQB Hub</title>
+<!-- 本地 CORS 代理：仅当 URL 显式携带 ?proxy=端口（配合 tools/cors-proxy.js）或 Android 原生
+     注入 __PROXY_PORT__ 时启用。手机版页面内 reload 不会重新走 Activity onCreate，原生注入会
+     丢失，因此原生端会把端口同时写进 localStorage（MainActivity），这里兜底恢复，保证 API
+     请求始终走内置代理（方舟 coding 等端点的 CORS 不放行 Authorization，直连必被拦）。
+     桌面浏览器没有 localStorage 值也带不上该参数，永不启用，与老版本行为一致。 -->
+<script>
+if (window.__PROXY_PORT__ == null) {
+  var _m = location.search.match(/[?&]proxy=(\d+)/);
+  if (_m) window.__PROXY_PORT__ = parseInt(_m[1], 10);
+  else {
+    try {
+      var _sp = parseInt(localStorage.getItem('__proxyPort') || '0', 10);
+      if (_sp > 0) window.__PROXY_PORT__ = _sp;
+    } catch (e) { /* 隐私模式等 localStorage 不可用场景 */ }
+  }
+}
+</script>
+<!-- 全局错误捕获：手机 WebView 上脚本异常会把整块功能静默打死（按钮点了没反应），
+     用户看不到任何报错。这里在任何业务模块加载前装好捕获：错误写入 localStorage(__errLog)
+     便于远程定位，同时用 #toast 提示用户，把「没反应」变成「能看到的具体错误」。 -->
+<script>
+(function () {
+  function record(kind, msg, toastIt) {
+    try {
+      var arr = [];
+      try { arr = JSON.parse(localStorage.getItem('__errLog') || '[]') || []; } catch (e) { arr = []; }
+      arr.push({ t: Date.now(), k: kind, m: String(msg).slice(0, 300) });
+      while (arr.length > 8) arr.shift();
+      localStorage.setItem('__errLog', JSON.stringify(arr));
+    } catch (e) { /* ignore */ }
+    // 两级错误上报的第 2 级触发：ClientLog（modules/clientlog.js）加载后节流直发；
+    // 未加载时（极早期错误）条目已在 __errLog，等版本检查成功后捎带上报。
+    try { if (window.ClientLog && window.ClientLog.notifyError) window.ClientLog.notifyError(kind, msg); } catch (e) { /* ignore */ }
+    if (!toastIt) return;
+    try {
+      var now = Date.now();
+      if (window.__lastErrToast && now - window.__lastErrToast < 2000) return;
+      window.__lastErrToast = now;
+      var el = document.getElementById('toast');
+      if (el) {
+        el.textContent = '⚠ ' + kind + ': ' + String(msg).slice(0, 120);
+        el.classList.add('show');
+        setTimeout(function () { el.classList.remove('show'); }, 4000);
+      }
+    } catch (e) { /* ignore */ }
+  }
+  window.__recordErr = record;
+  window.addEventListener('error', function (e) {
+    // 资源加载失败（favicon/CDN 等）只留档不弹提示，避免噪音
+    if (e && e.target && (e.target.src || e.target.href)) { record('资源加载失败', (e.target.src || e.target.href), false); return; }
+    record('脚本错误', e && e.message ? e.message + ' @ ' + String(e.filename || '').split('/').pop() + ':' + (e.lineno || '?') : '未知错误', true);
+  });
+  window.addEventListener('unhandledrejection', function (e) {
+    var r = e && e.reason;
+    record('异步错误', (r && r.message) ? r.message : String(r).slice(0, 200), true);
+  });
+})();
+</script>
+<style>
+/* ========== CSS Variables ========== */
+:root {
+  --bg: #f6f7f9; --bg-secondary: #ffffff; --bg-tertiary: #eef0f4;
+  --text: #1f2430; --text-secondary: #4a5468; --text-muted: #98a2b3;
+  --border: #e3e7ef; --primary: #3b6fe0; --primary-hover: #2f5fc9;
+  --primary-light: #eaf0fc; --accent: #e05b4d; --accent-hover: #cc4a3d;
+  --shadow: 0 1px 3px rgba(23,32,61,0.06), 0 1px 2px rgba(23,32,61,0.04);
+  --shadow-lg: 0 8px 24px rgba(23,32,61,0.12), 0 2px 6px rgba(23,32,61,0.06);
+  --radius: 10px; --radius-sm: 6px;
+  --font: "Inter", "HarmonyOS Sans SC", "MiSans", "Noto Sans SC", "Source Han Sans SC", "Microsoft YaHei UI", "Segoe UI", Arial, sans-serif;
+  --font-size: 16px; --line-height: 1.7; --transition: 0.18s ease;
+  --sidebar-width: 220px; --panel-width: 340px;
+}
+[data-theme="dark"] {
+  --bg: #131722; --bg-secondary: #1a2030; --bg-tertiary: #232b3f;
+  --text: #e6e9f0; --text-secondary: #b4bccb; --text-muted: #7d8698;
+  --border: #2c3548; --primary: #6b93f0; --primary-hover: #83a5f4;
+  --primary-light: #1d2942; --shadow: 0 1px 3px rgba(0,0,0,0.4);
+  --shadow-lg: 0 8px 24px rgba(0,0,0,0.5);
+}
+/* 报纸·青墨染：米纸 + 青墨绿（字体不随主题，由正文字体下拉单独控制） */
+[data-theme="newspaper"] {
+  --bg: #e9e4d8; --bg-secondary: #f4f0e6; --bg-tertiary: #d3d7c0;
+  --text: #344e41; --text-secondary: #506154; --text-muted: #7d8a80;
+  --border: #c2c7ac; --primary: #3a5a40; --primary-hover: #2d4a34; --primary-light: #e2e6d3;
+  --accent: #a34d3d; --accent-hover: #8f4033;
+  --shadow: 0 1px 3px rgba(58,90,64,.10); --shadow-lg: 0 8px 24px rgba(58,90,64,.16);
+}
+[data-theme="newspaper"] .dialogue{color:#0b8375}
+/* ===== 梦境粉主题：樱粉主调 + 雾蓝点缀，蓝只做渐变收尾 ===== */
+[data-theme="dream"]{
+  --bg:#fdf3f8; --bg-secondary:#fffbfd; --bg-tertiary:#f8e9f1;
+  --text:#4d3a48; --text-secondary:#8f7588; --text-muted:#c3aec0;
+  --border:#f1d9e7;
+  --primary:#e878a8; --primary-hover:#dd6699; --primary-light:#fce7f1;
+  --accent:#d94f6e; --accent-hover:#c73f5e;
+  --shadow:0 1px 3px rgba(214,116,163,.10),0 1px 2px rgba(214,116,163,.08);
+  --shadow-lg:0 8px 24px rgba(214,116,163,.18),0 2px 6px rgba(214,116,163,.10);
+}
+[data-theme="dream"] #sidebar{background:linear-gradient(180deg,#fff9fc 0%,#f4f2fb 100%)}
+[data-theme="dream"] .nav-item:hover{background:rgba(252,231,241,.65)}
+[data-theme="dream"] .nav-item.active{background:linear-gradient(135deg,#fce7f1,#e8f0fa)}
+[data-theme="dream"] .app-logo{background:linear-gradient(120deg,#e0679e 10%,#7fa8dd 95%);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;color:transparent}
+[data-theme="dream"] .app-logo span{-webkit-text-fill-color:transparent;color:transparent}
+[data-theme="dream"] #editor-area,[data-theme="dream"] #content-area{background:
+  radial-gradient(620px 320px at 10% 6%,rgba(240,140,184,.26),transparent 62%),
+  radial-gradient(540px 340px at 90% 88%,rgba(150,190,235,.30),transparent 62%),
+  linear-gradient(160deg,#fdeef6 0%,#f7f0fa 48%,#ecf3fb 100%)}
+[data-theme="dream"] #chDropdownBtn{background:linear-gradient(135deg,#fce7f1,#e8f0fa);border:1px solid #f1d9e7}
+[data-theme="dream"] #editor-status{background:rgba(255,251,253,.85)}
+[data-theme="dream"] #writing-input-bar{background:linear-gradient(180deg,rgba(255,251,253,.4),rgba(236,243,251,.75))}
+[data-theme="dream"] #writingInput{background:linear-gradient(180deg,#fffdfe,#fdf5fa)}
+[data-theme="dream"] #btnUndo{background:linear-gradient(135deg,#fdf0f7,#edf3fb)}
+[data-theme="dream"] #writingSendBtn{background:linear-gradient(135deg,#f08cb8 0%,#a9c6e8 100%);border:none;box-shadow:0 4px 16px rgba(214,116,163,.38)}
+[data-theme="dream"] #writingSendBtn:hover{filter:brightness(1.06)}
+[data-theme="dream"] button.accent{background:linear-gradient(135deg,#f08cb8,#a9c6e8);border:none}
+[data-theme="dream"] #writingInput:focus,[data-theme="dream"] #titleInput:focus,[data-theme="dream"] textarea:focus{border-color:#a9c6e8;box-shadow:0 0 0 3px rgba(169,198,232,.28)}
+[data-theme="dream"] #panel-tabs button.active{background:linear-gradient(135deg,#fce7f1,#e8f0fa)}
+[data-theme="dream"] ::-webkit-scrollbar-thumb{background:#eec3d8}
+[data-theme="dream"] ::-webkit-scrollbar-thumb:hover{background:#e5a9c8}
+[data-theme="dream"] ::selection{background:#f9cfe0}
+/* ========== Reset & Base ========== */
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+/* 关掉 WebView/浏览器的默认点击高亮（Android 上是明显的半透明蓝 rgba(51,181,229,.4)+淡出动画）。
+   按下反馈统一改用下面 button:active 的轻微下沉+压暗，反馈明确但不刺眼。 */
+*{-webkit-tap-highlight-color:transparent}
+body{font-family:var(--font);font-size:var(--font-size);line-height:var(--line-height);color:var(--text);background:var(--bg);height:100vh;overflow:hidden;transition:background var(--transition),color var(--transition);-webkit-font-smoothing:antialiased}
+button{cursor:pointer;font-family:inherit;font-size:inherit;border:none;border-radius:var(--radius);padding:8px 16px;background:var(--bg-tertiary);color:var(--text);transition:all var(--transition);touch-action:manipulation}
+button:hover{filter:brightness(0.97)}
+/* 统一按压态：所有按钮都有明确但克制的反馈（个别的 :active 规则优先级更高，会覆盖本条） */
+button:not(:disabled):active{transform:scale(.96);filter:brightness(.93)}
+/* 点按（鼠标/触摸）不再留焦点框；键盘导航仍保留可见焦点环，保证可访问性 */
+button:focus{outline:none}
+button:focus-visible{outline:2px solid var(--primary);outline-offset:2px}
+button.primary{background:var(--primary);color:#fff;box-shadow:0 1px 3px rgba(59,111,224,0.2)}
+button.primary:hover{background:var(--primary-hover);box-shadow:0 2px 6px rgba(59,111,224,0.28)}
+button.accent{background:var(--accent);color:#fff}
+button.accent:hover{background:var(--accent-hover)}
+button.small{padding:4px 10px;font-size:13px}
+button.icon-btn{padding:6px 10px;font-size:14px;background:transparent}
+button.icon-btn:hover{background:var(--bg-tertiary)}
+button.danger{color:var(--accent)}
+input,textarea,select{font-family:inherit;font-size:15px;padding:9px 12px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--bg-secondary);color:var(--text);transition:all var(--transition);width:100%}
+input:focus,textarea:focus,select:focus{outline:none;border-color:var(--primary);box-shadow:0 0 0 3px var(--primary-light)}
+textarea{resize:vertical;min-height:80px}
+label{font-size:13px;color:var(--text-secondary);display:block;margin-bottom:4px}
+.toggle{position:relative;display:inline-block;width:44px;height:24px}
+.toggle input{display:none}
+.toggle .slider{position:absolute;top:0;left:0;right:0;bottom:0;background:var(--border);border-radius:24px;cursor:pointer;transition:var(--transition)}
+.toggle .slider::before{content:"";position:absolute;width:18px;height:18px;left:3px;top:3px;background:#fff;border-radius:50%;transition:var(--transition)}
+.toggle input:checked+.slider{background:var(--primary)}
+.toggle input:checked+.slider::before{transform:translateX(20px)}
+/* Layout */
+#app{display:flex;flex-direction:column;height:100vh}
+#header{display:flex;align-items:center;gap:12px;padding:8px 16px;background:var(--bg-secondary);border-bottom:1px solid var(--border);z-index:200;flex-shrink:0}
+#header .logo{font-weight:700;font-size:18px;color:var(--primary);white-space:nowrap}
+#header .title-input{flex:1;border:none;background:transparent;font-size:16px;font-weight:600;color:var(--text);padding:4px 8px}
+#header .title-input:focus{outline:none;background:var(--bg-tertiary);border-radius:var(--radius-sm)}
+#header .header-actions{display:flex;gap:8px;align-items:center}
+
+/* ===== 世界书切换：点顶部书名弹出列表（切换世界书=切换小说）===== */
+#wb-title-wrap{position:relative;flex:1;min-width:0;display:flex;align-items:center}
+#wbTitleBtn{display:flex;align-items:center;gap:6px;max-width:min(52vw,420px);padding:6px 10px;border:none;background:transparent;border-radius:10px;color:var(--text);font-size:16px;font-weight:600;cursor:pointer;transition:background .2s}
+#wbTitleBtn:hover{background:var(--bg-tertiary)}
+#wbTitleText{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#wbTitleChevron{flex-shrink:0;color:var(--text-muted)}
+#wbTitleBtn.open #wbTitleChevron{transform:rotate(180deg)}
+#wbSwitchDropdown{display:none;position:absolute;top:calc(100% + 8px);left:6px;min-width:220px;max-width:85vw;background:var(--bg-secondary);border:1px solid var(--border);border-radius:14px;box-shadow:var(--shadow-lg);z-index:300;overflow:hidden;animation:charExpand .2s ease}
+#wbSwitchDropdown.open{display:block}
+#wbSwitchList{max-height:320px;overflow-y:auto;padding:6px}
+.wb-switch-item{display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:10px;cursor:pointer;transition:background .2s}
+.wb-switch-item:hover{background:var(--bg-tertiary)}
+.wb-switch-item.active{background:var(--primary-light);color:var(--primary);font-weight:600}
+.wb-switch-name{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:14px}
+.wb-switch-count{font-size:11px;color:var(--text-muted);flex-shrink:0}
+#wbSwitchAdd{width:100%;padding:10px;border:none;background:transparent;color:var(--primary);font-size:14px;font-weight:600;cursor:pointer;border-top:1px solid var(--border)}
+#wbSwitchAdd:hover{background:var(--primary-light)}
+#header #hamburger-btn{display:none}
+#main{display:flex;flex:1;overflow:hidden}
+
+/* ===== RP-Hub 风格侧边栏导航 ===== */
+#sidebar{width:var(--sidebar-width);background:var(--bg-secondary);border-right:1px solid var(--border);display:flex;flex-direction:column;flex-shrink:0;overflow:visible;transition:width .25s ease;z-index:150}
+#sidebar-header{display:flex;align-items:center;justify-content:space-between;padding:14px 16px;border-bottom:1px solid var(--border);flex-shrink:0}
+#sidebar-header .app-logo{font-size:18px;font-weight:800;color:var(--text);letter-spacing:.08em;white-space:nowrap}
+#sidebar-header .app-logo span{color:var(--primary);font-weight:600}
+#sidebarCollapseBtn{background:transparent;border:none;color:var(--text-muted);font-size:20px;cursor:pointer;width:32px;height:32px;border-radius:8px;display:flex;align-items:center;justify-content:center;transition:all .2s}
+#sidebarCollapseBtn:hover{background:var(--bg-tertiary);color:var(--primary)}
+#sidebar-nav{flex:1;overflow-y:auto;padding:12px 10px;display:flex;flex-direction:column;gap:2px}
+#sidebar-footer{padding:10px;border-top:1px solid var(--border);flex-shrink:0}
+.nav-item{display:flex;align-items:center;gap:12px;width:100%;padding:10px 12px;border:none;background:transparent;border-radius:10px;color:var(--text-secondary);font-size:14px;font-weight:500;cursor:pointer;transition:all .2s;text-align:left;white-space:nowrap}
+.nav-item:hover{background:var(--bg-tertiary);color:var(--text)}
+.nav-item.active{background:var(--primary-light);color:var(--primary);font-weight:600}
+.nav-icon{width:20px;height:20px;flex-shrink:0}
+
+/* 侧边栏折叠态 */
+#sidebar.sidebar-collapsed{width:64px}
+#sidebar.sidebar-collapsed #sidebar-header{justify-content:center;padding:14px 8px}
+#sidebar.sidebar-collapsed .app-logo{display:none}
+#sidebar.sidebar-collapsed .nav-item{justify-content:center;padding:10px 0}
+#sidebar.sidebar-collapsed .nav-label{display:none}
+#sidebar.sidebar-collapsed #sidebar-nav{padding:12px 8px}
+
+/* ===== 内容区 ===== */
+#content-area{flex:1;display:flex;flex-direction:column;overflow:hidden;position:relative}
+#editor-area{flex:1;display:flex;flex-direction:column;overflow:hidden;background:var(--bg)}
+#editor-toolbar{display:flex;align-items:center;gap:4px;padding:8px 16px;background:var(--bg-secondary);border-bottom:1px solid var(--border);flex-shrink:0}
+#editor-toolbar button{padding:6px 10px;font-size:14px;border-radius:var(--radius-sm);min-width:32px;text-align:center}
+#editor-toolbar .sep{width:1px;background:var(--border);margin:0 6px}
+#editor-toolbar-right{margin-left:auto;display:flex;align-items:center;gap:4px}
+
+/* 章节下拉 */
+#ch-dropdown-wrap{position:relative}
+#chDropdownBtn{display:flex;align-items:center;gap:6px;background:var(--bg-tertiary);font-weight:600}
+#ch-dropdown{display:none;position:absolute;top:calc(100% + 6px);left:0;min-width:200px;background:var(--bg-secondary);border:1px solid var(--border);border-radius:12px;box-shadow:var(--shadow-lg);z-index:300;overflow:hidden}
+#ch-dropdown.open{display:block}
+#chDropdownList{max-height:280px;overflow-y:auto}
+.ch-dropdown-item{display:flex;align-items:center;justify-content:space-between;padding:9px 14px;font-size:14px;cursor:pointer;color:var(--text);gap:10px}
+.ch-dropdown-item:hover{background:var(--bg-tertiary)}
+.ch-dropdown-item.active{background:var(--primary-light);color:var(--primary);font-weight:600}
+.ch-dropdown-item .ch-del{width:24px;height:24px;border-radius:6px;display:flex;align-items:center;justify-content:center;color:var(--text-muted);font-size:13px}
+.ch-dropdown-item .ch-del:hover{background:#fee2e2;color:#ef4444}
+#ch-dropdown-add{padding:8px;border-top:1px solid var(--border)}
+#ch-dropdown-add button{width:100%;padding:8px;border:none;background:transparent;color:var(--primary);font-size:14px;font-weight:600;cursor:pointer;border-radius:8px}
+#ch-dropdown-add button:hover{background:var(--primary-light)}
+
+#editor{flex:1;padding:32px 48px;overflow-y:auto;outline:none;font-size:var(--font-size);line-height:2;word-wrap:break-word;white-space:pre-wrap;position:relative;contain:content;background:var(--bg-secondary);font-family:var(--font)}
+/* 编辑器包裹层：给「回到底部」浮钮提供定位上下文（浮钮不能放进 #editor，否则会随正文滚走） */
+#editor-wrap{position:relative;flex:1;min-height:0;display:flex;flex-direction:column}
+#editorScrollBottom{position:absolute;right:22px;bottom:22px;width:42px;height:42px;border-radius:50%;border:1px solid var(--border);background:var(--bg-secondary);color:var(--text-secondary);box-shadow:var(--shadow-lg);cursor:pointer;display:flex;align-items:center;justify-content:center;opacity:0;transform:translateY(8px) scale(.92);pointer-events:none;transition:opacity .18s ease,transform .18s ease,color .18s ease,border-color .18s ease;z-index:30}
+#editorScrollBottom.show{opacity:1;transform:none;pointer-events:auto}
+#editorScrollBottom:hover{border-color:var(--primary);color:var(--primary)}
+#editor:empty::before{content:"在此开始写作你的轻小说...\A\A以第一人称视角书写主角的故事，AI 将帮你补全环境描写与其他角色的反应。";white-space:pre;color:var(--text-muted)}
+#editor:focus{outline:none}
+#editor-status{padding:4px 16px;font-size:12px;color:var(--text-muted);background:var(--bg-secondary);border-top:1px solid var(--border);flex-shrink:0}
+
+/* 写作底部输入框（RP-Hub 风格） */
+#writing-input-bar{padding:12px 16px 14px;background:var(--bg-secondary);border-top:1px solid var(--border);flex-shrink:0;box-shadow:0 -1px 0 rgba(0,0,0,0.02)}
+#writing-input-row{display:flex;align-items:flex-end;gap:8px}
+#writingInput{flex:1;background:var(--bg-tertiary);color:var(--text);border:1px solid var(--border);border-radius:14px;padding:11px 14px;font-size:16px;font-family:inherit;line-height:1.5;resize:none;min-height:44px;max-height:calc(5 * 1.5em + 22px);outline:none;box-shadow:inset 0 1px 2px rgba(0,0,0,0.03);transition:all .2s;overflow-y:auto}
+#writingInput:focus{background:var(--bg-secondary);border-color:var(--primary);box-shadow:0 0 0 3px var(--primary-light)}
+#writingInput::placeholder{color:var(--text-muted)}
+#writingSendBtn,#writing-input-bar #btnStop,#writing-input-bar #btnUndo{width:44px;height:44px;border-radius:12px;border:none;cursor:pointer;flex-shrink:0;display:flex;align-items:center;justify-content:center;transition:all .2s}
+#writingSendBtn{background:var(--primary);color:#fff;box-shadow:0 2px 6px rgba(59,111,224,0.3)}
+#writingSendBtn:hover{background:var(--primary-hover);transform:translateY(-1px);box-shadow:0 4px 10px rgba(59,111,224,0.35)}
+#writingSendBtn:active{transform:translateY(0) scale(0.97)}
+#writing-input-bar #btnStop{background:#ef4444;color:#fff}
+#writing-input-bar #btnUndo{background:var(--bg-tertiary);color:var(--text-secondary)}
+#writing-input-bar #btnUndo:hover{background:var(--primary-light);color:var(--primary)}
+
+/* ===== 面板（非写作视图）===== */
+#panel{flex:1;background:var(--bg-secondary);display:flex;flex-direction:column;overflow:hidden}
+#panel-tabs{display:none}
+#panel-content{flex:1;overflow-y:auto;padding:20px}
+.panel-tab{display:none}
+.panel-tab.active{display:block}
+.card{background:var(--bg-secondary);border:1px solid var(--border);border-radius:14px;padding:14px 16px;margin-bottom:12px;box-shadow:var(--shadow)}
+.form-group{margin-bottom:12px}
+.form-row{display:flex;gap:8px}
+.form-row>*{flex:1}
+.generate-btn.loading{pointer-events:none;opacity:0.7}
+.spinner{display:inline-block;width:16px;height:16px;border:2px solid rgba(255,255,255,0.3);border-top-color:#fff;border-radius:50%;animation:spin .8s linear infinite;vertical-align:middle;margin-right:6px}
+@keyframes spin{to{transform:rotate(360deg)}}
+.spinner-dark{display:inline-block;width:16px;height:16px;border:2px solid var(--border);border-top-color:var(--primary);border-radius:50%;animation:spin .8s linear infinite;vertical-align:middle;margin-right:6px}
+#modalConfirm .modal-body p{white-space:pre-line;max-height:50vh;overflow-y:auto;font-size:13px;line-height:1.6}
+
+/* 世界书详情弹窗：加高到贴合 2:3 封面尺寸（其余弹窗维持 85vh） */
+#modalCommunityWbDetail .modal{max-height:96vh}
+/* 社区详情：封面缩到半屏宽（原来满宽太大），内容条目列表（点条目展开/收起） */
+.detail-cover{display:block;width:50%;max-width:260px;height:auto;margin:0 auto 12px;border-radius:10px}
+.wbd-list-head{display:flex;align-items:center;gap:8px;font-size:12px;font-weight:600;color:var(--text);margin:16px 0 8px}
+.wbd-list-head::after{content:'';flex:1;height:1px;background:var(--border)}
+.wbd-hint{font-size:11px;font-weight:400;color:var(--text-muted)}
+.wbd-entry{border:1px solid var(--border);border-radius:10px;margin-bottom:6px;padding:8px 10px;cursor:pointer;background:var(--bg-tertiary);transition:background var(--transition)}
+.wbd-entry:hover{background:var(--bg-secondary)}
+.wbd-entry-head{display:flex;align-items:center;gap:8px;font-size:13px}
+.wbd-type{flex:none;font-size:10px;font-weight:700;padding:2px 7px;border-radius:999px;background:var(--primary-light);color:var(--primary)}
+.wbd-entry-name{flex:1;min-width:0;font-weight:600;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.wbd-entry-len{flex:none;font-size:10px;color:var(--text-muted)}
+.wbd-entry-body{margin-top:6px;font-size:12px;line-height:1.6;color:var(--text-secondary);white-space:pre-wrap;display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical;overflow:hidden}
+.wbd-entry.open .wbd-entry-body{display:block;overflow:visible}
+/* 社区排序切换（最新 / 热门 / 活跃） */
+.sort-seg{flex:none;display:flex;background:var(--bg-tertiary);border:1px solid var(--border);border-radius:999px;padding:2px}
+.sort-seg button{padding:4px 10px;font-size:11.5px;border:none;background:transparent;color:var(--text-muted);border-radius:999px;cursor:pointer;min-height:0;transition:all var(--transition)}
+.sort-seg button.active{background:var(--primary);color:#fff;font-weight:600}
+/* 卡片社交行：♥ / 💬 / ⬇ */
+.shelf-social{display:flex;align-items:center;gap:10px;font-size:11px;color:var(--text-muted);margin-top:2px}
+.shelf-social .lk{display:flex;align-items:center;gap:3px;cursor:pointer;padding:1px 4px;border-radius:6px;transition:all var(--transition)}
+.shelf-social .lk:hover{background:var(--primary-light);color:var(--primary)}
+.shelf-social .lk.on{color:#e5484d;font-weight:700}
+.shelf-social .lk.on .ic-heart{fill:currentColor}
+/* 详情弹层：社交统计行 + 评论区 */
+.detail-social{display:flex;align-items:center;gap:14px;font-size:13px;color:var(--text-secondary);margin:10px 0 2px;padding-bottom:10px;border-bottom:1px solid var(--border)}
+.detail-social .lk{display:flex;align-items:center;gap:5px;cursor:pointer;padding:3px 10px;border-radius:999px;border:1px solid var(--border);transition:all var(--transition)}
+.detail-social .lk:hover{border-color:var(--primary);color:var(--primary)}
+.detail-social .lk.on{color:#e5484d;border-color:#e5484d;font-weight:700}
+.detail-social .lk.on .ic-heart{fill:currentColor}
+.cmt-head{display:flex;align-items:center;gap:8px;font-size:12px;font-weight:600;color:var(--text);margin:16px 0 8px}
+.cmt-head::after{content:'';flex:1;height:1px;background:var(--border)}
+.cmt-list{display:flex;flex-direction:column;gap:10px}
+.cmt{display:flex;gap:8px}
+.cmt-ava{flex:none;width:26px;height:26px;border-radius:50%;background:var(--primary-light);color:var(--primary);font-size:12px;font-weight:700;display:flex;align-items:center;justify-content:center}
+.cmt-main{flex:1;min-width:0}
+.cmt-meta{display:flex;align-items:center;gap:8px;font-size:11px;color:var(--text-muted);margin-bottom:2px}
+.cmt-meta b{font-size:12px;color:var(--text-secondary);font-weight:600}
+.cmt-del{margin-left:auto;cursor:pointer;color:var(--text-muted)}
+.cmt-del:hover{color:var(--accent)}
+.cmt-text{font-size:13px;line-height:1.6;color:var(--text-secondary);white-space:pre-wrap;word-break:break-word}
+.cmt-more{font-size:12px;color:var(--primary);cursor:pointer;padding:6px 0;text-align:center}
+.cmt-empty{font-size:12px;color:var(--text-muted);padding:6px 0}
+.cmt-input{display:flex;gap:6px;align-items:flex-end;margin-top:10px}
+.cmt-input textarea{flex:1;min-height:38px;max-height:120px;font-size:13px;padding:8px 10px;border:1px solid var(--border);border-radius:10px;background:var(--bg);color:var(--text);resize:none}
+.ic-heart{width:13px;height:13px}
+/* 裁剪框四角手柄 */
+.crop-handle{position:absolute;width:16px;height:16px;background:#fff;border:2px solid #2196f3;border-radius:3px;touch-action:none}
+.modal-overlay{display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);z-index:2100;align-items:center;justify-content:center}
+#modalConfirm.modal-overlay{z-index:2200}
+.modal-overlay.show{display:flex}
+.modal{background:var(--bg-secondary);border-radius:16px;box-shadow:var(--shadow-lg);width:90%;max-width:560px;max-height:85vh;display:flex;flex-direction:column;border:1px solid var(--border)}
+.modal.wide{max-width:720px}
+.modal-header{display:flex;justify-content:space-between;align-items:center;padding:16px 20px;border-bottom:1px solid var(--border)}
+.modal-header h3{font-size:18px}
+.modal-body{padding:20px;overflow-y:auto;flex:1}
+.modal-footer{padding:12px 20px;border-top:1px solid var(--border);display:flex;gap:8px;justify-content:flex-end}
+.tag{display:inline-block;padding:2px 8px;border-radius:12px;font-size:11px;font-weight:600;background:var(--primary-light);color:var(--primary)}
+.tag.before{background:#fff3cd;color:#856404}
+.tag.after{background:#d4edda;color:#155724}
+.tag.triggered{background:#d1ecf1;color:#0c5460}
+::-webkit-scrollbar{width:6px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
+::-webkit-scrollbar-thumb:hover{background:var(--text-muted)}
+#toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:var(--text);color:var(--bg);padding:10px 24px;border-radius:24px;font-size:14px;z-index:2500;opacity:0;transition:opacity .3s;pointer-events:none}
+#toast.show{opacity:1}
+.ai-generated{padding:8px 12px;margin:8px 0;border-radius:var(--radius-sm)}
+/* 模型思考/梳理块：流式时展开、结束后折叠；灰色小字，不进后续 prompt */
+.cot-thinking{display:block;margin:10px 0;padding:10px 14px;border-left:3px solid #c7d3f0;background:#f3f6fc;border-radius:8px;color:#6b7a99;font-size:12.5px;line-height:1.7;white-space:pre-wrap;word-break:break-word}
+.cot-thinking>summary{cursor:pointer;font-weight:600;outline:none;list-style:none;color:#4a5a80}
+.cot-thinking>summary::-webkit-details-marker{display:none}
+.cot-thinking>summary::before{content:"▸ ";font-size:10px}
+.cot-thinking[open]>summary::before{content:"▾ "}
+/* 思维链框封顶：超过约 40% 视口高后在框内上下滚动，框体不再随思维链长度无限增长；
+   流式输出时溢出容器不会自动跟随（保持用户当前阅读位置）。summary 置顶吸附，
+   内容再长「收起」按钮也始终可点。 */
+.cot-thinking[open]{max-height:40vh;overflow-y:auto;overscroll-behavior:contain}
+.cot-thinking[open]>summary{position:sticky;top:-10px;margin:-10px -14px 6px;padding:10px 14px 6px;background:#f3f6fc;z-index:1}
+/* 未闭合思考提示条：内容被保留在思考框时给出显式出口（不进正文/存档） */
+.think-unclosed-notice{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:8px 0;padding:8px 12px;border:1px dashed #e0a63f;border-radius:8px;background:#fff8ea;color:#8a6116;font-size:12.5px}
+.think-unclosed-notice .think-unclosed-btn{border:1px solid #e0a63f;background:#fff;color:#8a6116;border-radius:6px;padding:3px 10px;font-size:12px;cursor:pointer}
+.think-unclosed-notice .think-unclosed-btn:hover{background:#fdf0d5}
+/* 图标尺寸工具类（原先依赖 Tailwind CDN，已离线化；应用本身不联网也能正常显示） */
+.ic-16{width:16px;height:16px}
+.ic-20{width:20px;height:20px}
+.chev{transition:transform .2s}
+.rot-90{transform:rotate(90deg)}
+/* Discussion chat */
+.chat-msg{padding:10px 14px;border-radius:14px;font-size:var(--font-size);line-height:1.6;max-width:85%;word-wrap:break-word;white-space:pre-wrap}
+.chat-msg.user{align-self:flex-end;background:var(--primary);color:#fff;border-bottom-right-radius:4px;box-shadow:0 1px 3px rgba(59,111,224,0.2)}
+.chat-msg.assistant{align-self:flex-start;background:var(--bg-tertiary);color:var(--text);border-bottom-left-radius:4px}
+.chat-msg.assistant.streaming{opacity:0.7}
+
+/* 写卡 agent 状态条：工具调用/思考等待期（spinner 旋转动画 + 文案），替代空气泡 */
+.cw-status{display:flex;align-items:center;gap:8px;align-self:flex-start;padding:8px 14px;border-radius:14px;background:var(--bg-tertiary);font-size:13px;color:var(--text-muted);max-width:85%}
+/* 断线待续：气泡下方的「继续」+ 说明（切后台断了不用重说一遍） */
+.cw-resume{display:flex;align-items:center;gap:8px;align-self:flex-start;margin-top:-4px;padding-left:2px}
+.cw-resume-tip{font-size:11.5px;color:var(--text-muted)}
+
+/* 写卡深度思维链：流式期间实时展开（蓝色调），思考结束自动折叠成 details 可展开 */
+.cw-think{margin:0 0 6px;border:1px solid var(--border);border-radius:10px;background:color-mix(in srgb,var(--primary) 7%,transparent);overflow:hidden}
+.cw-think summary,.cw-think-head{display:flex;align-items:center;gap:8px;padding:6px 10px;font-size:12px;font-weight:600;color:var(--primary);cursor:pointer;user-select:none}
+.cw-think summary::marker{content:none}
+.cw-think summary::-webkit-details-marker{display:none}
+.cw-think summary::after{content:"▾";margin-left:auto;transition:transform .2s;color:var(--text-muted)}
+.cw-think[open] summary::after{transform:rotate(180deg)}
+.cw-think-head .cw-spinner{width:12px;height:12px;border-width:2px}
+.cw-think-body{padding:4px 10px 8px;font-size:12px;line-height:1.6;color:var(--text-muted);max-height:260px;overflow-y:auto;-webkit-overflow-scrolling:touch;white-space:normal;word-break:break-word}
+
+/* 下载进度未定态：原生事件缺失时进度条做循环脉动动画 */
+#updBar.indet{width:30% !important;animation:upd-indet 1.2s ease-in-out infinite}
+@keyframes upd-indet{0%{margin-left:0}50%{margin-left:70%}100%{margin-left:0}}
+.cw-spinner{width:16px;height:16px;flex-shrink:0;border:2px solid var(--border);border-top-color:var(--primary);border-radius:50%;animation:cw-spin .8s linear infinite}
+@keyframes cw-spin{to{transform:rotate(360deg)}}
+.chat-input-area{display:flex;gap:6px;padding:8px 12px;border-top:1px solid var(--border);flex-shrink:0}
+.chat-input-area textarea{flex:1;min-height:44px;max-height:calc(5 * 1.5em + 16px);font-size:16px;resize:none;line-height:1.5;padding:8px 12px;overflow-y:auto}
+.chat-input-area button{flex-shrink:0}
+.chat-toolbar{display:flex;gap:6px;padding:4px 12px;flex-shrink:0}
+.chat-toolbar button{font-size:11px;padding:3px 8px}
+.cardwriter-context-bar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:6px 12px;border-bottom:1px solid var(--border);font-size:12px;color:var(--text-secondary);flex-shrink:0}
+.cardwriter-context-bar .cw-book{font-size:13px;color:var(--text);display:flex;align-items:center;gap:4px}
+.cardwriter-context-bar .cw-info{color:var(--text-muted)}
+.cardwriter-context-bar .cw-toggle{display:flex;align-items:center;gap:3px;cursor:pointer;white-space:nowrap;user-select:none}
+#cwBookSelect{font-size:13px;padding:2px 6px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--bg);color:var(--text);max-width:160px}
+#tab-cardwriter{display:none;flex-direction:column;height:100%}
+#tab-cardwriter.active{display:flex;flex-direction:column;height:100%;min-height:0}
+#cardwriterMessages{flex:1;overflow-y:auto;padding:12px;display:flex;flex-direction:column;gap:10px;min-height:0}
+#panel{position:relative}
+/* 写卡右上角「查看」菜单（替代原悬浮球）：按钮挂在上下文条右端，点开下拉两项 */
+#cwViewWrap{margin-left:auto;position:relative;display:flex;align-items:center}
+#cwViewBtn{font-size:12px;padding:3px 10px;border-radius:6px;border:1px solid var(--border);background:var(--bg);color:var(--text);cursor:pointer;white-space:nowrap}
+#cwViewBtn:hover{border-color:var(--primary);color:var(--primary)}
+#cwViewWrap.open #cwViewBtn{border-color:var(--primary);color:var(--primary)}
+/* 「停止」：掐断本轮请求并释放发送锁（请求卡死时是唯一自救入口），只在发送中显示 */
+/* 模型输出里的 **小标题** 高亮（由 lib/mdtext.ts 的 renderMdStrong 生成） */
+.md-strong{font-weight:700;color:var(--primary)}
+#cwViewMenu{display:none;position:absolute;top:calc(100% + 4px);right:0;min-width:132px;z-index:1200;
+  background:var(--bg-secondary,#fff);border:1px solid var(--border);border-radius:10px;
+  box-shadow:0 8px 24px rgba(0,0,0,.18);padding:4px;font-size:13px}
+#cwViewMenu.show{display:block}
+#cwViewMenu>div{padding:8px 10px;border-radius:7px;cursor:pointer;white-space:nowrap;color:var(--text)}
+#cwViewMenu>div:hover{background:color-mix(in srgb,var(--primary) 12%,transparent);color:var(--primary)}
+/* 长按选择：浮条是 body 上的固定层（不进气泡 → 零布局位移）；正文层单独包一层，思维链不参与选区 */
+.cw-msg-text{-webkit-user-select:text;user-select:text}
+.cw-sel-bar{position:fixed;z-index:1700;display:none;align-items:center;gap:2px;padding:4px;border-radius:11px;background:var(--bg-secondary);border:1px solid var(--border);box-shadow:0 8px 24px rgba(0,0,0,.22)}
+.cw-sel-bar button{font-size:12.5px;padding:6px 12px;border:0;border-radius:8px;background:transparent;color:var(--text);font-weight:600}
+.cw-sel-bar button:active{background:var(--bg-tertiary)}
+.cw-sel-bar button.danger{color:var(--danger)}
+/* 多选删除：左侧勾选圈 + 选中描边；进入多选时用底条换掉输入区 */
+.cw-row{display:flex;align-items:center;gap:8px;width:100%}
+.cw-row.user .chat-msg{margin-left:auto}
+.cw-check{flex:0 0 20px;width:20px;height:20px;border-radius:50%;border:2px solid var(--border);box-sizing:border-box;background:var(--bg-secondary);position:relative;transition:background .15s,border-color .15s}
+.cw-row.sel .cw-check{background:var(--primary);border-color:var(--primary)}
+.cw-row.sel .cw-check::after{content:"";position:absolute;left:5px;top:2px;width:4px;height:9px;border-right:2px solid #fff;border-bottom:2px solid #fff;transform:rotate(45deg)}
+.chat-msg.cw-sel{outline:2px solid var(--primary);outline-offset:2px}
+.cw-multi-bar{display:none;align-items:center;gap:8px;padding:8px 12px;border-top:1px solid var(--border);background:var(--bg-secondary);flex-shrink:0}
+.cw-multi-bar .cw-multi-count{flex:1;font-size:12.5px;color:var(--text-secondary)}
+#cwDraftModal .modal-body{display:flex;flex-direction:column;gap:10px}
+.cw-wb-section{border:1px solid var(--border);border-radius:10px;padding:10px 12px;background:var(--bg-tertiary)}
+.cw-wb-entry .cw-del{position:absolute;top:6px;right:6px;width:20px;height:20px;padding:0;font-size:11px;line-height:1;border-radius:4px;background:transparent;color:var(--text-muted);border:none;cursor:pointer}
+.cw-wb-entry .cw-del:hover{color:var(--danger,#e74c3c)}
+.cw-wb-entry .cw-type-tag{position:absolute;bottom:6px;right:8px;font-size:10px;color:var(--text-muted)}
+.cw-wb-addrow{display:flex;gap:6px;align-items:center;margin-top:6px}
+.cw-wb-addrow select{font-size:12px;padding:3px 6px;border:1px solid var(--border);border-radius:4px;background:var(--bg);color:inherit}
+#cwPresetModal .modal-body{display:flex;flex-direction:column;gap:10px}
+.cw-preset-block{border:1px solid var(--border);border-radius:8px;padding:8px 10px;background:var(--bg-secondary)}
+.cw-preset-block-title{font-size:12px;font-weight:600;color:var(--text);display:flex;align-items:center;gap:6px;margin-bottom:6px}
+.cw-block-switch{display:flex;align-items:center;gap:3px;font-size:11px;font-weight:400;color:var(--text-secondary);cursor:pointer;user-select:none;margin-left:auto}
+.cw-preset-block textarea{width:100%;font-size:13.5px;resize:vertical;padding:7px 8px;border:1px solid var(--border);border-radius:4px;background:var(--bg);color:inherit;box-sizing:border-box;font-family:inherit;line-height:1.6;white-space:pre-wrap}
+.cw-muted{font-weight:400;color:var(--text-muted);font-size:11px}
+.cw-draft-char{position:relative;border:1px solid var(--border);border-radius:8px;padding:8px 30px 8px 8px;background:var(--bg-secondary)}
+.cw-draft-char .cw-draft-name{width:100%;font-size:12px;font-weight:600;padding:4px 6px;margin-bottom:4px;border:1px solid var(--border);border-radius:4px;background:var(--bg);color:inherit;box-sizing:border-box}
+.cw-draft-char textarea{width:100%;font-size:13.5px;min-height:100px;resize:vertical;padding:7px 8px;border:1px solid var(--border);border-radius:4px;background:var(--bg);color:inherit;box-sizing:border-box}
+.cw-draft-char .cw-del{position:absolute;top:6px;right:6px;width:20px;height:20px;padding:0;font-size:11px;line-height:1;border-radius:4px;background:transparent;color:var(--text-muted);border:none;cursor:pointer}
+.cw-draft-char .cw-del:hover{color:var(--danger,#e74c3c)}
+.cw-draft-char .cw-tag{font-size:10px;padding:1px 6px;border-radius:4px;margin-right:4px;display:inline-block;vertical-align:middle}
+.cw-draft-char .cw-tag-proposed{background:#f39c12;color:#fff}
+.cw-draft-char .cw-tag-ai{background:#8e44ad;color:#fff}
+.cw-draft-char .cw-tag-ref{background:#3498db;color:#fff}
+#tab-usageassist{display:none;flex-direction:column;height:100%}
+#tab-usageassist.active{display:flex}
+#assistantMessages{flex:1;overflow-y:auto;padding:12px;display:flex;flex-direction:column;gap:10px;min-height:0}
+/* 找卡：助手推荐的书名（蓝链，点开详情弹层） */
+.as-card-link{color:var(--primary);font-weight:600;cursor:pointer;text-decoration:underline;text-underline-offset:2px;word-break:break-all}
+.as-card-link:hover{filter:brightness(1.15)}
+.as-card-link:active{opacity:.75}
+/* 找卡需要登录时的入口（助手消息内联，点它切到社区页 → 自动弹登录框） */
+.as-login-btn{display:inline-block;margin-top:2px;padding:3px 12px;border:1px solid var(--primary);border-radius:999px;color:var(--primary);font-weight:600;font-size:12.5px;cursor:pointer;white-space:nowrap}
+.as-login-btn:hover{background:var(--primary);color:#fff}
+.as-login-btn:active{opacity:.75}
+.as-login-wrap{text-align:center;padding:8px 0 2px}
+/* 助手发送态：进度行 + 工具步骤留痕 + 打字光标（替代干巴巴的「…」） */
+.as-status{display:flex;align-items:center;gap:8px;color:var(--text-muted);font-size:12.5px}
+.as-status .cw-spinner{width:12px;height:12px;border-width:2px}
+.as-steps{margin-top:6px;padding-top:6px;border-top:1px dashed var(--border);display:flex;flex-direction:column;gap:2px;font-size:11.5px;color:var(--text-muted)}
+.as-caret{display:inline-block;width:7px;height:14px;margin-left:2px;background:var(--primary);opacity:.6;animation:asCaret 1s steps(2) infinite;vertical-align:-2px}
+@keyframes asCaret{0%,50%{opacity:.6}51%,100%{opacity:0}}
+/* 详情弹层里的条目块 */
+.as-card-entry{margin-bottom:10px;padding:8px 10px;border:1px solid var(--border);border-radius:8px;background:var(--bg-secondary,#fff)}
+.as-card-entry-head{display:flex;align-items:center;gap:6px;font-size:13px;font-weight:600;color:var(--text);margin-bottom:4px}
+.as-card-entry-body{font-size:12.5px;line-height:1.65;color:var(--text-secondary);white-space:normal;word-break:break-word}
+.as-chip{flex:none;font-size:10.5px;padding:1px 6px;border-radius:5px;background:color-mix(in srgb,var(--primary) 14%,transparent);color:var(--primary);font-weight:600}
+.chat-empty{display:flex;align-items:center;justify-content:center;flex:1;color:var(--text-muted);font-size:13px;text-align:center;padding:24px}
+
+/* ===== 比奇（半屏对话窗：压住正文上半部，下半部照常滚动）===== */
+#biqiPanel{position:absolute;left:0;right:0;top:0;height:50%;display:none;flex-direction:column;z-index:60;background:var(--bg-secondary);border-bottom:1px solid var(--border);border-radius:0 0 18px 18px;box-shadow:0 14px 32px rgba(20,28,45,.16);overflow:hidden}
+#biqiPanel.open{display:flex}
+#biqiHead{display:flex;align-items:center;gap:8px;padding:8px 12px;border-bottom:1px solid var(--border);flex-shrink:0;background:var(--bg-tertiary)}
+.biqi-title{display:flex;align-items:center;gap:6px;font-size:14px;font-weight:700;color:var(--text);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.biqi-sub{font-size:11px;font-weight:400;color:var(--text-muted)}
+.biqi-actions{margin-left:auto;display:flex;align-items:center;gap:6px;flex-shrink:0}
+.biqi-actions .ghost-btn{padding:5px 10px;font-size:12px}
+#biqiMessages{flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:8px;padding:10px 12px;-webkit-overflow-scrolling:touch}
+#biqiPanel .chat-msg{max-width:92%}
+#biqiPanel .chat-input-area{background:var(--bg-secondary)}
+/* 下边缘拖动胶囊：往下拖变高、往上拖变矮；拖过 90% 吸附整屏（再往上拖回去解除）。
+   touch-action:none 是必须的——否则在可滚动页面里纵向拖会被当成滚动页面。 */
+#biqiGrip{flex-shrink:0;height:18px;display:flex;align-items:center;justify-content:center;cursor:ns-resize;touch-action:none;background:var(--bg-secondary);-webkit-tap-highlight-color:transparent}
+#biqiGrip span{width:38px;height:4px;border-radius:2px;background:var(--border)}
+#biqiGrip:active span{background:var(--text-muted)}
+/* 输入中（软键盘弹出、WebView 已被 adjustResize 压成"键盘以上的可见区域"）：占满可视区，列表拿回高度 */
+#biqiPanel.kb-open{height:100%;border-radius:0}
+#biqiPanel.kb-open #biqiGrip{display:none}
+/* 吸附整屏（拖过 90%） */
+#biqiPanel.full{border-radius:0}
+@media(max-width:640px){#biqiHead{padding:6px 10px}.biqi-sub{display:none}}
+
+/* ===== Module Manager ===== */
+.module-mgr{margin-top:8px;border:1px solid var(--border);border-radius:var(--radius-sm)}
+.module-mgr-header{display:flex;align-items:center;gap:6px;padding:6px 8px;cursor:pointer;font-size:13px;user-select:none}
+.module-mgr-header:hover{background:var(--bg-tertiary)}
+.module-mgr-arrow{font-size:10px;transition:transform .2s}
+.module-mgr-arrow.open{transform:rotate(90deg)}
+.module-mgr-count{margin-left:auto;font-size:11px;color:var(--text-muted)}
+.module-mgr-body{display:none;padding:4px 8px 8px;border-top:1px solid var(--border)}
+.module-mgr-body.open{display:block}
+.module-row{display:grid;grid-template-columns:auto 1fr auto auto auto;align-items:center;gap:4px;padding:4px 0;font-size:13px}
+.module-row+.module-row{border-top:1px solid rgba(128,128,128,.15)}
+.module-row input[type=checkbox]{margin:0;cursor:pointer}
+.module-row .mod-name{flex:1;min-width:40px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:inherit;font-size:13px}
+.module-row .mod-actions{display:flex;gap:2px;flex-shrink:0}
+.module-row .mod-actions button{font-size:11px;padding:2px 6px}
+.module-row .tag{font-size:10px;padding:1px 6px}
+.char-card-header .char-expand.open{transform:rotate(180deg)}
+.char-card-body.open{display:block}
+@keyframes charExpand{from{opacity:0;max-height:0}to{opacity:1;max-height:400px}}
+
+/* ===== Mobile elements hidden on desktop ===== */
+#hamburger-btn{display:none}
+
+@media(max-width:1024px){#sidebar{width:180px}#editor{padding:16px 20px}}
+@media(max-width:768px){
+  /* ===== 移动端：侧边栏变抽屉 ===== */
+  #app{padding-bottom:0}
+  #main{flex-direction:row}
+  #sidebar{position:fixed;top:0;left:0;bottom:0;width:280px;max-width:85vw;transform:translateX(-100%);transition:transform .3s ease;box-shadow:var(--shadow-lg);overflow-y:auto;z-index:400}
+  #sidebar.mobile-open{transform:translateX(0)}
+  #header #hamburger-btn{display:flex;align-items:center;justify-content:center;font-size:20px;min-width:40px;min-height:40px;padding:6px;border-radius:var(--radius-sm);background:transparent;flex-shrink:0}
+  #header #hamburger-btn:hover{background:var(--bg-tertiary)}
+  #editor-area{flex:1;min-height:0;display:flex;flex-direction:column}
+  #panel{flex:1;min-height:0;overflow-y:auto}
+
+  /* ===== Mobile Header ===== */
+  #header{padding:6px 10px;gap:8px;flex-wrap:nowrap;position:relative}
+  #header .logo{font-size:15px;flex-shrink:0}
+  #header .title-input{flex:1;font-size:14px;min-width:0}
+  #header .header-actions{display:flex;gap:6px;align-items:center;flex-shrink:0}
+  #header .header-actions .header-action-dt{display:none}
+
+  /* ===== Editor Mobile Adjustments ===== */
+  #editor{padding:16px 16px;line-height:1.7}
+  #editor-toolbar{padding:6px 8px;gap:2px;flex-wrap:wrap}
+  #editor-toolbar button{padding:8px 10px;font-size:13px;min-width:36px;min-height:36px}
+  #editor-toolbar .sep{margin:0 4px}
+  #editor-status{padding:4px 10px;font-size:11px}
+
+  /* ===== Mobile Panel ===== */
+  #panel-content{padding:12px;-webkit-overflow-scrolling:touch}
+  .panel-tab button{min-height:32px;padding:6px 10px;font-size:12px}
+  .form-group input,.form-group textarea,.form-group select{font-size:16px;padding:10px 12px}
+  /* Mobile chat */
+  #tab-usageassist.active{height:calc(100vh - 120px)}
+  #tab-community.active{height:calc(100vh - 120px)}
+  #tab-admin.active{height:calc(100vh - 120px)}
+  .chat-msg{max-width:90%;font-size:var(--font-size);padding:10px 14px}
+  .chat-input-area{padding:8px}
+  .chat-input-area textarea{font-size:14px;min-height:40px}
+
+  /* ===== Touch-Friendly Global Buttons ===== */
+  button{min-height:40px}
+  button.small{min-height:34px;padding:6px 12px;font-size:13px}
+  button.icon-btn{min-height:40px;min-width:40px;padding:8px}
+
+  /* ===== Subtab Nav Scrolling ===== */
+  .subtab-nav{overflow-x:auto;flex-wrap:nowrap;-webkit-overflow-scrolling:touch}
+  .subtab-nav button{flex:none;white-space:nowrap;min-height:36px;padding:6px 10px;font-size:12px}
+  .subtab-nav::-webkit-scrollbar{height:0}
+
+  /* ===== Mobile Modals ===== */
+  .modal{width:95vw;max-width:95vw;max-height:90vh;margin:0 auto;border-radius:var(--radius) var(--radius) 0 0}
+  .modal.wide{max-width:95vw}
+  .modal-header{padding:12px 16px}
+  .modal-header h3{font-size:16px}
+  .modal-header button{min-width:36px;min-height:36px;font-size:16px}
+  .modal-body{padding:14px 16px}
+  .modal-footer{padding:10px 16px;gap:8px}
+  .modal-footer button{min-height:42px;padding:10px 16px;font-size:14px}
+  .modal-overlay{align-items:flex-end;animation:fadeIn .2s ease}
+  .modal-overlay.show .modal{animation:slideUp .25s ease}
+  @keyframes fadeIn{from{opacity:0}to{opacity:1}}
+  @keyframes slideUp{from{transform:translateY(100%)}to{transform:translateY(0)}}
+
+  /* ===== Toast adjustment ===== */
+  #toast{bottom:16px}
+
+  /* ===== 导航项触控友好 ===== */
+  .nav-item{padding:12px 12px;min-height:46px}
+}
+.protag-card.active{border:2px solid var(--primary);background:var(--primary-light)}
+.wb-entry-card .entry-actions{margin-top:4px;display:flex;gap:4px}
+.wb-entry-card .entry-preview{font-size:13px;color:var(--text-secondary);max-height:40px;overflow:hidden;word-break:break-word;overflow-wrap:break-word}
+.wb-entry-card.collapsed .entry-body{display:none}
+.wb-entry-card .toggle-btn{cursor:pointer;font-size:10px;color:var(--text-muted);padding:2px 4px;user-select:none;margin-left:auto}
+.wb-entry-card .toggle-btn:hover{color:var(--text)}
+.dialogue{color:#d97706}
+
+/* ===== 拖拽排序 ===== */
+.drag-handle{display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;flex-shrink:0;cursor:grab;color:var(--text-muted);font-size:15px;line-height:1;user-select:none;-webkit-user-select:none;border-radius:var(--radius-sm)}
+.drag-handle:active{cursor:grabbing;color:var(--text)}
+.drag-handle:hover{color:var(--text);background:var(--bg-tertiary)}
+.is-dragging{opacity:.45;transform:scale(.99)}
+.sortable-drag-layer{position:fixed;z-index:99999;pointer-events:none;box-shadow:0 6px 18px rgba(0,0,0,.25);opacity:.95;width:calc(100% - 40px);max-width:480px;background:var(--bg-secondary);border:1px solid var(--border);border-radius:var(--radius-sm)}
+.drop-target{position:relative}
+.drop-target::before{content:"";position:absolute;left:0;right:0;top:-2px;height:3px;background:var(--accent,#f59e0b);border-radius:2px}
+.edge-pager{position:fixed;top:0;bottom:0;width:48px;z-index:99998;display:flex;align-items:center;justify-content:center;font-size:22px;color:#fff;background:rgba(0,0,0,.18);opacity:0;pointer-events:none;transition:opacity .15s}
+.edge-pager.active{opacity:1}
+.edge-pager-left{left:0}
+.edge-pager-right{right:0}
+
+/* ===== 数据库全屏页 ===== */
+.db-chip{flex-shrink:0;padding:6px 12px;border-radius:16px;border:1px solid var(--border);background:var(--bg-tertiary);font-size:13px;cursor:pointer;white-space:nowrap}
+.db-chip.active{background:var(--accent,#f59e0b);color:#fff;border-color:var(--accent,#f59e0b)}
+/* —— 数据库页换装：顶部表名 chips + 记录行首字方块 —— */
+.db-chip{flex:none;display:inline-flex;align-items:center;gap:5px;padding:6px 12px;border-radius:999px;background:var(--bg-tertiary);color:var(--text-muted);font-size:12.5px;font-weight:600;cursor:pointer;white-space:nowrap;border:1px solid transparent;transition:all var(--transition);user-select:none;-webkit-user-select:none}
+.db-chip.active{background:var(--primary-light);color:var(--primary);border-color:var(--primary)}
+.db-chip .db-chip-n{font-style:normal;font-size:10px;font-weight:700;background:var(--bg-secondary);border:1px solid var(--border);border-radius:999px;padding:0 6px;line-height:16px;color:var(--text-muted)}
+.db-chip.active .db-chip-n{border-color:var(--primary);color:var(--primary)}
+#dbTableBar::-webkit-scrollbar{display:none}
+.db-rr-initial{width:44px;height:44px;border-radius:11px;background:var(--bg-tertiary);border:1px solid var(--border);display:flex;align-items:center;justify-content:center;font-size:18px;font-weight:800;color:var(--primary);flex-shrink:0}
+/* —— 剧情摘要：时间线卡片 —— */
+.db-plot-sec{display:flex;align-items:center;gap:8px;font-size:13px;font-weight:700;color:var(--text);margin:10px 0 7px}
+.db-plot-sec::after{content:'';flex:1;height:1px;background:var(--border)}
+.db-plot-item{display:flex;gap:9px;align-items:flex-start;padding:8px 11px;border:1px solid var(--border);border-radius:11px;background:var(--bg);margin-bottom:6px}
+.db-plot-date{flex:none;font-size:10.5px;font-weight:700;color:var(--primary);background:var(--primary-light);border:1px solid var(--primary);border-radius:8px;padding:2px 8px;margin-top:2px;max-width:96px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.db-plot-text{flex:1;min-width:0;font-size:12.5px;line-height:1.65;color:var(--text-secondary);word-break:break-word}
+.db-empty{font-size:13px;color:var(--text-muted);text-align:center;padding:24px}
+.db-nav-item.active{background:var(--bg-tertiary);border-left-color:var(--accent,#f59e0b)}
+.db-nav-item.active .db-nav-label{color:var(--text);font-weight:600}
+.db-record-row{padding:12px 12px;border:1px solid var(--border);border-radius:12px;background:var(--bg-secondary,#fff);margin-bottom:8px;cursor:pointer;transition:all .12s}
+.db-record-row:hover{border-color:var(--accent,#f59e0b)}
+.db-record-row .db-rr-head{display:flex;align-items:center;gap:10px;min-height:44px}
+.db-record-row .db-rr-avatar{width:44px;height:44px;border-radius:10px;object-fit:cover;border:1px solid var(--border);cursor:zoom-in;background:var(--bg-tertiary);flex-shrink:0}
+.db-record-row .db-rr-avatar-empty{width:44px;height:44px;border-radius:10px;background:var(--bg-tertiary);display:flex;align-items:center;justify-content:center;font-size:22px;flex-shrink:0}
+.db-record-row .db-rr-pk{font-size:15px;font-weight:600;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;align-self:center;line-height:1.4}
+.db-record-row .db-rr-preview{font-size:11px;color:var(--text-muted);margin-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.db-record-detail{padding-top:8px;margin-top:8px;border-top:1px dashed var(--border);display:none}
+.db-record-row.open .db-record-detail{display:block}
+.db-field-row{display:flex;gap:6px;padding:3px 0;font-size:12px;align-items:flex-start}
+.db-field-row .db-field-name{flex-shrink:0;color:var(--text-muted);font-size:11px;background:var(--bg-tertiary);padding:1px 6px;border-radius:4px;margin-top:1px}
+.db-field-row .db-field-val{flex:1;color:var(--text-secondary);word-break:break-word;white-space:pre-wrap}
+.db-rr-actions{display:flex;gap:4px;margin-top:8px}
+
+/* ===== 头像（世界书角色 & 数据库角色档案）===== */
+.db-avatar{width:64px;height:64px;border-radius:10px;object-fit:cover;border:1px solid var(--border);cursor:zoom-in;background:var(--bg-tertiary)}
+.db-avatar-empty{width:64px;height:64px;border-radius:10px;background:var(--bg-tertiary);display:flex;align-items:center;justify-content:center;font-size:30px;cursor:default}
+.wb-avatar{width:52px;height:52px;border-radius:9px;object-fit:cover;border:1px solid var(--border);cursor:zoom-in;background:var(--bg-tertiary)}
+.wb-avatar-empty{width:52px;height:52px;border-radius:9px;background:var(--bg-tertiary);display:flex;align-items:center;justify-content:center;font-size:24px}
+.img-viewer{position:fixed;inset:0;z-index:3000;background:rgba(0,0,0,.88);display:none;align-items:center;justify-content:center;cursor:zoom-out}
+.img-viewer img{max-width:92vw;max-height:90vh;border-radius:8px}
+
+/* ===== 正文字体 ===== */
+@font-face{font-family:'Noto Serif SC';src:url('assets/fonts/NotoSerifSC.woff2') format('woff2');font-weight:400;font-display:swap}
+#font-dropdown.open{display:block}
+#fontDropdownList .ch-dropdown-item{display:flex;align-items:center;justify-content:space-between;padding:9px 14px;font-size:14px;cursor:pointer;color:var(--text);gap:10px}
+#fontDropdownList .ch-dropdown-item:hover{background:var(--bg-tertiary)}
+#fontDropdownList .ch-dropdown-item.active{background:var(--primary-light);color:var(--primary);font-weight:600}
+#theme-dropdown.open{display:block}
+#themeDropdownList .ch-dropdown-item{display:flex;align-items:center;justify-content:space-between;padding:9px 14px;font-size:14px;cursor:pointer;color:var(--text);gap:10px}
+#themeDropdownList .ch-dropdown-item:hover{background:var(--bg-tertiary)}
+#themeDropdownList .ch-dropdown-item.active{background:var(--primary-light);color:var(--primary);font-weight:600}
+#size-dropdown.open{display:block}
+#sizeDropdownList .ch-dropdown-item{display:flex;align-items:center;justify-content:space-between;padding:9px 14px;font-size:14px;cursor:pointer;color:var(--text);gap:10px}
+#sizeDropdownList .ch-dropdown-item:hover{background:var(--bg-tertiary)}
+#sizeDropdownList .ch-dropdown-item.active{background:var(--primary-light);color:var(--primary);font-weight:600}
+/* ===== 管理（仅管理员模式可见：侧边栏入口与面板 tab 的显隐由 AdminMode/CommunityChat 控制） ===== */
+#tab-admin.active{display:flex;flex-direction:column;height:100%;min-height:0}
+#adminHeader{flex:none;display:flex;align-items:center;gap:8px;padding:8px 12px;border-bottom:1px solid var(--border);background:var(--bg-secondary)}
+#adminHeader #admTitle{font-weight:600}
+#adminHeader #admStatsUpdated{font-size:11px;color:var(--text-muted)}
+#adminHeader button{margin-left:auto}
+#adminBody{flex:1;overflow-y:auto;padding:12px}
+/* ===== 社区（世界书 + 预设） ===== */
+#tab-community.active{display:flex;flex-direction:column;height:100%;min-height:0}
+/* 顶栏：搜索 + 用户图标 */
+#communityHeader{flex:none;display:flex;align-items:center;gap:8px;padding:8px 12px;border-bottom:1px solid var(--border);background:var(--bg-secondary);position:relative}
+#commTitle{flex:1;font-size:16px;font-weight:700;color:var(--text);letter-spacing:.5px;padding-left:4px}
+#commUserBtn{width:34px;height:34px;border-radius:50%;border:1px solid var(--border);background:var(--bg-tertiary);cursor:pointer;font-size:16px;color:var(--text-secondary);flex-shrink:0;transition:all var(--transition);display:flex;align-items:center;justify-content:center}
+#commUserBtn:hover{border-color:var(--primary);color:var(--primary);background:var(--primary-light)}
+#commUserBtn.logged-in{border-color:var(--primary);color:var(--primary);background:var(--primary-light)}
+/* 用户下拉面板 */
+#commUserPanel{position:absolute;top:calc(100% + 6px);right:12px;width:270px;max-width:88vw;background:var(--bg-secondary);border:1px solid var(--border);border-radius:14px;box-shadow:var(--shadow-lg);z-index:950;display:none;flex-direction:column;overflow:hidden;max-height:65vh}
+#commUserPanel.show{display:flex}
+.cup-actions .small{font-size:12px}
+.cup-item.danger{color:var(--accent)}
+.cup-item.danger:hover{background:var(--primary-light)}
+.cup-wb-item{padding:8px 16px;display:flex;align-items:center;gap:10px;cursor:pointer;transition:background var(--transition)}
+.cup-wb-item:hover{background:var(--bg-tertiary)}
+.cup-wb-thumb{width:40px;height:40px;border-radius:8px;overflow:hidden;background:var(--bg-tertiary);flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:16px;color:var(--text-muted)}
+.cup-wb-thumb img{width:100%;height:100%;object-fit:cover}
+.cup-wb-info{flex:1;min-width:0}
+.cup-wb-title{font-size:13px;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cup-wb-meta{font-size:11px;color:var(--text-muted);margin-top:1px}
+.cup-empty{padding:14px 16px;font-size:12px;color:var(--text-muted);text-align:center}
+.cup-badge{display:inline-block;font-size:10px;line-height:15px;padding:0 5px;border-radius:7px;margin-left:5px;vertical-align:middle;font-weight:600}
+.cup-badge.pending{background:rgba(255,176,32,.18);color:#c8860d}
+.cup-badge.rejected{background:rgba(217,83,79,.16);color:#d9534f}
+/* 二级 Tab 条 */
+.comm-tabs{flex:none;display:flex;border-bottom:1px solid var(--border);background:var(--bg-secondary)}
+.comm-tab{flex:1;padding:10px 0;text-align:center;cursor:pointer;font-size:14px;color:var(--text-muted);border-bottom:2px solid transparent;transition:all var(--transition);user-select:none}
+.comm-tab.active{color:var(--primary);font-weight:600;border-bottom-color:var(--primary)}
+/* 社区主内容区（二级 Tab 的视图容器） */
+#communityContent{flex:1;display:flex;flex-direction:column;min-height:0;position:relative}
+.comm-view{display:none;flex-direction:column;min-height:0;height:100%}
+.comm-view.active{display:flex}
+/* 世界书 */
+#communityWorldbook{flex:1;display:flex;flex-direction:column;min-height:0}
+#wbToolbar{flex:none;display:flex;gap:8px;padding:8px 12px;align-items:center;border-bottom:1px solid var(--border)}
+#wbSearch{flex:1;padding:7px 10px;border:1px solid var(--border);border-radius:8px;font-size:13px;background:var(--bg-secondary);color:var(--text)}
+#wbCats{flex:none;display:flex;gap:6px;padding:8px 12px;overflow-x:auto;border-bottom:1px solid var(--border)}
+.wb-cat{padding:4px 12px;border-radius:20px;font-size:12px;cursor:pointer;background:var(--bg-tertiary);color:var(--text-muted);white-space:nowrap;border:1px solid transparent;transition:all var(--transition)}
+.wb-cat.active{background:var(--primary-light);color:var(--primary);font-weight:600;border-color:var(--primary)}
+#wbList{flex:1;overflow-y:auto;padding:10px;display:grid;grid-template-columns:repeat(auto-fill,minmax(min(160px,100%),1fr));gap:12px;align-content:start}
+/* 社区卡片：shelf-card 自带 nowrap 书名，必须允许收缩（否则 1fr 的隐式 min-width:auto 会被书名撑开列宽 → 横向溢出/左右列不等宽） */
+#wbList>.shelf-card,#predList>.shelf-card{min-width:0}
+.wb-card{background:var(--bg-secondary);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;cursor:pointer;box-shadow:var(--shadow);transition:transform var(--transition),box-shadow var(--transition);display:flex;flex-direction:column}
+.wb-card:hover{transform:translateY(-2px);box-shadow:var(--shadow-lg)}
+.wb-cover{aspect-ratio:2/3;display:flex;align-items:center;justify-content:center;font-size:46px;font-weight:700;color:#fff;overflow:hidden}
+.wb-body{padding:6px 10px;display:flex;flex-direction:column;justify-content:center;gap:3px;aspect-ratio:8/3;background:var(--bg-secondary)}
+.wb-title{font-size:13px;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.wb-meta{font-size:11px;color:var(--text-muted);display:flex;justify-content:space-between;align-items:center}
+.wb-cover-palette{background:linear-gradient(135deg,#667eea,#764ba2)}
+.wb-cover-palette1{background:linear-gradient(135deg,#f093fb,#f5576c)}
+.wb-cover-palette2{background:linear-gradient(135deg,#4facfe,#00f2fe)}
+.wb-cover-palette3{background:linear-gradient(135deg,#43e97b,#38f9d7)}
+.wb-cover-palette4{background:linear-gradient(135deg,#fa709a,#fee140)}
+.wb-cover-palette5{background:linear-gradient(135deg,#30cfd0,#330867)}
+.wb-cover-palette6{background:linear-gradient(135deg,#a8edea,#fed6e3)}
+/* 分页条 */
+.wb-pager{flex:none;display:flex;align-items:center;justify-content:center;gap:6px;padding:8px 10px}
+.wb-pg-btn{min-width:30px;height:30px;border:1px solid var(--border);background:var(--bg-secondary);border-radius:6px;color:var(--text-secondary);font-size:15px;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0 6px;transition:all var(--transition)}
+.wb-pg-btn:hover:not(:disabled){background:var(--primary-light);color:var(--primary)}
+.wb-pg-btn:disabled{opacity:.4;cursor:default}
+.wb-pg-num{width:52px;height:30px;text-align:center;border:1px solid var(--border);border-radius:6px;font-size:13px;background:var(--bg-secondary);color:var(--text)}
+.wb-pg-info{font-size:11px;color:var(--text-muted);margin:0 2px}
+/* 封面选择区（居中，正方形小区域） */
+.wb-cover-pick{width:120px;height:120px;border:2px dashed var(--border);border-radius:12px;display:flex;align-items:center;justify-content:center;cursor:pointer;transition:all var(--transition);overflow:hidden;background:var(--bg-tertiary);margin:0 auto}
+.wb-cover-pick:hover{border-color:var(--primary);background:var(--primary-light)}
+.wb-cover-pick span{font-size:14px;color:var(--text-muted);pointer-events:none}
+#communityPreset{flex:1;display:flex;flex-direction:column;min-height:0}
+/* ========== 「我的」卡片式设置页 ========== */
+.me-page{max-width:640px;margin:0 auto;padding:4px 2px 28px}
+.me-hero{padding:6px 6px 18px}
+.me-hero h1{margin:0;font-size:30px;font-weight:800;letter-spacing:1px;color:var(--text)}
+.me-hero-sub{font-size:11px;color:var(--text-muted);margin-top:3px;letter-spacing:.5px}
+.set-group{background:var(--bg-secondary);border:1px solid var(--border);border-radius:16px;margin-bottom:16px;overflow:hidden;box-shadow:var(--shadow);opacity:0;transform:translateY(12px);animation:setGroupIn .5s ease forwards}
+.set-group:nth-of-type(1){animation-delay:.02s}
+.set-group:nth-of-type(2){animation-delay:.09s}
+.set-group:nth-of-type(3){animation-delay:.16s}
+@keyframes setGroupIn{to{opacity:1;transform:none}}
+.set-group-head{display:flex;align-items:center;gap:8px;padding:13px 14px 11px}
+.set-badge{width:20px;height:20px;border-radius:6px;background:var(--primary-light);color:var(--primary);font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center;border:1px solid var(--primary);flex:none}
+.set-group-name{font-size:13px;font-weight:700;color:var(--text);white-space:nowrap}
+.set-rule{flex:1;height:1px;background:var(--border)}
+.set-row{display:flex;align-items:center;gap:12px;padding:10px 14px;min-height:56px;cursor:pointer;transition:background var(--transition),transform .12s ease;border-top:1px solid var(--border);background:transparent}
+.set-row:hover{background:var(--bg-tertiary)}
+.set-row:active{transform:scale(.985)}
+.set-row-static{cursor:default}
+.set-row-static:active{transform:none}
+.set-icon{width:38px;height:38px;border-radius:11px;background:var(--bg-tertiary);border:1px solid var(--border);display:flex;align-items:center;justify-content:center;font-size:16px;flex:none;color:var(--primary)}
+.set-main{flex:1;min-width:0}
+.set-title{font-size:14px;font-weight:600;color:var(--text)}
+.set-sub{font-size:11px;color:var(--text-muted);margin-top:2px;line-height:1.5}
+.set-value{font-size:12px;color:var(--text-muted);white-space:nowrap;max-width:110px;overflow:hidden;text-overflow:ellipsis}
+.set-arrow{color:var(--text-muted);font-size:16px;line-height:1;flex:none}
+.set-check{width:20px;height:20px;border-radius:50%;border:2px solid var(--border);flex:none;position:relative;transition:all var(--transition)}
+.set-row-opt.active .set-check{border-color:var(--primary);background:var(--primary)}
+.set-row-opt.active .set-check::after{content:'';position:absolute;left:5.5px;top:2.5px;width:4px;height:9px;border:solid #fff;border-width:0 2px 2px 0;transform:rotate(45deg)}
+.font-preview{font-weight:700;font-size:17px}
+/* 主题缩略图横滑 */
+.theme-strip{display:flex;gap:10px;padding:2px 14px 14px;overflow-x:auto;scrollbar-width:none}
+.theme-strip::-webkit-scrollbar{display:none}
+.theme-thumb{flex:none;width:98px;cursor:pointer;border-radius:14px;padding:4px;border:2px solid var(--border);background:var(--bg-tertiary);position:relative;transition:border-color var(--transition),box-shadow var(--transition),transform .15s ease}
+.theme-thumb:hover{transform:translateY(-2px)}
+.theme-thumb:active{transform:scale(.96)}
+.theme-thumb.active{border-color:var(--primary);box-shadow:0 0 0 3px var(--primary-light)}
+.tt-win{height:64px;border-radius:9px;overflow:hidden;display:flex;flex-direction:column;gap:4px;padding:6px}
+.tt-bar{height:9px;border-radius:3px;opacity:.9}
+.tt-cols{display:flex;gap:4px;flex:1}
+.tt-side{width:27%;border-radius:4px;opacity:.75}
+.tt-body{flex:1;border-radius:4px;display:flex;flex-direction:column;gap:4px;padding:5px;opacity:.95}
+.tt-line{height:4px;border-radius:2px;opacity:.5}
+.tt-name{text-align:center;font-size:11px;color:var(--text-muted);padding:6px 0 3px}
+.theme-thumb.active .tt-name{color:var(--primary);font-weight:700}
+.tt-tick{position:absolute;top:-7px;right:-7px;width:22px;height:22px;border-radius:50%;background:var(--primary);color:#fff;font-size:12px;display:none;align-items:center;justify-content:center;border:2px solid var(--bg-secondary);transform:scale(.3);opacity:0}
+.theme-thumb.active .tt-tick{display:flex;animation:tickIn .3s cubic-bezier(.34,1.56,.64,1) forwards}
+@keyframes tickIn{to{transform:scale(1);opacity:1}}
+/* 字号分段控件 */
+.seg-control{position:relative;display:flex;background:var(--bg-tertiary);border:1px solid var(--border);border-radius:999px;padding:3px;flex:none}
+.seg-thumb{position:absolute;top:3px;bottom:3px;border-radius:999px;background:var(--primary);transition:left .25s cubic-bezier(.4,0,.2,1),width .25s cubic-bezier(.4,0,.2,1)}
+.seg-item{position:relative;z-index:1;padding:5px 11px;font-size:12px;color:var(--text-muted);cursor:pointer;white-space:nowrap;font-weight:600;transition:color .25s;-webkit-tap-highlight-color:transparent}
+.seg-item.active{color:#fff}
+/* 实时预览块 */
+.preview-block{margin:2px 14px 14px;border:1px dashed var(--border);border-radius:12px;padding:12px 14px;background:var(--bg-tertiary)}
+.preview-text{line-height:1.9;color:var(--text);transition:font-size .2s ease,font-family .2s ease}
+.preview-meta{font-size:11px;color:var(--text-muted);margin-top:8px;text-align:right}
+/* 关于组 */
+.seg-cta{padding:5px 12px;border-radius:999px;font-size:12px;font-weight:600;background:var(--primary-light);color:var(--primary);border:1px solid var(--primary);flex:none}
+.seg-cta:hover{filter:brightness(1.05)}
+.seg-cta:active{transform:scale(.94)}
+.me-foot{text-align:center;font-size:11px;color:var(--text-muted);padding:6px 0 10px;letter-spacing:1px}
+/* —— 「我的」二级子页（预设/正则/API）—— */
+#tab-advanced .subtab-nav{display:none!important}
+.subtab{animation:subIn .28s ease}
+@keyframes subIn{from{opacity:0;transform:translateX(24px)}to{opacity:1;transform:none}}
+.me-sub-head{display:flex;align-items:center;gap:12px;padding:2px 2px 14px;margin-bottom:4px}
+.me-back{width:38px;height:38px;border-radius:12px;background:var(--bg-secondary);border:1px solid var(--border);color:var(--text);font-size:22px;line-height:1;display:flex;align-items:center;justify-content:center;padding:0;flex:none;transition:all var(--transition)}
+.me-back:hover{background:var(--bg-tertiary)}
+.me-back:active{transform:scale(.92)}
+.me-sub-tt{min-width:0}
+.me-sub-title{font-size:19px;font-weight:700;color:var(--text)}
+.me-sub-desc{font-size:11px;color:var(--text-muted);margin-top:1px}
+/* 子页表单换装：输入/下拉/文本域 */
+#tab-advanced .form-group{margin-bottom:12px}
+#tab-advanced .form-group label{font-size:12px;font-weight:600;color:var(--text-secondary);margin-bottom:5px;display:block}
+#tab-advanced input[type="text"],#tab-advanced input[type="password"],#tab-advanced input[type="number"],#tab-advanced select,#tab-advanced textarea{width:100%;background:var(--bg-tertiary);border:1px solid var(--border);border-radius:12px;padding:10px 12px;font-size:13px;color:var(--text);transition:border-color var(--transition),background var(--transition)}
+#tab-advanced input:focus,#tab-advanced select:focus,#tab-advanced textarea:focus{outline:none;border-color:var(--primary);background:var(--bg-secondary)}
+#tab-advanced hr{border:none;border-top:1px solid var(--border);margin:14px 0}
+/* 复选框 → 胶囊开关 */
+#tab-advanced input[type="checkbox"]{-webkit-appearance:none;appearance:none;width:44px;height:26px;border-radius:999px;background:var(--bg-tertiary);border:1px solid var(--border);position:relative;cursor:pointer;transition:background var(--transition),border-color var(--transition);flex:none;margin:0}
+#tab-advanced input[type="checkbox"]::after{content:'';position:absolute;left:2px;top:2px;width:20px;height:20px;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.3);transition:left .22s cubic-bezier(.4,0,.2,1)}
+#tab-advanced input[type="checkbox"]:checked{background:var(--primary);border-color:var(--primary)}
+#tab-advanced input[type="checkbox"]:checked::after{left:20px}
+/* 预设子标签：开关卡片化 */
+#subtab-presets label{border-radius:12px!important;padding:9px 10px!important;font-size:13px!important;background:var(--bg-tertiary);border:1px solid var(--border)!important;gap:8px}
+#subtab-presets label:hover{border-color:var(--primary)!important}
+#subtab-presets label span{color:var(--text)}
+/* ON/OFF 徽章隐藏（开关本身已表达状态） */
+#subtab-presets label span:last-child{display:none}
+/* 正则规则列表 */
+#regexRulesList{max-height:none!important;display:flex;flex-direction:column;gap:8px}
+#predToolbar{flex:none;display:flex;gap:8px;padding:8px 12px;align-items:center;border-bottom:1px solid var(--border)}
+#predSearch{flex:1;padding:7px 10px;border:1px solid var(--border);border-radius:8px;font-size:13px;background:var(--bg-secondary);color:var(--text)}
+#predList{flex:1;overflow-y:auto;padding:10px;display:grid;grid-template-columns:repeat(auto-fill,minmax(min(160px,100%),1fr));gap:12px;align-content:start}
+#communityPreset .pp-icon{font-size:48px;opacity:.5}
+#communityPreset .pp-btn{opacity:.55;cursor:not-allowed}
+
+/* ========== 全模块统一组件层（对齐「我的」设计语言） ========== */
+/* —— 页头：图标方块 + 标题 + 计数 + 操作区 —— */
+.pg-head{display:flex;align-items:center;gap:10px;padding:2px 2px 12px;flex-wrap:wrap}
+.pg-head .set-icon{width:36px;height:36px;border-radius:11px;font-size:16px}
+.pg-title{font-size:19px;font-weight:800;letter-spacing:.5px;color:var(--text);line-height:1.2}
+.pg-count{font-size:11px;font-weight:700;color:var(--primary);background:var(--primary-light);padding:2px 9px;border-radius:999px;flex:none}
+.pg-actions{margin-left:auto;display:flex;gap:6px;align-items:center;flex:none}
+/* —— 工具行 / 搜索 —— */
+.tool-bar{display:flex;gap:6px;align-items:center;margin-bottom:10px}
+.tool-bar select{flex:1;min-width:0;background:var(--bg-tertiary);border:1px solid var(--border);border-radius:12px;padding:9px 12px;font-size:13px;color:var(--text);transition:border-color var(--transition),background var(--transition)}
+.tool-bar select:focus{outline:none;border-color:var(--primary);background:var(--bg-secondary)}
+.pg-search{flex:1;min-width:0;background:var(--bg-tertiary);border:1px solid var(--border);border-radius:12px;padding:9px 14px;font-size:13px;color:var(--text);transition:all var(--transition)}
+.pg-search:focus{outline:none;border-color:var(--primary);background:var(--bg-secondary)}
+.pg-search::placeholder{color:var(--text-muted)}
+.pg-filtered{font-size:11px;color:var(--text-muted);flex:none;min-width:44px;text-align:right}
+/* —— 小方操作钮 —— */
+.tool-btn{width:38px;height:38px;min-width:38px;border-radius:12px;background:var(--bg-tertiary);border:1px solid var(--border);color:var(--text-secondary);font-size:15px;display:flex;align-items:center;justify-content:center;padding:0;flex:none;transition:all var(--transition);line-height:1}
+.tool-btn:hover{color:var(--primary);border-color:var(--primary);background:var(--primary-light)}
+.tool-btn:active{transform:scale(.92)}
+.tool-btn.danger{color:var(--accent)}
+.tool-btn.danger:hover{color:#fff;background:var(--accent);border-color:var(--accent)}
+/* —— 胶囊幽灵按钮 —— */
+.ghost-btn{padding:7px 14px;border-radius:999px;font-size:12px;font-weight:600;background:var(--bg-tertiary);border:1px solid var(--border);color:var(--text-secondary);transition:all var(--transition);flex:none}
+.ghost-btn:hover{color:var(--primary);border-color:var(--primary);background:var(--primary-light)}
+.ghost-btn:active{transform:scale(.95)}
+.ghost-btn.danger{color:var(--accent)}
+.ghost-btn.danger:hover{color:#fff;background:var(--accent);border-color:var(--accent)}
+/* —— 主操作大按钮 —— */
+.cta-full{width:100%;padding:11px 0;border-radius:14px;font-size:13.5px;font-weight:700;background:var(--primary);color:#fff;box-shadow:0 2px 8px rgba(59,111,224,.28);margin-bottom:12px;letter-spacing:2px}
+.cta-full:hover{background:var(--primary-hover)}
+.cta-full:active{transform:scale(.985)}
+/* —— 类型彩色 chips —— */
+.chip{display:inline-flex;align-items:center;gap:3px;padding:2px 8px;border-radius:999px;font-size:10.5px;font-weight:700;line-height:1.6;white-space:nowrap;flex:none}
+.chip-default{background:var(--bg-tertiary);color:var(--text-muted)}
+.chip-primary{background:var(--primary-light);color:var(--primary)}
+.chip-blue{background:#dbeafe;color:#1d4ed8}
+.chip-red{background:#fee2e2;color:#b91c1c}
+.chip-purple{background:#f3e8ff;color:#7e22ce}
+.chip-gray{background:var(--bg-tertiary);color:var(--text-muted)}
+/* —— 分页 —— */
+.pg-pager{display:flex;align-items:center;justify-content:center;gap:6px;padding:10px 0}
+.pg-pager button{min-width:34px;height:34px;min-height:34px;padding:0 9px;border-radius:11px;border:1px solid var(--border);background:var(--bg-secondary);color:var(--text-secondary);font-size:14px;display:flex;align-items:center;justify-content:center;transition:all var(--transition)}
+.pg-pager button:hover:not(:disabled){background:var(--primary-light);color:var(--primary);border-color:var(--primary)}
+.pg-pager button:disabled{opacity:.35;cursor:default}
+.pg-pager .pg-info{font-size:12px;color:var(--text-muted);min-width:56px;text-align:center}
+/* —— 空状态 —— */
+.empty-box{display:flex;flex-direction:column;align-items:center;justify-content:center;padding:36px 16px;gap:3px;text-align:center}
+.empty-box .empty-ico{width:56px;height:56px;border-radius:18px;background:var(--bg-tertiary);border:1px solid var(--border);display:flex;align-items:center;justify-content:center;font-size:24px;margin-bottom:6px}
+.empty-box .empty-tt{font-size:13px;font-weight:700;color:var(--text-secondary)}
+.empty-box .empty-sub{font-size:11px;color:var(--text-muted);line-height:1.7}
+/* —— 小节标题 —— */
+.sec-title{display:flex;align-items:center;gap:8px;font-size:12px;font-weight:700;color:var(--text-secondary);margin:2px 0 10px;letter-spacing:.5px}
+.sec-title::after{content:'';flex:1;height:1px;background:var(--border)}
+/* —— 世界书条目卡 —— */
+.entry-card{background:var(--bg-secondary);border:1px solid var(--border);border-radius:16px;margin-bottom:10px;box-shadow:var(--shadow);overflow:hidden;transition:border-color var(--transition),box-shadow var(--transition)}
+.entry-card.is-opening{border-left:3px solid #fbbf24}
+.entry-card.open{border-color:var(--primary);box-shadow:0 0 0 3px var(--primary-light),var(--shadow)}
+.entry-card .ec-head{display:flex;align-items:center;gap:7px;padding:10px 12px;cursor:pointer;user-select:none;-webkit-user-select:none}
+.entry-card .ec-name{font-size:13.5px;font-weight:600;color:var(--text);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* 右侧「查看」：一点即看全文（替代原来的展开箭头 ▶；展开/收起改点整行，展开态由操作行体现） */
+.entry-card .ec-view{flex:none;font-size:11px;padding:4px 10px;border-radius:8px;border:1px solid var(--border);background:var(--bg);color:var(--text-secondary);cursor:pointer;line-height:1.4}
+.entry-card .ec-view:hover{border-color:var(--primary);color:var(--primary)}
+.entry-card.open .ec-view{border-color:var(--primary);color:var(--primary)}
+.entry-card .ec-preview{font-size:12px;color:var(--text-muted);line-height:1.6;padding:0 12px 11px 47px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;word-break:break-word}
+.entry-card .ec-body{display:none;padding:4px 12px 12px;border-top:1px dashed var(--border)}
+.entry-card.open .ec-body{display:block;animation:charExpand .25s ease}
+.entry-card .ec-avatar-row{display:flex;align-items:center;gap:10px;margin:8px 0}
+.entry-card .ec-kw-row{display:flex;align-items:center;gap:6px;margin:8px 0 2px;font-size:11px;color:var(--text-muted)}
+.entry-card .ec-kw-row input{flex:1;font-size:11.5px;padding:5px 10px;border:1px solid var(--border);border-radius:9px;background:var(--bg-tertiary);color:var(--text)}
+.entry-card .ec-kw-row input:focus{outline:none;border-color:var(--primary);background:var(--bg-secondary)}
+.entry-card .ec-actions{display:flex;gap:6px;margin-top:10px;flex-wrap:wrap}
+/* 小号拨动开关（行内常驻等） */
+.toggle.mini{width:34px;height:19px}
+.toggle.mini .slider{border-radius:19px}
+.toggle.mini .slider::before{width:13px;height:13px}
+.toggle.mini input:checked+.slider::before{transform:translateX(15px)}
+/* —— 通用列表卡 —— */
+.pg-card{background:var(--bg-secondary);border:1px solid var(--border);border-radius:16px;box-shadow:var(--shadow);overflow:hidden;margin-bottom:10px;transition:border-color var(--transition),box-shadow var(--transition)}
+.pg-card.active{border-color:var(--primary);box-shadow:0 0 0 3px var(--primary-light),var(--shadow)}
+/* 主角卡 */
+.pc-main{display:flex;gap:12px;padding:12px 14px 8px;align-items:flex-start}
+.pc-name-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;min-width:0}
+.pc-name{font-size:15px;font-weight:700;color:var(--text)}
+.pc-chips{display:flex;gap:5px;flex-wrap:wrap;margin-top:6px}
+.pc-preview{font-size:12px;color:var(--text-muted);margin-top:6px;line-height:1.6;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;word-break:break-word}
+.pc-actions{display:flex;gap:6px;padding:2px 14px 12px;align-items:center;flex-wrap:wrap}
+.mem-row .tool-btn{width:28px;height:28px;min-width:28px;border-radius:9px;font-size:12px}
+.set-group-count{margin-left:auto;font-size:11px;color:var(--text-muted);flex:none}
+/* —— 用量统计 —— */
+.stat-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:var(--border);border-radius:12px;overflow:hidden;margin:2px 12px 4px}
+.stat-cell{background:var(--bg-secondary);padding:11px 6px 9px;text-align:center;min-width:0}
+.stat-cell .st-label{font-size:10px;color:var(--text-muted);letter-spacing:.5px;white-space:nowrap}
+.stat-cell .st-value{font-size:16px;font-weight:800;color:var(--text);margin-top:3px;line-height:1.25;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.stat-cell .st-unit{font-size:10px;font-weight:500;color:var(--text-muted);margin-left:1px}
+.stat-cell.hl-primary .st-value{color:var(--primary)}
+.stat-cell.hl-accent .st-value{color:var(--accent)}
+.stat-foot{font-size:10.5px;color:var(--text-muted);padding:10px 14px 13px;line-height:1.7}
+.uh-card{background:var(--bg-secondary);border:1px solid var(--border);border-radius:14px;box-shadow:var(--shadow);margin-bottom:10px;overflow:hidden}
+.uh-head{display:flex;align-items:center;gap:8px;padding:9px 12px;border-bottom:1px solid var(--border)}
+.uh-head .uh-time{margin-left:auto;font-size:11px;color:var(--text-muted)}
+.uh-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:6px 8px;padding:9px 12px;font-size:11px;color:var(--text-muted)}
+.uh-grid b{color:var(--text);font-weight:700;margin-left:3px}
+.uh-foot{padding:0 12px 9px;font-size:10.5px;color:var(--text-muted)}
+/* —— 警示条 —— */
+.warn-strip{margin-top:10px;padding:10px 14px;border-radius:12px;background:#fef3c7;color:#b45309;font-size:12px;font-weight:600;line-height:1.5}
+/* —— 世界书书架 —— */
+.shelf-add-btn{width:38px;height:38px;min-width:38px;border-radius:14px;background:var(--primary);color:#fff;font-size:20px;font-weight:600;display:flex;align-items:center;justify-content:center;padding:0;box-shadow:0 2px 8px rgba(59,111,224,.28);transition:all var(--transition);line-height:1}
+.shelf-add-btn:hover{background:var(--primary-hover)}
+.shelf-add-btn:active{transform:scale(.92)}
+.shelf-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(180px,100%),1fr));gap:14px;padding-bottom:20px}
+/* —— 藏书票卡片：重纸纹 + 双线内框 + 红章 + 借阅栏 —— */
+.shelf-card{position:relative;min-width:0;cursor:pointer;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none;touch-action:manipulation;padding:10px 10px 0;border-radius:16px;border:1px solid rgba(120,100,60,.26);transition:transform .25s ease,box-shadow .25s ease;
+  background:
+    radial-gradient(ellipse at 16% 6%, rgba(186,152,80,.12), transparent 44%),
+    radial-gradient(ellipse at 88% 92%, rgba(160,128,66,.11), transparent 42%),
+    radial-gradient(ellipse at 70% 30%, rgba(186,152,80,.05), transparent 36%),
+    repeating-linear-gradient(0deg, rgba(122,96,50,.05) 0 1px, transparent 1px 3px),
+    repeating-linear-gradient(90deg, rgba(122,96,50,.04) 0 1px, transparent 1px 4px),
+    repeating-linear-gradient(48deg, rgba(122,96,50,.028) 0 1px, transparent 1px 6px),
+    radial-gradient(circle at 22% 35%, rgba(100,80,40,.06) .5px, transparent 1.6px),
+    radial-gradient(circle at 61% 18%, rgba(100,80,40,.05) .5px, transparent 1.6px),
+    radial-gradient(circle at 43% 72%, rgba(100,80,40,.055) .5px, transparent 1.6px),
+    radial-gradient(circle at 82% 55%, rgba(100,80,40,.05) .5px, transparent 1.6px),
+    linear-gradient(160deg,#fdf9ee,#f0e6cf);
+  box-shadow:0 14px 30px rgba(23,32,61,.34), 0 4px 10px rgba(23,32,61,.16), inset 0 0 26px rgba(150,118,58,.10)}
+/* 悬停/按压：轻微位移与缩放 */
+.shelf-card:hover{transform:translateY(-3px)}
+.shelf-card:active{transform:scale(.98)}
+.shelf-card.is-active{box-shadow:0 0 0 2.5px var(--primary), 0 14px 30px rgba(23,32,61,.34), 0 4px 10px rgba(23,32,61,.16), inset 0 0 26px rgba(150,118,58,.10)}
+.shelf-card.pressed{outline:2px solid var(--primary);transform:scale(.98)}
+/* 藏书票经典双线内框 */
+.shelf-card::before{content:'';position:absolute;inset:5px;border:1px solid rgba(120,95,50,.32);border-radius:11px;pointer-events:none;z-index:4;box-shadow:inset 0 0 0 3px rgba(255,252,244,.5)}
+.shelf-cover{aspect-ratio:2/3;display:flex;align-items:center;justify-content:center;font-size:52px;font-weight:800;color:rgba(255,255,255,.92);text-shadow:0 2px 10px rgba(0,0,0,.25);position:relative;border-radius:11px;overflow:hidden;box-shadow:inset 0 0 0 1px rgba(90,70,35,.25), 0 3px 8px rgba(23,32,61,.22)}
+/* 封面图对指针事件透明：长按/点击一律落在卡片本身（否则按到图片不弹长按菜单） */
+.shelf-cover img{pointer-events:none;-webkit-user-drag:none;user-select:none;width:100%;height:100%;object-fit:cover;display:block}
+.shelf-cover .shelf-badge-cur{position:absolute;top:8px;left:8px;background:var(--primary);color:#fff;font-size:10px;font-weight:700;padding:2px 8px;border-radius:999px;box-shadow:0 2px 6px rgba(0,0,0,.3);z-index:4}
+.shelf-body{padding:9px 5px 12px;position:relative}
+/* 底纹水印「書」 */
+.shelf-body::after{content:'書';position:absolute;right:6px;bottom:2px;font-family:"Noto Serif SC",serif;font-size:46px;font-weight:800;color:rgba(120,95,50,.09);pointer-events:none;line-height:1}
+.shelf-name{font-family:"Noto Serif SC",serif;letter-spacing:1px;font-size:13.5px;font-weight:700;color:#4c3f24;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;position:relative;z-index:1}
+/* 借阅栏：编号/条目/入库 点线行 */
+.shelf-row{display:flex;justify-content:space-between;font-size:10.5px;color:#8a7a58;border-bottom:1px dotted rgba(120,100,60,.42);padding:3.5px 0;position:relative;z-index:1}
+.shelf-row b{color:#5c4f33;font-weight:600}
+/* —— 面板/书架过渡动画 —— */
+@keyframes fadeSlideIn{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+.panel-tab.active{animation:fadeSlideIn .26s cubic-bezier(.2,.7,.3,1)}
+@keyframes cardPop{from{opacity:0;transform:translateY(14px) scale(.96)}to{opacity:1;transform:none}}
+/* 书架卡片逐个浮入（stagger）；每次 renderWbShelf 重建网格时重播 */
+.anim-pop .shelf-card{animation:cardPop .34s cubic-bezier(.2,.7,.3,1) backwards}
+.anim-pop .shelf-card:nth-child(2){animation-delay:.04s}
+.anim-pop .shelf-card:nth-child(3){animation-delay:.08s}
+.anim-pop .shelf-card:nth-child(4){animation-delay:.12s}
+.anim-pop .shelf-card:nth-child(5){animation-delay:.16s}
+.anim-pop .shelf-card:nth-child(6){animation-delay:.2s}
+.anim-pop .shelf-card:nth-child(7){animation-delay:.24s}
+/* 书架 ↔ 条目列表切换：容器显示时淡入 */
+.anim-fade{animation:fadeSlideIn .26s ease}
+/* 暗色主题：纸卡保持米白，形成深墙贴票对比 */
+[data-theme="dark"] .shelf-card{background:
+    radial-gradient(ellipse at 16% 6%, rgba(186,152,80,.13), transparent 44%),
+    radial-gradient(ellipse at 88% 92%, rgba(160,128,66,.12), transparent 42%),
+    repeating-linear-gradient(0deg, rgba(122,96,50,.055) 0 1px, transparent 1px 3px),
+    repeating-linear-gradient(90deg, rgba(122,96,50,.045) 0 1px, transparent 1px 4px),
+    linear-gradient(160deg,#efe8d6,#e2d6bc)}
+[data-theme="newspaper"] .shelf-card{background:
+    radial-gradient(ellipse at 16% 6%, rgba(186,152,80,.10), transparent 44%),
+    repeating-linear-gradient(0deg, rgba(122,96,50,.05) 0 1px, transparent 1px 3px),
+    linear-gradient(160deg,#f8f3e4,#ece2c8)}
+/* —— 底部操作表（modal 内的列表按钮）—— */
+.as-list{display:flex;flex-direction:column;gap:6px;padding:6px}
+.as-btn{display:flex;align-items:center;gap:12px;width:100%;padding:13px 14px;border-radius:12px;background:var(--bg-tertiary);border:1px solid transparent;color:var(--text);font-size:14px;font-weight:600;text-align:left;transition:all var(--transition)}
+.as-btn .as-sub{font-size:11px;font-weight:400;color:var(--text-muted);margin-top:1px}
+.as-btn:hover{border-color:var(--primary);color:var(--primary)}
+.as-btn:active{transform:scale(.98)}
+.as-btn.danger{color:var(--accent)}
+.as-btn.danger:hover{border-color:var(--accent)}
+.as-cancel{margin-top:2px;width:100%;padding:12px;border-radius:12px;background:transparent;border:1px solid var(--border);color:var(--text-secondary);font-size:13px;font-weight:600}
+
+/* —— 弹窗表单标签统一 —— */
+.modal .form-group label{font-size:12px;font-weight:600;color:var(--text-secondary);margin-bottom:5px}
+/* —— 讨论工具栏换装 —— */
+.chat-toolbar{align-items:center;border-bottom:1px solid var(--border);background:var(--bg-secondary);padding:6px 10px}
+.chat-toolbar button{font-size:11.5px;padding:4px 12px;border-radius:999px;background:var(--bg-tertiary);border:1px solid var(--border);color:var(--text-secondary);min-height:0}
+.chat-toolbar button:hover{color:var(--primary);border-color:var(--primary)}
+.chat-toolbar select{width:auto;font-size:11px;padding:4px 8px;border-radius:999px;background:var(--bg-tertiary);border:1px solid var(--border);color:var(--text-secondary)}
+/* —— 写卡开关拨动化 —— */
+.cw-toggle{gap:6px;font-size:11.5px}
+.cw-toggle input,.cw-block-switch input{-webkit-appearance:none;appearance:none;width:34px;height:20px;border-radius:999px;background:var(--bg-tertiary);border:1px solid var(--border);position:relative;cursor:pointer;transition:background var(--transition),border-color var(--transition);margin:0;flex:none}
+.cw-toggle input::after,.cw-block-switch input::after{content:'';position:absolute;left:2px;top:2px;width:14px;height:14px;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.3);transition:left .22s cubic-bezier(.4,0,.2,1)}
+.cw-toggle input:checked,.cw-block-switch input:checked{background:var(--primary);border-color:var(--primary)}
+.cw-toggle input:checked::after,.cw-block-switch input:checked::after{left:16px}
+/* —— 社区用户钮登录态 —— */
+#commUserBtn.logged-in{background:var(--primary);color:#fff;border-color:var(--primary);font-weight:700}
+/* —— 移动端微调 —— */
+@media(max-width:768px){
+  .tool-btn{width:40px;height:40px;min-width:40px}
+  .pg-title{font-size:17px}
+  .stat-cell .st-value{font-size:14.5px}
+  .chat-toolbar button{min-height:30px}
+}
+
+
+</style>
+<link rel="stylesheet" href="assets/fonts/lxgw/lxgwwenkai-regular.css">
+</head>
+<body data-theme="light">
+
+<div id="app">
+  <header id="header">
+    <button id="hamburger-btn" class="icon-btn" aria-label="菜单" title="菜单">☰</button>
+    <div id="wb-title-wrap">
+      <button id="wbTitleBtn" title="切换世界书 / 小说" aria-label="切换世界书">
+        <span id="wbTitleText">未命名小说</span>
+        <svg id="wbTitleChevron" class="ic-16 chev" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
+      </button>
+      <div id="wbSwitchDropdown">
+        <div id="wbSwitchList"></div>
+        <button id="wbSwitchAdd" onclick="App.newBook()">+ 新建小说</button>
+      </div>
+    </div>
+    <div class="header-actions">
+      <button onclick="App.exportTXT()" title="导出TXT" class="small header-action-dt">导出TXT</button>
+      <button onclick="App.exportJSON()" title="导出JSON备份" class="small header-action-dt">备份</button>
+    </div>
+  </header>
+
+  <div id="main">
+    <aside id="sidebar">
+      <div id="sidebar-header">
+        <div class="app-logo">BQB <span>Hub</span></div>
+        <button id="sidebarCollapseBtn" title="收起侧边栏">‹</button>
+      </div>
+      <nav id="sidebar-nav">
+        <button class="nav-item active" data-view="writing" title="写作">
+          <svg class="nav-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"></path></svg>
+          <span class="nav-label">写作</span>
+        </button>
+        <button class="nav-item" data-view="plugins" title="插件">
+          <svg class="nav-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 4h2a1 1 0 011 1v1h4a1 1 0 011 1v4h1a1 1 0 011 1v2a1 1 0 01-1 1h-1v4a1 1 0 01-1 1h-4v1a1 1 0 01-1 1h-2a1 1 0 01-1-1v-1H6a1 1 0 01-1-1v-4H4a1 1 0 01-1-1v-2a1 1 0 011-1h1V7a1 1 0 011-1h4V5a1 1 0 011-1z"></path></svg>
+          <span class="nav-label">插件</span>
+        </button>
+        <button class="nav-item" data-view="memory" title="记忆">
+          <svg class="nav-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"></path></svg>
+          <span class="nav-label">记忆</span>
+        </button>
+        <button class="nav-item" data-view="world" title="世界书">
+          <svg class="nav-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3.055 11H5a2 2 0 012 2v1a2 2 0 002 2 2 2 0 012 2v2.945M8 3.935V5.5A2.5 2.5 0 0010.5 8h.5a2 2 0 012 2 2 2 0 104 0 2 2 0 012-2h1.064M15 20.488V18a2 2 0 012-2h3.064M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+          <span class="nav-label">世界书</span>
+        </button>
+        <button class="nav-item" data-view="protagonist" title="主角">
+          <svg class="nav-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"></path></svg>
+          <span class="nav-label">主角</span>
+        </button>
+        <button class="nav-item" data-view="usageassist" title="使用助手">
+          <svg class="nav-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093m0 3h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+          <span class="nav-label">助手</span>
+        </button>
+        <button class="nav-item" data-view="cardwriter" title="写卡">
+          <svg class="nav-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 8h2a2 2 0 012 2v10a2 2 0 01-2 2H5a2 2 0 01-2-2V10a2 2 0 012-2h2"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 4h6a1 1 0 011 1v3H8V5a1 1 0 011-1z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 11v6m-3-3h6"/></svg>
+          <span class="nav-label">写卡</span>
+        </button>
+        <button class="nav-item" data-view="usage" title="用量统计">
+          <svg class="nav-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 19V9m5 10V5m5 14v-7m5 7V3M3 21h18"></path></svg>
+          <span class="nav-label">用量统计</span>
+        </button>
+        <button class="nav-item" data-view="community" title="社区">
+          <svg class="nav-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z"></path></svg>
+          <span class="nav-label">社区</span>
+        </button>
+        <!-- 管理入口：与「社区」「用量统计」同级，只有管理员模式开启时可见（AdminMode 控制显隐） -->
+        <button class="nav-item" data-view="feedback" title="给管理员提意见">
+          <svg class="ic-16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.75 5.75A2.75 2.75 0 0 1 7.5 3h9a2.75 2.75 0 0 1 2.75 2.75v6.5A2.75 2.75 0 0 1 16.5 15H9l-4.25 4v-4.5Z"/><path d="M8.5 7.5h7M8.5 10.5h4.5"/></svg>
+          <span>反馈</span>
+        </button>
+        <button class="nav-item" data-view="admin" title="管理" id="navAdminBtn" style="display:none" onclick="CommunityChat.openAdminPanel()">
+          <svg class="nav-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"></path></svg>
+          <span class="nav-label" id="navAdminLabel">管理</span>
+        </button>
+      </nav>
+      <div id="sidebar-footer">
+        <button class="nav-item" data-view="settings" title="高级设置">
+          <svg class="nav-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path></svg>
+          <span class="nav-label">高级设置</span>
+        </button>
+      </div>
+    </aside>
+
+    <div id="content-area">
+    <div id="editor-area">
+      <div id="editor-toolbar">
+        <div id="ch-dropdown-wrap">
+          <button id="chDropdownBtn" title="章节">章节 ▾</button>
+          <div id="ch-dropdown">
+            <div id="chDropdownList"></div>
+            <div id="ch-dropdown-add"><button onclick="App.newChapter()">+ 添加章节</button></div>
+          </div>
+        </div>
+        <span class="sep"></span>
+        <span style="font-size:12px;color:var(--text-muted);display:flex;align-items:center;">字数：<span id="wordCount">0</span></span>
+        <input type="text" id="titleInput" placeholder="未命名小说" title="小说标题" style="display:none;">
+        <div id="editor-toolbar-right">
+        <button id="biqiToolbarBtn" onclick="BiqiAgent.toggle()" title="和比奇讨论剧情、维护临时世界书" style="display:none;align-items:center;gap:5px;">
+          <svg class="ic-20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.75 6.25A2.75 2.75 0 0 1 7.5 3.5h9a2.75 2.75 0 0 1 2.75 2.75v7A2.75 2.75 0 0 1 16.5 16h-3.2l-4.05 3.75V16H7.5a2.75 2.75 0 0 1-2.75-2.75Z"/><path d="M13.6 3.7v5.2l1.6-1.35 1.6 1.35V3.7"/></svg><span>比奇</span>
+        </button>
+        <button onclick="App.importNovelText()" title="导入正文（.txt，UTF-8 / GBK）" class="icon-btn" style="display:flex;align-items:center;padding:6px 10px;" aria-label="导入正文">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" style="display:block" aria-hidden="true">
+            <g stroke-width="1.5">
+              <path d="M12 3.75 V13.9"/>
+              <path d="M7.65 9.75 L12 14.1 L16.35 9.75"/>
+            </g>
+            <path stroke-width="1.35" d="M4.9 15.1 V17.35 a3.1 3.1 0 0 0 3.1 3.1 h8 a3.1 3.1 0 0 0 3.1 -3.1 V15.1"/>
+          </svg>
+        </button>
+        <button onclick="App.resetBook()" title="重置本书" class="icon-btn" style="color:var(--accent);display:flex;align-items:center;padding:6px 10px;" aria-label="重置本书">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" style="display:block" aria-hidden="true">
+            <g stroke-width="1.3">
+              <path d="M10.1 5.75 C10.15 4.5 10.7 3.95 12.05 3.98 C13.35 4.01 13.85 4.55 13.9 5.65"/>
+              <path d="M4.35 6.5 C8.2 5.95 12.4 5.85 16.1 5.95 C17.4 5.99 18.7 6.1 19.7 5.9"/>
+              <path d="M5.75 8.95 C9.6 8.5 14.1 8.4 18.45 8.6"/>
+              <path d="M6 9.1 C6.35 12.4 6.75 16.3 7.3 19.9"/>
+              <path d="M18.2 8.85 C17.85 12.3 17.45 16.2 16.9 19.85"/>
+              <path d="M6.9 20.15 C10.2 20.5 13.9 20.45 17.25 20.05"/>
+              <path d="M10.35 11.2 C10.45 13.5 10.5 15.7 10.42 17.5"/>
+              <path d="M13.7 11.1 C13.62 13.4 13.55 15.6 13.62 17.4"/>
+            </g>
+            <g stroke-width="0.7" opacity=".35">
+              <path d="M15.9 11.6 L15.15 13.5"/>
+              <path d="M16.1 13.9 L15.35 15.8"/>
+              <path d="M16.35 16.2 L15.7 17.9"/>
+              <path d="M8.4 11.1 L7.9 12.6"/>
+            </g>
+            <g stroke-width="0.8" opacity=".45" transform="translate(.45 .3) rotate(.8 12 12)">
+              <path d="M4.6 6.7 C8.5 6.15 12.6 6.05 16.3 6.15 C17.5 6.18 18.6 6.28 19.5 6.1"/>
+              <path d="M5.95 9.25 C9.7 8.8 14 8.7 18.25 8.9"/>
+              <path d="M6.25 9.5 C6.6 12.7 7 16.4 7.5 19.75"/>
+              <path d="M17.95 9.1 C17.6 12.5 17.25 16.1 16.75 19.65"/>
+              <path d="M10.6 11.45 C10.7 13.6 10.72 15.6 10.66 17.3"/>
+              <path d="M13.45 11.35 C13.4 13.5 13.35 15.5 13.4 17.25"/>
+            </g>
+            <path d="M8.2 21.6 C10.3 21.9 13.2 21.85 15.9 21.5" stroke-width="0.7" opacity=".3"/>
+          </svg>
+        </button>
+        </div>
+      </div>
+      <div id="editor-wrap">
+        <div id="editor" contenteditable="true"></div>
+
+      <!-- 比奇：半屏对话窗（只压住正文上半部，下半部正文照常滑动；只有 ✕ 能关） -->
+      <div id="biqiPanel">
+        <div id="biqiHead">
+          <span class="biqi-title"><svg class="ic-16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="color:var(--primary);flex:none;"><path d="M4.75 6.25A2.75 2.75 0 0 1 7.5 3.5h9a2.75 2.75 0 0 1 2.75 2.75v7A2.75 2.75 0 0 1 16.5 16h-3.2l-4.05 3.75V16H7.5a2.75 2.75 0 0 1-2.75-2.75Z"/><path d="M13.6 3.7v5.2l1.6-1.35 1.6 1.35V3.7"/></svg> 比奇 <span class="biqi-sub">临时世界书管家</span></span>
+          <div class="biqi-actions">
+            <button class="ghost-btn" onclick="BiqiAgent.openWorldbookPage()" title="查看当前生效的临时世界书">临时世界书</button>
+            <button class="ghost-btn" onclick="BiqiAgent.clear()" title="清空对话（不动设定）">清空</button>
+            <button class="icon-btn" onclick="BiqiAgent.close()" aria-label="关闭" title="关闭">✕</button>
+          </div>
+        </div>
+        <div id="biqiMessages"></div>
+        <div class="chat-input-area">
+          <textarea id="biqiInput" rows="1" placeholder="和比奇说：接下来怎么写 / 把某条设定改成…" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();BiqiAgent.send()}"></textarea>
+          <button class="primary small" onclick="BiqiAgent.send()">发送</button>
+        </div>
+        <div id="biqiGrip" title="拖动调整高度（拖到底变整屏）" aria-label="拖动调整高度"><span></span></div>
+      </div>
+        <button id="editorScrollBottom" onclick="EditorManager.scrollEditorToBottom()" title="回到最底部" aria-label="回到最底部">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M12 4.6 V18.4"/>
+            <path d="M6.6 13.2 L12 18.6 L17.4 13.2"/>
+          </svg>
+        </button>
+      </div>
+      <div id="editor-status">自动保存中...</div>
+      <div id="writing-input-bar">
+        <div id="generationStatus" style="font-size:13px;color:var(--text-secondary);min-height:18px;margin-bottom:4px;"></div>
+          <div id="memTraceBar" style="display:none;padding:4px 14px;font-size:12px;color:var(--text-muted);cursor:pointer;" onclick="App.toggleMemTrace()" title="查看本轮注入了哪些记忆">
+            <span>🧠 记忆 <span id="memTraceSummary"></span> ▾</span>
+            <div id="memTraceDetail" style="display:none;margin-top:4px;white-space:pre-wrap;color:var(--text-secondary);"></div>
+          </div>
+        <div id="writing-input-row">
+          <button id="btnUndo" onclick="App.undoLastGeneration()" title="撤回上一次续写" style="font-size:22px;">↩</button>
+          <textarea id="writingInput" rows="1" placeholder="输入续写指示…（留空直接发送=自动续写）"></textarea>
+          <button id="btnStop" style="display:none;" onclick="App.stopGeneration()" title="停止生成">
+            <svg class="ic-20" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+          </button>
+          <button id="writingSendBtn" onclick="App.sendFromWritingInput()" title="发送">
+            <svg class="ic-20 rot-90" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"></path></svg>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <aside id="panel">
+      <div id="panel-tabs">
+        <button data-tab="protagonist">主角</button>
+        <button data-tab="world">世界书</button>
+        <button data-tab="plugins">插件</button>
+        <button data-tab="memory">记忆</button>
+        <button data-tab="usageassist">助手</button>
+        <button data-tab="cardwriter">写卡</button>
+        <button data-tab="advanced">高级设置</button>
+        <button data-tab="usage">用量</button>
+        <button data-tab="community">社区</button>
+        <button data-tab="admin" id="tabBtnAdmin" style="display:none" onclick="CommunityChat.openAdminPanel()">管理</button>
+      </div>
+      <div id="panel-content">
+
+        <!-- 场景草稿存储（隐藏）：写作页发送按钮/扩写逻辑共用，仅作 JS 数据载体，不显示 -->
+        <textarea id="writingGuide" style="display:none;" aria-hidden="true"></textarea>
+
+        <!-- Protagonist Tab -->
+        <div class="panel-tab" id="tab-protagonist">
+          <div class="pg-head">
+            <div class="pg-title">主角</div>
+            <span class="pg-count" id="protagCount"></span>
+            <div class="pg-actions">
+              <button class="seg-cta" onclick="UIManager.showProtagonistModal()">＋ 添加主角</button>
+            </div>
+          </div>
+          <div id="protagList"></div>
+          <p id="protagSelectPrompt" class="warn-strip" style="display:none;">未选主角：{{user}} 会保留为「主角」占位，正文里的「我／他」不带姓名与资料。<br>叙事视角由预设的「视角」条目决定，与是否选主角无关。</p>
+        </div>
+
+        <!-- World Setting Tab -->
+        <div class="panel-tab" id="tab-world">
+          <!-- ════ Level 1 · 书架 ════ -->
+          <div id="wbShelfView">
+            <div class="pg-head">
+              <div class="pg-title">世界书</div>
+              <span class="pg-count" id="wbShelfCount">0 本</span>
+              <div class="pg-actions">
+                <button class="shelf-add-btn" onclick="UIManager.openWbAddSheet()">＋</button>
+              </div>
+            </div>
+            <div id="wbShelfGrid" class="shelf-grid anim-pop"></div>
+          </div>
+          <!-- ════ Level 2 · 条目列表（当前书）════ -->
+          <div id="wbEntriesView" class="anim-fade" style="display:none;">
+            <div class="me-sub-head">
+              <button class="me-back" onclick="UIManager.showWbShelf()" aria-label="返回书架">‹</button>
+              <div class="me-sub-tt">
+                <div class="me-sub-title" id="wbEntriesTitle">世界书</div>
+                <div class="me-sub-desc" id="wbEntriesDesc"></div>
+              </div>
+            </div>
+            <button class="cta-full" onclick="UIManager.showWBEntryModal()">＋ 添加条目</button>
+            <div class="tool-bar">
+              <input type="text" id="wbSearch" class="pg-search" placeholder="搜索条目名称…" oninput="UIManager.renderWBEntries()">
+              <span id="wbFilteredCount" class="pg-filtered"></span>
+            </div>
+            <div id="wbEntryList" style="margin-bottom:12px;"></div>
+          </div>
+        </div>
+
+        <!-- Characters Tab -->
+
+        <!-- Plugins Tab -->
+        <div class="panel-tab" id="tab-plugins">
+          <div class="pg-head">
+            <div class="pg-title">插件</div>
+          </div>
+          <div id="pluginList"></div>
+        </div>
+
+        <!-- Memory Tab -->
+        <div class="panel-tab" id="tab-memory">
+          <div class="pg-head">
+            <div class="pg-title">记忆</div>
+          </div>
+          <section class="set-group">
+            <div class="set-group-head"><span class="set-badge">文</span><span class="set-group-name">正文窗口与归档</span><i class="set-rule"></i></div>
+            <div class="set-row set-row-static">
+              <div class="set-main"><div class="set-title">正文窗口（字）</div><div class="set-sub">常驻 prompt 的旧正文上限，默认 5 万字（约 3.6 万 token）；超过它的 1.5 倍时，最旧的正文自动滚入归档——原文不丢，仍可被关键词检索回读</div></div>
+              <div style="flex:0 0 110px;"><input type="number" id="storyWindowChars" min="10000" max="500000" step="5000" value="50000" onchange="App.setStoryWindow(this.value)" style="width:100%;padding:6px 8px;font-size:13px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);"></div>
+            </div>
+            <div class="set-row set-row-static" style="border-top:none;padding-top:0;">
+              <div class="set-main"><div class="set-sub" id="ctxBudgetHint" style="line-height:1.5;">本轮最多注入：正文窗口 5.0 万 + 世界书 0.0 万 + 回读 3.0 万 ≈ 8.0 万字（≈ 5.7 万 token）</div></div>
+            </div>
+          </section>
+          <section class="set-group">
+            <div class="set-group-head"><span class="set-badge">搜</span><span class="set-group-name">归档检索</span><i class="set-rule"></i></div>
+            <div class="set-row set-row-static">
+              <div class="set-main"><div class="set-title">关键词检索（BM25）</div><div class="set-sub">本地免费不耗 API，按字面词召回超出窗口的旧正文</div></div>
+              <label class="toggle"><input type="checkbox" id="archiveBm25Enabled" checked onchange="StorageManager.set('archiveBm25Enabled', this.checked)"><span class="slider"></span></label>
+            </div>
+            <div class="set-row set-row-static">
+              <div class="set-main"><div class="set-title">回读预算（字）</div><div class="set-sub">每次续写最多注入多少字的旧正文回读；建议最少 5000 字，预算越大召回的旧剧情越完整</div></div>
+              <div style="flex:0 0 110px;"><input type="number" id="archiveRecallBudget" min="1000" max="200000" step="1000" value="30000" onchange="StorageManager.set('archiveRecallBudget', parseInt(this.value, 10) || 30000)" style="width:100%;padding:6px 8px;font-size:13px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);"></div>
+            </div>
+          </section>
+        </div>
+
+        <!-- Usage Assistant Tab -->
+        <div class="panel-tab" id="tab-usageassist">
+          <div id="assistantMessages">
+            <div class="chat-empty">我是 BQB Hub 使用助手 👋<br>可以问我任何关于本软件使用的问题：怎么开始写作、世界书怎么用、记忆和归档检索是什么……</div>
+          </div>
+          <div class="chat-toolbar">
+            <button class="small" onclick="UsageAssistant.clearHistory()" title="清空助手对话">清空</button>
+            <span style="font-size:11px;color:var(--text-muted);align-self:center;">只解答本软件的使用问题 · 可帮你找卡</span>
+          </div>
+          <div class="chat-input-area">
+            <textarea id="assistantInput" placeholder="问用法，或让我帮你找卡（如「有没有剑与魔法的世界观」）" rows="1" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();UsageAssistant.sendMessage()}"></textarea>
+            <button class="primary small" onclick="UsageAssistant.sendMessage()">发送</button>
+          </div>
+          <!-- 找卡结果详情弹层：点助手回复里的蓝色书名打开（全部条目 + 下载） -->
+          <div class="modal-overlay" id="asCardModal">
+            <div class="modal" style="max-width:680px;width:94%;">
+              <div class="modal-header"><h3 id="asCardTitle">世界书</h3><button class="icon-btn" onclick="UsageAssistant.closeCard()" title="关闭">✕</button></div>
+              <div class="modal-body" id="asCardBody" style="max-height:70vh;overflow-y:auto;"></div>
+              <div class="modal-footer">
+                <span id="asCardMeta" style="margin-right:auto;font-size:11.5px;color:var(--text-muted);line-height:1.5;"></span>
+                <button class="primary" id="asCardDownloadBtn" onclick="UsageAssistant.downloadCard()">⬇ 下载到我的世界书</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Community Tab -->
+        <div class="panel-tab" id="tab-community">
+          <!-- 顶栏：标题 + 用户图标（原共用搜索栏已移除，各 Tab 用自己的搜索框） -->
+          <div id="communityHeader">
+            <div id="commTitle">社区</div>
+            <button id="commUserBtn" onclick="CommunityChat.toggleUserPanel()" title="用户">👤</button>
+            <!-- 用户下拉面板 -->
+            <div id="commUserPanel"></div>
+          </div>
+          <!-- 二级 Tab 条 -->
+          <div class="comm-tabs">
+            <div class="comm-tab active" data-commtab="worldbook" onclick="CommunityChat.switchCommTab('worldbook')">世界书</div>
+            <div class="comm-tab" data-commtab="preset" onclick="CommunityChat.switchCommTab('preset')">预设</div>
+          </div>
+          <!-- 社区主内容 -->
+          <div id="communityContent">
+            <!-- 世界书视图 -->
+            <div class="comm-view active" id="commViewWorldbook">
+              <div id="communityWorldbook">
+                <div id="wbToolbar">
+                  <input id="wbCommunitySearch" placeholder="搜索世界书..." oninput="CommunityChat.onWbSearchSync(this.value)">
+                  <div class="sort-seg" id="wbSortSeg">
+                    <button class="active" data-sort="new" onclick="CommunityChat.setSort('worldbook','new')" title="最新上传">最新</button>
+                    <button data-sort="hot" onclick="CommunityChat.setSort('worldbook','hot')" title="点赞×1 + 评论×3 的总分">热门</button>
+                    <button data-sort="active" onclick="CommunityChat.setSort('worldbook','active')" title="最近 24 小时有动静的卡，按同样的分排序">活跃</button>
+                  </div>
+                  <button class="primary small" onclick="CommunityChat.openUploadModal()">↑ 上传</button>
+                </div>
+                <div id="wbCats"></div>
+                <div id="wbList"><div class="chat-empty" style="grid-column:1/-1;">登录后可浏览世界书。</div></div>
+                <div class="wb-pager" id="wbPagerBottom"></div>
+              </div>
+            </div>
+            <!-- 预设视图 -->
+            <div class="comm-view" id="commViewPreset">
+              <div id="communityPreset">
+                <div id="predToolbar">
+                  <input id="predSearch" placeholder="搜索预设..." oninput="CommunityChat.onPredSearchSync(this.value)">
+                  <div class="sort-seg" id="predSortSeg">
+                    <button class="active" data-sort="new" onclick="CommunityChat.setSort('preset','new')" title="最新上传">最新</button>
+                    <button data-sort="hot" onclick="CommunityChat.setSort('preset','hot')" title="点赞×1 + 评论×3 的总分">热门</button>
+                    <button data-sort="active" onclick="CommunityChat.setSort('preset','active')" title="最近 24 小时有动静的卡，按同样的分排序">活跃</button>
+                  </div>
+                  <button class="primary small" onclick="CommunityChat.openPredUploadModal()">↑ 上传</button>
+                </div>
+                <div id="predList"><div class="chat-empty" style="grid-column:1/-1;">登录后可浏览预设。</div></div>
+                <div class="wb-pager" id="predPagerBottom"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Admin Tab（管理）：使用人数统计 + 内容审核。只有管理员模式开启时入口可见。 -->
+        <!-- 反馈：用户单向给管理员提意见（匿名；服务端限流见 routes/feedback.js） -->
+        <div class="panel-tab" id="tab-feedback">
+          <div class="pg-head">
+            <div class="pg-title">反馈</div>
+            <div class="pg-actions">
+              <button class="tool-btn" onclick="Feedback.render()" title="刷新">⟳</button>
+            </div>
+          </div>
+          <div id="feedbackBody" style="padding:0 12px 12px;overflow-y:auto;">
+            <div class="card">
+              <b style="font-size:13px;">给管理员提意见</b>
+              <div style="font-size:12px;color:var(--text-muted);margin-top:4px;line-height:1.7;">
+                · 适合提：功能建议、用起来别扭的地方、遇到的 bug（写明手机型号与复现步骤最有帮助）<br>
+                · 请不要写：真实姓名/联系方式/正文片段等隐私内容<br>
+                · 提交是匿名的，会带上 App 版本与平台；管理员不会逐条回复<br>
+                · 频率限制：每分钟最多 2 条（防刷）；单条最多 300 字，到上限可以再发一条继续写
+              </div>
+              <textarea id="fbText" rows="6" maxlength="300" placeholder="写点什么…（最多 300 字）" oninput="Feedback.onInput()"
+                style="width:100%;margin-top:8px;font-size:14px;line-height:1.6;padding:8px 10px;resize:vertical;"></textarea>
+              <div style="display:flex;align-items:center;gap:8px;margin-top:6px;">
+                <span id="fbCount" style="font-size:12px;color:var(--text-muted);">0 / 300</span>
+                <span id="fbLimitHint" style="display:none;font-size:12px;color:var(--text-muted);">已到 300 字上限——可以再提交一条接着写</span>
+                <button class="primary small" id="fbSubmit" style="margin-left:auto;" onclick="Feedback.submit()">提交给管理员</button>
+              </div>
+              <div id="fbStatus" style="font-size:12px;color:var(--text-muted);margin-top:6px;min-height:16px;"></div>
+            </div>
+            <div id="fbMine" style="margin-top:10px;"></div>
+          </div>
+        </div>
+
+        <div class="panel-tab" id="tab-admin">
+          <div id="adminHeader">
+            <div id="admTitle">管理</div>
+            <span id="admStatsUpdated"></span>
+            <button class="small" onclick="CommunityChat.loadAdminStats()" title="重新拉取统计">刷新</button>
+          </div>
+          <div id="adminBody">
+            <!-- 使用人数 -->
+            <div class="card">
+              <div style="display:flex;align-items:center;gap:8px;">
+                <b style="font-size:13px;">使用人数</b>
+              </div>
+              <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-top:8px;">
+                <div style="border:1px solid var(--border);border-radius:10px;padding:10px 6px;text-align:center;background:var(--bg-tertiary);">
+                  <div id="admStatOnline" style="font-size:22px;font-weight:700;line-height:1.2;">–</div>
+                  <div style="font-size:11px;color:var(--text-muted);margin-top:2px;">在线</div>
+                </div>
+                <div style="border:1px solid var(--border);border-radius:10px;padding:10px 6px;text-align:center;background:var(--bg-tertiary);">
+                  <div id="admStatToday" style="font-size:22px;font-weight:700;line-height:1.2;">–</div>
+                  <div style="font-size:11px;color:var(--text-muted);margin-top:2px;">今日</div>
+                </div>
+                <div style="border:1px solid var(--border);border-radius:10px;padding:10px 6px;text-align:center;background:var(--bg-tertiary);">
+                  <div id="admStatWeek" style="font-size:22px;font-weight:700;line-height:1.2;">–</div>
+                  <div style="font-size:11px;color:var(--text-muted);margin-top:2px;">近 7 天</div>
+                </div>
+                <div style="border:1px solid var(--border);border-radius:10px;padding:10px 6px;text-align:center;background:var(--bg-tertiary);">
+                  <div id="admStatMonth" style="font-size:22px;font-weight:700;line-height:1.2;">–</div>
+                  <div style="font-size:11px;color:var(--text-muted);margin-top:2px;">近 30 天</div>
+                </div>
+              </div>
+              <div id="admStatMeta" style="font-size:11px;color:var(--text-muted);margin-top:8px;"></div>
+              <div id="admStatVersions" style="font-size:11px;color:var(--text-muted);margin-top:2px;word-break:break-all;"></div>
+              <div style="font-size:11px;color:var(--text-muted);margin-top:2px;">只统计联网打开过 App 的设备（纯离线使用统计不到）；同一台设备多次启动只算一台。</div>
+            </div>
+            <!-- 意见反馈（未查看 / 已查看 / 全部；可逐条标记已读与删除） -->
+            <div class="card">
+              <div style="display:flex;align-items:center;gap:8px;">
+                <b style="font-size:13px;">意见反馈</b>
+                <span id="fbAdminMeta" style="font-size:11px;color:var(--text-muted);"></span>
+              </div>
+              <div style="font-size:12px;color:var(--text-muted);margin-top:2px;">用户匿名提交（带 App 版本与平台），只有管理员能看到；不会自动通知用户。</div>
+              <div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap;">
+                <button class="small" id="fbTabUnread" onclick="CommunityChat.setFeedbackStatus('unread')">未查看</button>
+                <button class="small" id="fbTabRead" onclick="CommunityChat.setFeedbackStatus('read')">已查看</button>
+                <button class="small" id="fbTabAll" onclick="CommunityChat.setFeedbackStatus('all')">全部</button>
+                <button class="small" onclick="CommunityChat.markAllFeedbackRead()">全部标为已读</button>
+              </div>
+              <div id="fbList" style="display:flex;flex-direction:column;gap:6px;margin-top:8px;"></div>
+              <div id="fbEmpty" class="cup-empty" style="display:none;"></div>
+            </div>
+            <!-- 内容审核（原审核队列，入口从社区顶栏搬到这里） -->
+            <div class="card">
+              <b style="font-size:13px;">内容审核</b>
+              <div style="font-size:12px;color:var(--text-muted);margin-top:2px;">通过后内容才对所有人可见；驳回只有作者本人能看到（作者可在个人中心自行删除）。</div>
+              <div id="rvwTypeTabs" style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap;">
+                <button class="small" id="rvwTabAll" onclick="CommunityChat.setReviewType('')">全部</button>
+                <button class="small" id="rvwTabWorldbook" onclick="CommunityChat.setReviewType('worldbook')">世界书</button>
+                <button class="small" id="rvwTabPreset" onclick="CommunityChat.setReviewType('preset')">预设</button>
+                <button class="small" id="rvwTabPlugin" onclick="CommunityChat.setReviewType('plugin')">插件</button>
+              </div>
+              <div id="rvwStatusTabs" style="display:flex;gap:6px;margin-top:6px;flex-wrap:wrap;">
+                <button class="small" id="rvwStPending" onclick="CommunityChat.setReviewStatus('pending')">待审核</button>
+                <button class="small" id="rvwStApproved" onclick="CommunityChat.setReviewStatus('approved')">已通过</button>
+                <button class="small" id="rvwStRejected" onclick="CommunityChat.setReviewStatus('rejected')">已驳回</button>
+              </div>
+              <div id="rvwList" style="display:flex;flex-direction:column;gap:2px;margin-top:8px;"></div>
+              <div id="rvwEmpty" class="cup-empty" style="display:none;"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Card Writer Tab -->
+        <div class="panel-tab" id="tab-cardwriter">
+          <div class="cardwriter-context-bar">
+            <span class="cw-book"><select id="cwBookSelect" onchange="CardWriterChat.switchTargetBook(this.value)" title="选择要讨论的书（不影响当前写作中的书）"></select></span>
+            <span id="cwContextInfo" class="cw-info">加载中...</span>
+            <span id="cwToolsHint" style="display:none;color:var(--primary);white-space:nowrap;" title="当前 API 线路未返回结构化工具调用，写卡只能用文字回复，无法落库">⚠️ 不支持工具</span>
+            <label class="cw-toggle" title="启用「亲密」分块：亲密向设定从「为什么做」而非「做什么」的角度讨论"><input type="checkbox" id="cwNsfw" checked onchange="StorageManager.set('cwNsfw', this.checked)"> 💗 亲密</label>
+            <label class="cw-toggle" title="启用「其他」分块：内容在「查看 → 写卡预设」里自己写（默认留空）"><input type="checkbox" id="cwHandgun" onchange="StorageManager.set('cwHandgun', this.checked)"> 🔧 其他</label>
+            <div id="cwViewWrap">
+              <button id="cwViewBtn" onclick="CardWriterChat.toggleViewMenu(event)" title="查看世界书内容与写卡预设">查看 ▾</button>
+              <div id="cwViewMenu">
+                <div onclick="CardWriterChat.openDraftModal()">📖 世界书</div>
+                <div onclick="CardWriterChat.openPresetModal()">⚙️ 写卡预设</div>
+              </div>
+            </div>
+          </div>
+          <div id="cardwriterMessages">
+            <div class="chat-empty">在这里和 AI 讨论角色卡设计（只讨论，不自动生成）。<br>💡 新建卡：直接说「我想做一个新角色：……」AI 会从零引导你讨论。<br>💡 改已有卡：直接说「看看我已有的卡，帮我想想怎么改」AI 会基于已有卡讨论。<br>讨论内容不会写入正文。</div>
+          </div>
+          <!-- 预设编辑弹层 -->
+          <div class="modal-overlay" id="cwPresetModal">
+            <div class="modal" style="max-width:680px;width:94%;">
+              <div class="modal-header"><h3>⚙️ 写卡预设（可编辑）</h3><button class="icon-btn" onclick="CardWriterChat.closePresetModal()" title="关闭">✕</button></div>
+              <div class="modal-body">
+                <div class="cw-preset-block">
+                  <div class="cw-preset-block-title">📌 基础指令 <span class="cw-muted">（常驻）</span></div>
+                  <textarea id="cwPresetBlock_base" rows="5" spellcheck="false" placeholder="角色定位、生成策略…"></textarea>
+                </div>
+                <div class="cw-preset-block">
+                  <div class="cw-preset-block-title">✍️ 写卡方法论 + 新建角色 <span class="cw-muted">（常驻）</span></div>
+                  <textarea id="cwPresetBlock_method" rows="8" spellcheck="false"></textarea>
+                </div>
+                <div class="cw-preset-block">
+                  <div class="cw-preset-block-title">🛡 自检模块（破限） <span class="cw-muted">（常驻）</span></div>
+                  <textarea id="cwPresetBlock_selfcheck" rows="4" spellcheck="false"></textarea>
+                </div>
+                <div class="cw-preset-block">
+                  <div class="cw-preset-block-title">💗 亲密 <label class="cw-block-switch" title="开启时注入该段"><input type="checkbox" id="cwPresetNsfw" onchange="CardWriterChat.togglePresetSwitch('nsfw', this.checked)"> 开关</label></div>
+                  <textarea id="cwPresetBlock_nsfw" rows="4" spellcheck="false"></textarea>
+                </div>
+                <div class="cw-preset-block">
+                  <div class="cw-preset-block-title">🔧 其他 <label class="cw-block-switch" title="开启时注入该段"><input type="checkbox" id="cwPresetHandgun" onchange="CardWriterChat.togglePresetSwitch('handgun', this.checked)"> 开关</label></div>
+                  <textarea id="cwPresetBlock_handgun" rows="6" spellcheck="false" placeholder="留空则什么都不注入；想加自己的要求就写在这里"></textarea>
+                </div>
+              </div>
+              <div class="modal-footer">
+                <button onclick="CardWriterChat.closePresetModal()">取消</button>
+                <button onclick="CardWriterChat.resetPreset()" title="删除自定义预设，恢复系统默认">恢复默认</button>
+                <button class="primary" onclick="CardWriterChat.savePreset()">💾 保存预设</button>
+              </div>
+            </div>
+          </div>
+          <!-- 世界书弹层：直接显示/编辑真实世界书内容，改动即时生效 -->
+          <div class="modal-overlay" id="cwDraftModal">
+            <div class="modal" style="max-width:720px;width:94%;">
+              <div class="modal-header"><h3>📖 世界书</h3><button class="icon-btn" onclick="CardWriterChat.closeDraftModal()" title="关闭">✕</button></div>
+              <div class="modal-body" style="max-height:78vh;overflow-y:auto;">
+                <div class="cw-wb-section">
+                  <div id="cwDraftChars"></div>
+                  <button class="small" onclick="CardWriterChat.addDraftChar()" title="手动添加一张角色卡">+ 添加角色卡</button>
+                  <div id="cwDraftEntries"></div>
+                  <div class="cw-wb-addrow">
+                    <select id="cwDraftAddType"><option>世界观</option><option>其他</option><option>初始</option></select>
+                    <button class="small" onclick="CardWriterChat.addDraftEntry()">+ 添加其他条目</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <!-- 多选删除条：进入多选时替换下面的工具栏+输入区 -->
+          <div class="cw-multi-bar" id="cwMultiBar">
+            <span class="cw-multi-count" id="cwMultiCount">已选 0 轮</span>
+            <button class="small" onclick="CardWriterChat.multiSelectAll()">全选</button>
+            <button class="small danger" onclick="CardWriterChat.multiDelete()">删除</button>
+            <button class="small" onclick="CardWriterChat.exitMultiMode()">取消</button>
+          </div>
+          <div class="chat-toolbar">
+            <button class="small" onclick="CardWriterChat.clearHistory()" title="清空写卡讨论记录">清空</button>
+          </div>
+          <div class="chat-input-area">
+            <textarea id="cardwriterInput" rows="1" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();CardWriterChat.sendMessage()}"></textarea>
+            <button class="primary small" id="cwSendBtn" onclick="CardWriterChat.onSendOrPause()" title="发送">发送</button>
+          </div>
+          <!-- 长按选中正文后的操作浮条（固定层；随面板显示/隐藏） -->
+          <div class="cw-sel-bar" id="cwSelBar">
+            <button onclick="CardWriterChat.selBarAction('copy')">复制</button>
+            <button class="danger" onclick="CardWriterChat.selBarAction('del')">删除</button>
+            <button onclick="CardWriterChat.selBarAction('multi')">多选</button>
+          </div>
+        </div>
+
+        <div class="panel-tab" id="tab-advanced">
+          <div class="subtab-nav" style="display:none;gap:4px;margin-bottom:12px;">
+            <button class="small" data-subtab="me" onclick="UIManager.switchSubTab('me')" style="flex:1;">我的</button>
+            <button class="small" data-subtab="presets" onclick="UIManager.switchSubTab('presets')" style="flex:1;">预设</button>
+            <button class="small" data-subtab="sysprompts" onclick="UIManager.switchSubTab('sysprompts')" style="flex:1;display:none;">提示词</button>
+            <button class="small" data-subtab="regex" onclick="UIManager.switchSubTab('regex')" style="flex:1;">正则</button>
+            <button class="small" data-subtab="api" onclick="UIManager.switchSubTab('api')" style="flex:1;">API</button>
+          </div>
+
+          <!-- ══════════ 我的（卡片式设置主页） ══════════ -->
+          <div class="subtab" id="subtab-me">
+            <div class="me-page">
+              <div class="me-hero">
+                <h1>我的</h1>
+                <div class="me-hero-sub">BQB Hub · 设置</div>
+              </div>
+
+              <!-- 壹 · 外观与排版 -->
+              <section class="set-group">
+                <div class="set-group-head"><span class="set-badge">壹</span><span class="set-group-name">外观与排版</span><i class="set-rule"></i></div>
+                <div class="set-row set-row-static">
+                  <div class="set-icon">🎨</div>
+                  <div class="set-main"><div class="set-title">主题风格</div><div class="set-sub">全局配色，即时生效</div></div>
+                </div>
+                <div class="theme-strip" id="themeStrip"></div>
+                <div class="set-row set-row-opt" data-font-opt="system" onclick="App.setEditorFont('system')">
+                  <div class="set-icon font-preview" style="font-family:system-ui,-apple-system,sans-serif;">Aa</div>
+                  <div class="set-main"><div class="set-title">系统默认</div><div class="set-sub">设备默认字体</div></div>
+                  <div class="set-check"></div>
+                </div>
+                <div class="set-row set-row-opt" data-font-opt="wenkai" onclick="App.setEditorFont('wenkai')">
+                  <div class="set-icon font-preview" style='font-family:"LXGW WenKai",serif;'>文楷</div>
+                  <div class="set-main"><div class="set-title" style='font-family:"LXGW WenKai",serif;'>霞鹜文楷</div><div class="set-sub">温润手写感 · 适合长文阅读</div></div>
+                  <div class="set-check"></div>
+                </div>
+                <div class="set-row set-row-opt" data-font-opt="serif" onclick="App.setEditorFont('serif')">
+                  <div class="set-icon font-preview" style='font-family:"Noto Serif SC",serif;'>宋</div>
+                  <div class="set-main"><div class="set-title" style='font-family:"Noto Serif SC",serif;'>思源宋体</div><div class="set-sub">纸质书排印感</div></div>
+                  <div class="set-check"></div>
+                </div>
+                <div class="set-row set-row-static">
+                  <div class="set-icon">↕</div>
+                  <div class="set-main"><div class="set-title">全局字号</div><div class="set-sub">正文、写卡、比奇、社区消息统一</div></div>
+                  <div class="seg-control" id="sizeSeg"></div>
+                </div>
+                <div class="preview-block">
+                  <div class="preview-text" id="typePreview">夜色像一层薄墨，缓缓晕开在窗纸上。他搁下笔，听见远处更声两响——该睡了，可故事才写到一半。</div>
+                  <div class="preview-meta" id="typePreviewMeta"></div>
+                </div>
+              </section>
+
+              <!-- 贰 · AI 与生成 -->
+              <section class="set-group">
+                <div class="set-group-head"><span class="set-badge">贰</span><span class="set-group-name">AI 与生成</span><i class="set-rule"></i></div>
+                <div class="set-row" onclick="UIManager.switchSubTab('api')">
+                  <div class="set-icon">⚡</div>
+                  <div class="set-main"><div class="set-title">模型与密钥</div><div class="set-sub">接口地址、API Key、参数与价格</div></div>
+                  <span class="set-value" id="aiConfigState">未配置</span><span class="set-arrow">›</span>
+                </div>
+                <div class="set-row" onclick="UIManager.switchSubTab('presets')">
+                  <div class="set-icon">📋</div>
+                  <div class="set-main"><div class="set-title">预设与生成</div><div class="set-sub">当前预设、模块管理与思考强度</div></div>
+                  <span class="set-value" id="presetState"></span><span class="set-arrow">›</span>
+                </div>
+                <div class="set-row set-row-static">
+                  <div class="set-icon">⇥</div>
+                  <div class="set-main"><div class="set-title">流式输出</div><div class="set-sub">边生成边显示文字；关闭则整段生成完再显示</div></div>
+                  <label style="display:flex;align-items:center;flex:0 0 auto;">
+                    <input type="checkbox" id="streamingOutput" checked onchange="App.setStreamingOutput(this.checked)">
+                    <span class="sw-badge" style="font-size:10px;padding:1px 6px;border-radius:4px;background:#10b981;color:#fff;font-weight:600;">ON</span>
+                  </label>
+                </div>
+                <div class="set-row set-row-static">
+                  <div class="set-icon">🧠</div>
+                  <div class="set-main"><div class="set-title">思维链</div><div class="set-sub">开启：先显示思考过程，再出正文；关闭：不思考，直接出正文</div></div>
+                  <label style="display:flex;align-items:center;flex:0 0 auto;">
+                    <input type="checkbox" id="thinkingChainEnabled" checked onchange="App.setThinkingChainEnabled(this.checked)">
+                    <span class="sw-badge" style="font-size:10px;padding:1px 6px;border-radius:4px;background:#10b981;color:#fff;font-weight:600;">ON</span>
+                  </label>
+                </div>
+                <div class="set-row" onclick="UIManager.switchSubTab('regex')">
+                  <div class="set-icon">∑</div>
+                  <div class="set-main"><div class="set-title">正则管理</div><div class="set-sub">输出文本替换规则与测试工具</div></div>
+                  <span class="set-arrow">›</span>
+                </div>
+              </section>
+
+              <!-- 叁 · 关于 -->
+              <section class="set-group">
+                <div class="set-group-head"><span class="set-badge">叁</span><span class="set-group-name">关于</span><i class="set-rule"></i></div>
+                <div class="set-row set-row-static">
+                  <div class="set-icon">ⓘ</div>
+                  <div class="set-main"><div class="set-title">版本</div></div>
+                  <span class="set-value" id="meVersion">…</span>
+                  <button class="seg-cta" onclick="UpdateManager.check(true)">⟳ 检查更新</button>
+                </div>
+                <div class="set-row set-row-static">
+                  <div class="set-icon">🔋</div>
+                  <div class="set-main">
+                    <div class="set-title">想让长文生成更稳？</div>
+                    <div class="set-sub">到系统设置 → 应用 → BQB Hub，把省电策略设为「无限制 / 允许后台运行」。系统掐断后台网络会让正在生成的内容中断（中断的进度会保留，回来点「继续」即可接着跑）。</div>
+                  </div>
+                </div>
+              </section>
+
+              <div class="me-foot">BQB Hub · 本地优先</div>
+            </div>
+          </div>
+
+          <!-- Presets -->
+          <div class="subtab" id="subtab-presets" style="display:none;">
+            <div class="me-sub-head"><button class="me-back" onclick="UIManager.switchSubTab(&quot;me&quot;)" aria-label="返回">‹</button><div class="me-sub-tt"><div class="me-sub-title">预设与生成</div><div class="me-sub-desc">当前预设、生成行为开关与模块管理</div></div></div>
+            <div class="form-group"><label>当前预设</label>
+              <div style="display:flex;gap:6px;align-items:center;">
+                <select id="presetSelect" onchange="PresetManager.applyPreset(this.value)" style="flex:1;"></select>
+                <button class="icon-btn small" onclick="UIManager.showPresetModal()" title="新建空预设（模块自己加）">＋</button>
+                <button class="icon-btn small" onclick="App.editPreset()" title="重命名当前预设">✎</button>
+                <button class="icon-btn small danger" onclick="App.deletePreset()" title="删除">删</button>
+              </div>
+            </div>
+            <div style="display:flex;gap:8px;margin-top:8px;">
+              <button class="small" onclick="App.importPresets()" style="flex:1;">导入预设</button>
+              <button class="small" onclick="App.exportPresets()" style="flex:1;" title="点击后分享给好友">分享预设</button>
+            </div>
+            <div style="display:grid;grid-template-columns:1fr;gap:6px;margin-top:8px;">
+              <div style="display:flex;align-items:center;gap:6px;padding:6px 8px;border-radius:6px;border:1px solid var(--border);">
+                <span style="font-size:12px;white-space:nowrap;">思考强度</span>
+                <select id="deepseekThinking" onchange="App.setThinkingLevel(this.value)" style="flex:1;min-width:0;font-size:12px;padding:2px 4px;border-radius:4px;border:1px solid var(--border);background:var(--bg);color:var(--text);">
+                  <option value="auto">自动（模型默认）</option>
+                  <option value="off">关</option>
+                  <option value="low">低</option>
+                  <option value="medium">中</option>
+                  <option value="high">高</option>
+                </select>
+                <span style="font-size:10px;padding:1px 6px;border-radius:4px;background:var(--primary);color:#fff;font-weight:600;white-space:nowrap;" id="deepseekThinkingTag">自动</span>
+              </div>
+              <div style="font-size:11px;color:var(--text-muted);padding:0 2px;">「流式输出」与「思维链」开关在上一层「AI 与生成」里。</div>
+            </div>
+            <div class="module-mgr">
+              <div class="module-mgr-header" onclick="UIManager.toggleModuleManager()">
+                <span class="module-mgr-arrow">▶</span>
+                <span style="font-weight:600;">模块管理</span>
+                <span class="module-mgr-count" id="moduleCount">0/0</span>
+              </div>
+              <div class="module-mgr-body" id="moduleList"></div>
+            </div>
+          </div>
+
+          <!-- System Prompts -->
+          <div class="subtab" id="subtab-sysprompts" style="display:none;">
+            <div class="form-group"><label>系统提示词</label>
+              <select id="sysPromptSelect" onchange="PresetManager.applySystemPrompt(this.value)"></select>
+              <textarea id="sysPromptContent" rows="6" onchange="PresetManager.saveCurrentSystemPrompt()" style="margin-top:8px;"></textarea>
+            </div>
+            <div style="display:flex;gap:8px;">
+              <button class="small primary" onclick="UIManager.showSysPromptModal()">+ 新建</button>
+              <button class="small" onclick="App.importSysPrompts()">导入</button>
+              <button class="small" onclick="App.exportSysPrompts()">导出</button>
+            </div>
+          </div>
+
+          <!-- Regex -->
+          <div class="subtab" id="subtab-regex" style="display:none;">
+            <div class="me-sub-head"><button class="me-back" onclick="UIManager.switchSubTab(&quot;me&quot;)" aria-label="返回">‹</button><div class="me-sub-tt"><div class="me-sub-title">正则管理</div><div class="me-sub-desc">输出文本替换规则与测试工具</div></div></div>
+            <button class="primary small" style="width:100%;margin-bottom:8px;" onclick="UIManager.showRegexModal()">+ 添加正则规则</button>
+            <div id="regexRulesList" style="max-height:180px;overflow-y:auto;"></div>
+            <div style="display:flex;gap:8px;margin-top:8px;">
+              <button class="small" onclick="App.importRegexRules()" style="flex:1;">导入</button>
+              <button class="small" onclick="App.exportRegexRules()" style="flex:1;">导出</button>
+            </div>
+            <details style="margin-top:12px;"><summary style="cursor:pointer;font-size:14px;color:var(--primary);">正则测试工具</summary>
+              <div class="form-group" style="margin-top:8px;"><label>测试文本</label><textarea id="regexTestInput" rows="3"></textarea>
+              <button class="small primary" onclick="UIManager.testRegex()" style="margin-bottom:8px;">测试</button>
+              <div id="regexTestResult" style="font-size:13px;background:var(--bg-tertiary);padding:8px;border-radius:var(--radius-sm);min-height:40px;white-space:pre-wrap;"></div>
+              </div>
+            </details>
+          </div>
+
+          <!-- API Config -->
+          <div class="subtab" id="subtab-api" style="display:none;">
+            <div class="me-sub-head"><button class="me-back" onclick="UIManager.switchSubTab(&quot;me&quot;)" aria-label="返回">‹</button><div class="me-sub-tt"><div class="me-sub-title">模型与密钥</div><div class="me-sub-desc">多渠道供应商 · 切换即用 · 模型自动检测</div></div></div>
+            <!-- 供应商渠道区：下拉选择 + 添加供应商 + 删除（选中已有渠道时右上角显示） -->
+            <div style="background:var(--bg-tertiary);border:1px solid var(--border);border-radius:12px;padding:10px 12px;margin-bottom:12px;">
+              <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
+                <span style="font-size:12px;font-weight:700;color:var(--text);">供应商渠道</span>
+                <button class="small danger" id="apiChannelDelete" onclick="App.deleteChannel()" style="display:none;font-size:11px;padding:2px 10px;" title="删除当前供应商渠道">🗑 删除</button>
+              </div>
+              <div style="display:flex;gap:6px;align-items:center;">
+                <select id="apiChannelSelect" onchange="App.selectChannel()" style="flex:1;font-size:13px;padding:7px 8px;border-radius:8px;border:1px solid var(--border);background:var(--bg-secondary);color:var(--text);outline:none;"></select>
+                <button class="small" onclick="App.addChannel()" style="font-size:12px;padding:6px 12px;border-radius:8px;border:1px solid var(--primary);color:var(--primary);background:transparent;cursor:pointer;">＋ 添加供应商</button>
+              </div>
+            </div>
+            <div class="form-group"><label>渠道名称</label><input type="text" id="apiChannelName" placeholder="例如：opencode-go / DeepSeek 官方" onchange="App.saveChannelField('name', this.value)"></div>
+            <div class="form-group"><label>API 地址</label><input type="text" id="apiEndpoint" placeholder="https://api.deepseek.com/v1" onchange="App.saveChannelField('endpoint', this.value)"></div>
+            <div class="form-group"><label>API Key</label><div style="display:flex;gap:8px;"><input type="password" id="apiKey" placeholder="sk-..." onchange="App.saveChannelField('apiKey', this.value)" style="flex:1;"><button class="small" onclick="UIManager.toggleApiKeyVisibility()">显示</button></div></div>
+            <div class="form-group"><label>模型</label><div style="display:flex;gap:8px;align-items:center;">
+              <select id="apiModelSelect" onchange="App.saveChannelModel(this.value)" style="flex:1;font-size:13px;padding:7px 8px;border-radius:8px;border:1px solid var(--border);background:var(--bg-secondary);color:var(--text);outline:none;"></select>
+              <button class="small" onclick="App.refreshChannelModels()" title="重新检测可用模型" style="font-size:13px;padding:6px 10px;">⟳</button>
+              <input type="text" id="apiModelManual" placeholder="手动输入模型名" onchange="App.saveChannelModel(this.value)" style="display:none;flex:1;font-size:13px;padding:7px 8px;border-radius:8px;border:1px solid var(--border);min-width:0;">
+            </div></div>
+            <div class="form-row"><div class="form-group"><label>Temperature</label><input type="number" id="apiTemperature" step="0.1" min="0" max="2" value="0.9" onchange="App.saveAPIConfig()"></div><div class="form-group"><label>Top P</label><input type="number" id="apiTopP" step="0.05" min="0" max="1" value="0.95" onchange="App.saveAPIConfig()"></div></div>
+            <div class="form-row"><div class="form-group"><label>Presence Penalty</label><input type="number" id="apiPresencePenalty" step="0.1" min="-2" max="2" value="0.4" onchange="App.saveAPIConfig()"></div><div class="form-group"><label>Frequency Penalty</label><input type="number" id="apiFrequencyPenalty" step="0.1" min="-2" max="2" value="0.3" onchange="App.saveAPIConfig()"></div></div>
+            <hr style="border:none;border-top:1px solid var(--border);margin:8px 0;">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
+              <span style="font-size:12px;font-weight:600;color:var(--text-muted);">💰 价格配置（每百万tokens，人民币）</span>
+              <button class="small" onclick="App.applyModelPricing()" style="font-size:11px;padding:2px 8px;">按模型默认价格</button>
+            </div>
+            <div class="form-row">
+              <div class="form-group"><label>输入价格</label><input type="number" id="priceInput" step="0.1" min="0" value="1" onchange="App.saveChannelField('priceInput', this.value)" title="未缓存的输入token价格"></div>
+              <div class="form-group"><label>缓存价格</label><input type="number" id="priceCached" step="0.01" min="0" value="0.1" onchange="App.saveChannelField('priceCached', this.value)" title="缓存命中的输入token价格"></div>
+            </div>
+            <div class="form-group"><label>输出价格</label><input type="number" id="priceOutput" step="0.1" min="0" value="2" onchange="App.saveAPIConfig()"></div>
+          </div>
+        </div>
+
+        <!-- Usage Stats Tab -->
+        <div class="panel-tab" id="tab-usage">
+          <div class="pg-head">
+            <div class="pg-title">用量统计</div>
+            <div class="pg-actions">
+              <button class="ghost-btn danger" onclick="UsageStats.clearHistory()">清空历史</button>
+            </div>
+          </div>
+          <div id="usageSessionStats" style="margin-bottom:12px;"></div>
+          <div class="sec-title">最近 10 次续写</div>
+          <div id="usageHistoryList"></div>
+        </div>
+      </div>
+    </aside>
+    </div><!-- /#content-area -->
+  </div>
+
+  <div id="mobileMask" style="display:none;position:fixed;inset:0;z-index:300;background:rgba(0,0,0,0.4);"></div>
+
+</div>
+
+<!-- Modals (dynamically loaded by modules/modals.js) -->
+
+<!-- Hidden file inputs -->
+<input type="file" id="fileImportPresets" accept=".json" style="display:none;" onchange="App.handleImportPresets(event)">
+<input type="file" id="fileImportSysPrompts" accept=".json" style="display:none;" onchange="App.handleImportSysPrompts(event)">
+<input type="file" id="fileImportRegex" accept=".json" style="display:none;" onchange="App.handleImportRegex(event)">
+<input type="file" id="fileImportJSON" accept=".json" style="display:none;" onchange="App.handleImportJSON(event)">
+<input type="file" id="fileImportConfig" accept=".json" style="display:none;" onchange="App.handleImportConfigPackage(event)">
+<input type="file" id="fileImportWorldBook" accept=".json" style="display:none;" onchange="App.handleImportWorldBook(event)">
+<input type="file" id="fileImportNovelText" accept=".txt,text/plain" style="display:none;" onchange="App.handleImportNovelText(event)">
+<input type="file" id="fileImportCharCard" accept=".png" style="display:none;" onchange="App.handleImportCharCard(event)" multiple>
+<input type="file" id="communityWbCoverInput" accept="image/*" style="display:none;" onchange="CommunityChat.handleWbCoverPicked(event)">
+<input type="file" id="communityPredCoverInput" accept="image/*" style="display:none;" onchange="CommunityChat.handlePredCoverPicked(event)">
+
+<div id="toast"></div>
+
+<script src="modules/main.js?v=225270759-157"></script>
+<script>if(Math.min(screen.width,screen.height)<=800||window.navigator.standalone){document.body.classList.add("mobile-device")}</script>
+<script>(function(){function _ol(){document.body.classList.toggle("landscape-lock",window.innerWidth>window.innerHeight);}_ol();window.addEventListener("resize",_ol);window.addEventListener("orientationchange",function(){setTimeout(_ol,300)});})();</script>
+<script>document.addEventListener("touchstart",function o(){screen.orientation&&screen.orientation.lock&&screen.orientation.lock("portrait").catch(function(){});document.removeEventListener("touchstart",o)},{once:true})</script>
+
+<!-- ===== 头像文件选择 + 图片放大查看 ===== -->
+<input type="file" id="avatarFileInput" accept="image/*" style="display:none;" onchange="UIManager.onAvatarPicked(this)">
+<div class="img-viewer" id="imgViewer" onclick="this.style.display='none'"><img id="imgViewerImg" alt=""></div>
+
+<!-- ===== 插件全屏页（数据库）===== -->
+<div id="pluginFullscreen" style="display:none;position:fixed;inset:0;z-index:2000;background:var(--bg,#f6f7f9);color:var(--text,#1f2430);flex-direction:column;">
+  <div style="display:flex;align-items:center;gap:10px;padding:10px 12px;border-bottom:1px solid var(--border);background:var(--bg-secondary);flex-shrink:0;">
+    <button class="me-back" onclick="UIManager.closeDatabase()" aria-label="返回" style="width:34px;height:34px;min-width:34px;font-size:18px;">‹</button>
+    <div style="min-width:0;flex:1;">
+      <div style="font-size:16px;font-weight:800;letter-spacing:.5px;">数据库</div>
+      <div id="dbBookName" style="font-size:11px;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"></div>
+    </div>
+    <span class="pg-count" id="dbRecordCount"></span>
+    <button class="ghost-btn" onclick="UIManager.toggleDBSettings()" title="填表开关与 API 设置" style="padding:7px 14px;">设置</button>
+  </div>
+  <div id="dbSettingsPanel" style="display:none;padding:10px 12px;border-bottom:1px solid var(--border);background:var(--bg-secondary);flex-shrink:0;font-size:13px;"></div>
+  <div id="dbTableBar" style="flex-shrink:0;display:flex;gap:6px;padding:8px 12px;overflow-x:auto;border-bottom:1px solid var(--border);background:var(--bg-secondary);-webkit-overflow-scrolling:touch;"></div>
+  <div style="display:flex;flex:1;overflow:hidden;min-height:0;">
+    <div style="flex:1;display:flex;flex-direction:column;overflow:hidden;min-width:0;">
+      <div style="display:flex;gap:6px;padding:8px 12px 6px;flex-shrink:0;align-items:center;">
+        <input type="text" id="dbSearch" class="pg-search" placeholder="搜索记录…" oninput="UIManager.renderDBRecords()">
+        <button class="shelf-add-btn" onclick="UIManager.showDBRecordModal()" title="添加记录" style="width:38px;height:38px;font-size:18px;">＋</button>
+      </div>
+      <div id="dbRecords" style="flex:1;overflow-y:auto;padding:4px 12px 20px;-webkit-overflow-scrolling:touch;"></div>
+    </div>
+  </div>
+  <div style="display:flex;gap:8px;padding:8px 12px;border-top:1px solid var(--border);background:var(--bg-secondary);flex-shrink:0;align-items:center;">
+    <button class="cta-full" onclick="App.fillMemoryTableNow()" style="margin-bottom:0;">回溯填表</button>
+    <span id="dbStatus" style="font-size:11px;color:var(--text-muted);flex:none;"></span>
+  </div>
+</div>
+
+<!-- ===== Agent 设定同步全屏页（widget shell=agent；原世界书只读，临时设定独立查看/编辑）===== -->
+<div id="agentFullscreen" style="display:none;position:fixed;inset:0;z-index:2000;background:var(--bg,#f6f7f9);color:var(--text,#1f2430);flex-direction:column;">
+  <div style="display:flex;align-items:center;gap:10px;padding:10px 12px;border-bottom:1px solid var(--border);background:var(--bg-secondary);flex-shrink:0;">
+    <button class="me-back" onclick="UIManager.closeAgentPage()" aria-label="返回" style="width:34px;height:34px;min-width:34px;font-size:18px;">‹</button>
+    <div style="min-width:0;flex:1;">
+      <div style="font-size:16px;font-weight:800;letter-spacing:.5px;">临时世界书 <span class="pg-count" id="agentCountBadge" style="margin-left:4px;"></span></div>
+      <div id="agentPageStatus" style="font-size:11px;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"></div>
+    </div>
+    <button class="ghost-btn" id="agentSettleBtn" onclick="App.reviewSettingDeltaNow()" title="不等攒批，立即二审落盘" style="padding:7px 14px;">立即结算</button>
+  </div>
+  <div style="flex:1;overflow-y:auto;padding:10px 12px 20px;-webkit-overflow-scrolling:touch;">
+    <div style="font-size:13px;font-weight:700;margin:4px 0 8px;">已生效临时设定（原书未动）</div>
+    <div id="agentOverlayList"></div>
+    <div style="font-size:13px;font-weight:700;margin:12px 0 8px;">待裁决提议（只读，下次二审处理）</div>
+    <div id="agentPendingList"></div>
+  </div>
+  <div style="display:flex;gap:8px;padding:8px 12px;border-top:1px solid var(--border);background:var(--bg-secondary);flex-shrink:0;align-items:center;">
+    <button class="ghost-btn" onclick="UIManager.rollbackAgentOverlay()" style="flex:1;">回滚上一批</button>
+    <button class="ghost-btn" onclick="UIManager.resetAgentOverlay()" style="flex:1;color:var(--danger);">重置（回原书）</button>
+  </div>
+</div>
+
+</body>
+</html>

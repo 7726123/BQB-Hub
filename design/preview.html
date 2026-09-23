@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<style>
+  * { box-sizing: border-box; margin: 0; }
+  body { font-family: "Segoe UI", "Microsoft YaHei", sans-serif; background: #eef0f4; padding: 24px; }
+  h2 { font-size: 14px; color: #555; margin: 18px 0 10px; }
+  .row { display: flex; gap: 28px; align-items: center; }
+  .card { background: #fff; border-radius: 12px; padding: 18px 22px; box-shadow: 0 2px 10px rgba(0,0,0,.06); }
+  .lab { font-size: 11px; color: #888; text-align: center; margin-top: 6px; }
+  .cell { display: flex; flex-direction: column; align-items: center; }
+
+  /* 浅色工具栏实景 */
+  .toolbar-light { display: flex; align-items: center; gap: 8px; padding: 8px 16px; background: #ffffff; border-bottom: 1px solid #e5e5e5; border-radius: 8px; }
+  .toolbar-light .chap { font-size: 13px; padding: 6px 12px; border-radius: 6px; background: #f0f0f0; color: #333; }
+  .toolbar-light .wc { font-size: 12px; color: #999; }
+  .toolbar-light .title { font-size: 13px; font-weight: 600; color: #333; margin-right: auto; }
+  .icon-btn { padding: 6px 10px; background: transparent; border: none; border-radius: 6px; display: flex; align-items: center; }
+  .icon-btn:hover { background: #f0f0f0; }
+  .icon-btn svg { display: block; }
+
+  /* 深色工具栏实景 */
+  .toolbar-dark { display: flex; align-items: center; gap: 8px; padding: 8px 16px; background: #16213e; border-bottom: 1px solid #0f3460; border-radius: 8px; }
+  .toolbar-dark .chap { font-size: 13px; padding: 6px 12px; border-radius: 6px; background: #0f3460; color: #ddd; }
+  .toolbar-dark .wc { font-size: 12px; color: #8892aa; }
+  .toolbar-dark .title { font-size: 13px; font-weight: 600; color: #ddd; margin-right: auto; }
+  .toolbar-dark .icon-btn:hover { background: #0f3460; }
+  .dark-bg { background: #1a1a2e; padding: 18px 22px; border-radius: 12px; }
+  .dark-bg .lab { color: #667; }
+</style>
+</head>
+<body>
+
+<h2>① 新图标 · 各尺寸（透明底）</h2>
+<div class="card row">
+  <div class="cell"><img src="../design/trash-icon.svg" width="96" height="96"><div class="lab">96px</div></div>
+  <div class="cell"><img src="../design/trash-icon.svg" width="64" height="64"><div class="lab">64px</div></div>
+  <div class="cell"><img src="../design/trash-icon.svg" width="40" height="40"><div class="lab">40px（移动端触控）</div></div>
+  <div class="cell"><img src="../design/trash-icon.svg" width="28" height="28"><div class="lab">28px（桌面工具栏）</div></div>
+  <div class="cell"><img src="../design/trash-icon.svg" width="22" height="22"><div class="lab">22px</div></div>
+</div>
+
+<h2>② 深色主题下</h2>
+<div class="dark-bg row">
+  <div class="cell"><img src="../design/trash-icon.svg" width="64" height="64"><div class="lab">64px</div></div>
+  <div class="cell"><img src="../design/trash-icon.svg" width="28" height="28"><div class="lab">28px</div></div>
+</div>
+
+<h2>③ 写作工具栏实景 · 浅色主题（替换前 ✕ vs 替换后）</h2>
+<div class="card" style="display:flex; flex-direction:column; gap:10px;">
+  <div class="toolbar-light">
+    <span class="chap">章节 ▾</span><span class="wc">字数：12345</span>
+    <span class="title">败犬女主太多了！</span>
+    <span class="icon-btn" style="color:#c0392b; font-size:16px;">✕</span>
+    <span class="lab" style="margin:0 0 0 4px;">← 现在的</span>
+  </div>
+  <div class="toolbar-light">
+    <span class="chap">章节 ▾</span><span class="wc">字数：12345</span>
+    <span class="title">败犬女主太多了！</span>
+    <span class="icon-btn" title="重置本书"><img src="../design/trash-icon.svg" width="26" height="26"></span>
+    <span class="lab" style="margin:0 0 0 4px;">← 替换后</span>
+  </div>
+</div>
+
+<h2>④ 写作工具栏实景 · 深色主题</h2>
+<div class="card" style="display:flex; flex-direction:column; gap:10px;">
+  <div class="toolbar-dark">
+    <span class="chap">章节 ▾</span><span class="wc">字数：12345</span>
+    <span class="title">败犬女主太多了！</span>
+    <span class="icon-btn" style="color:#e07060; font-size:16px;">✕</span>
+    <span class="lab" style="margin:0 0 0 4px;">← 现在的</span>
+  </div>
+  <div class="toolbar-dark">
+    <span class="chap">章节 ▾</span><span class="wc">字数：12345</span>
+    <span class="title">败犬女主太多了！</span>
+    <span class="icon-btn" title="重置本书"><img src="../design/trash-icon.svg" width="26" height="26"></span>
+    <span class="lab" style="margin:0 0 0 4px;">← 替换后</span>
+  </div>
+</div>
+
+</body>
+</html>
