@@ -275,8 +275,9 @@ export const BiqiAgent: {
     this._kbOpen = false;
     this._applyHeight();
     this._bindPanel();
-    const input = document.getElementById('biqiInput') as HTMLTextAreaElement | null;
-    if (input && !this.messages.length) input.focus();
+    // 这里**不自动聚焦输入框**：聚焦会触发"输入中"模式（面板占满可视区），
+    // 结果开窗就是整屏，和"打开后半屏、可拖 25%~90%、超 90% 才吸附整屏"的要求冲突（真机反馈）。
+    // 用户点输入框时照旧进入"输入中"模式（软键盘弹出不被挤扁），失焦回到半屏。
   },
 
   close(): void {

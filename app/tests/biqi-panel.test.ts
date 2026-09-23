@@ -6,6 +6,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import '../src/infra/storage';
 import { PluginManager } from '../src/domain/plugins';
+import { MobileUI } from '../src/domain/mobile';
 import {
   BiqiAgent, biqiResolveDrag,
   BIQI_MIN_RATIO, BIQI_MAX_RATIO, BIQI_SNAP_RATIO, BIQI_UNSNAP_RATIO, BIQI_DEFAULT_RATIO
@@ -28,6 +29,16 @@ function makeEl(id: string, parent: any = null): any {
     addEventListener: (t: string, fn: (e: any) => void) => { (listeners[t] ||= []).push(fn); },
     removeEventListener: () => undefined,
     focus: () => undefined,
+    // 挪面板要用（panelHost）：把子节点从旧父节点摘下来挂到新父节点
+    appendChild: (child: any) => {
+      const old = child.parentElement;
+      if (old && Array.isArray(old._children)) { const i = old._children.indexOf(child); if (i >= 0) old._children.splice(i, 1); }
+      child.parentElement = el;
+      if (!Array.isArray(el._children)) el._children = [];
+      el._children.push(child);
+      return child;
+    },
+    _children: [],
     _classes: classes,
     _fire: (t: string, e: any = {}) => (listeners[t] || []).forEach((fn) => fn(e)),
   };
@@ -190,6 +201,29 @@ describe('比奇面板：DOM 行为', () => {
     expect(panel._classes.has('kb-open')).toBe(false);
   });
 
+  it('开窗不自动聚焦输入框（真机反馈：聚焦会进输入中模式 → 开窗即整屏，与「半屏 + 可拖 25%~90%」冲突）', () => {
+    const { panel, input } = setupDom();
+    input.focus = () => input._fire('focus');   // 模拟真实聚焦：迷你 DOM 默认 focus 是空操作，上一轮正是因此漏判了这个 bug
+    BiqiAgent.messages = [];
+    BiqiAgent.open();
+    expect(panel._classes.has('kb-open')).toBe(false);
+    expect(panel.style.height).toBe('50%');
+  });
+
+  it('切视图时面板跟着挪：进对话页挂到对话页宿主，切回写作挂回正文区（真机反馈的回归：只在非写作视图里挪过一次 → 小说模式点开看不见）', () => {
+    const wrap = makeEl('editor-wrap');
+    const chatBody = makeEl('chatBody');
+    const bpanel = makeEl('biqiPanel', wrap);
+    const navWriting = makeEl('navWriting'); navWriting.dataset = { view: 'writing' };
+    els['editor-wrap'] = wrap; els['chatBody'] = chatBody; els['biqiPanel'] = bpanel; els['navWriting'] = navWriting;
+    els['editor-area'] = makeEl('editor-area'); els['panel'] = makeEl('panel');
+    g.document.querySelectorAll = () => [];   // switchView 里的导航/tab 查询：本用例不需要
+    g.document.querySelector = () => null;
+    (MobileUI as any).switchView('chat');
+    expect(bpanel.parentElement).toBe(chatBody);
+    (MobileUI as any).switchView('writing');
+    expect(bpanel.parentElement).toBe(wrap);  // bug 就是这一步没发生（面板留在了隐藏的对话页里）
+  });
   it('面板元素缺失时全部降级不抛错（元素被删/测试环境）', () => {
     g.document = { getElementById: () => null, addEventListener: () => undefined, removeEventListener: () => undefined };
     expect(() => { BiqiAgent.open(); BiqiAgent._setKbMode(true); BiqiAgent._applyHeight(); BiqiAgent._bindPanel(); }).not.toThrow();

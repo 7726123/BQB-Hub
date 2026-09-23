@@ -122,6 +122,16 @@ export const MobileUI: {
       if (panel) panel.style.display = 'flex';
     }
 
+    // 比奇跟着视图走：对话模式的面板挂在对话页、用对话模式的会话与临时世界书；其余视图（含写作）回到正文区。
+    // 注意：这段必须**在任何视图**都执行——只在"非写作视图"里跑过一次的坑：从对话页切回写作时面板没挪回去，
+    // 继续留在隐藏的对话页里，于是小说模式点比奇"开了但看不见"（真机反馈的 bug）。
+    try {
+      if (typeof BiqiAgent !== 'undefined' && BiqiAgent.panelHost) {
+        BiqiAgent.panelHost(viewName === 'chat' ? 'chat' : 'novel');
+        BiqiAgent.setMode?.(viewName === 'chat' ? 'chat' : 'novel');
+      }
+    } catch (e) { /* 比奇未就绪时忽略 */ }
+
     // 激活对应 panel tab
     if (viewName !== 'writing') {
       const tab = tabForView(viewName);
@@ -138,13 +148,6 @@ export const MobileUI: {
       if (viewName === 'feedback' && typeof Feedback !== 'undefined' && Feedback.render) Feedback.render();
       // 对话模式：进入时绑定一次 + 按当前书重载（记录按书分开，切书不串台）
       if (viewName === 'chat' && typeof ChatMode !== 'undefined' && ChatMode.init) ChatMode.init();
-      // 比奇跟着视图走：对话模式的面板挂在对话页、用对话模式的会话与临时世界书；其余视图回到正文区
-      try {
-        if (typeof BiqiAgent !== 'undefined' && BiqiAgent.panelHost) {
-          BiqiAgent.panelHost(viewName === 'chat' ? 'chat' : 'novel');
-          BiqiAgent.setMode?.(viewName === 'chat' ? 'chat' : 'novel');
-        }
-      } catch (e) { /* 比奇未就绪时忽略 */ }
       if (viewName === 'memory' && typeof UIManager !== 'undefined' && UIManager.renderCtxBudgetHint) UIManager.renderCtxBudgetHint();
       // 设置：每次进入都回到「我的」主页并刷新动态状态
       if (viewName === 'settings' && typeof UIManager !== 'undefined' && UIManager.switchSubTab) {
