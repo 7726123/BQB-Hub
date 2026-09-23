@@ -8,6 +8,7 @@ import { SettingSyncManager } from './settingsync';
 import { RegexEngine, type RegexRule } from '../lib/regex';
 import { BODY_MARKER, stripLeadingBodyMarker } from '../lib/think-protocol';
 import { PluginManager } from './plugins';
+import { hasNativeReasoning } from './modelcompat';
 import { WorldBookManager, selectInjectableEntries, WB_INJECT_MAX_CHARS } from './worldbook';
 import { normalizeStoryWindow, storyWindowTrigger, STORY_WINDOW_DEFAULT } from '../lib/contextbudget';
 import { BookManager, parseSampler, normalizeQuotes } from './book';
@@ -988,7 +989,9 @@ const App: AppShape = {
     // 两套机制叠加正是「正文进思维链 / 正文重复」的根因：模型一边走原生思考、
     // 一边又被预设逼着把思考文本输出到正文，结果把正文包进 thinking 标签或输出两遍。
     const _modelNameLower = (PresetManager.getActiveAPIConfig().model || '').toLowerCase();
-    const _hasNativeReasoning = /deepseek|opencode|ark\.|v3|v4|kimi|glm|qwen|moonshot|volc|dashscope|ark\.cn-beijing/.test(_modelNameLower);
+    // 判定见 modelcompat.hasNativeReasoning（2026-09-25 起含 doubao/seed 系：实测方舟的
+    // doubao-seed-2-1-lite/pro 都会回 reasoning_content，之前漏判会让它们白写一遍文本思维链）
+    const _hasNativeReasoning = hasNativeReasoning(_modelNameLower);
     if (_genPreset) {
       if (_genPreset.creativity) creativityLevel = _genPreset.creativity;
       if (_genPreset.promptModules && _genPreset.promptModules.some(function (m: any) { return m.enabled; })) {

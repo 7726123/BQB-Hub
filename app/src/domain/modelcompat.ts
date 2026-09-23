@@ -102,6 +102,17 @@ export function resolveThinkingParams(level: ThinkingLevel, endpoint: string, mo
   return { reasoning_effort: effort };
 }
 
+// ---- 是否自带推理（reasoning_content）通道 ----
+// 用途：写作端据此决定「要不要让模型把思维链写成正文」（两套机制叠加会把正文写进思维链、
+// 甚至输出两遍）。2026-09-25 实测：火山方舟 coding 套餐里 doubao-seed-2-1-lite/pro、
+// deepseek-v4-1-flash 都会回 reasoning_content（SSE 增量也是 reasoning_content），
+// 所以 seed/doubao 系（以及 doubao-thinking）也要按"原生推理"处理——之前只认 deepseek/v3/v4 等，
+// 导致 doubao-seed 走"文本思维链"模式，白送一遍 CoT。
+export function hasNativeReasoning(modelId: string): boolean {
+  const m = String(modelId || '').toLowerCase();
+  return /deepseek|opencode|doubao|seed|ark\.|v3|v4|kimi|glm|qwen|moonshot|volc|dashscope/.test(m);
+}
+
 // ---- 消息协议兼容位 ----
 export interface MessageCompat {
   needsReasoningContentOnAssistant: boolean;
