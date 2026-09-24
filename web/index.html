@@ -1068,6 +1068,9 @@ label{font-size:13px;color:var(--text-secondary);display:block;margin-bottom:4px
 .chat-act{color:var(--text-muted)}
 .chat-narr{font-size:calc(var(--font-size) - 1px);color:var(--text-muted);line-height:1.85;margin:7px 2px;padding-left:9px;border-left:2px solid var(--border)}
 .chat-note{font-size:12px;color:var(--text-muted);background:var(--bg-secondary);border-left:2px solid var(--border);padding:6px 10px;border-radius:8px;margin:8px 0}
+/* 流式占位（模型还在思考、正文未到）：呼吸一下表示"是在跑，不是这一轮没内容" */
+.chat-waiting{animation:chatWait 1.7s ease-in-out infinite}
+@keyframes chatWait{0%,100%{opacity:.55}50%{opacity:.95}}
 .chat-actions{display:flex;align-items:center;gap:6px;margin:2px 0 10px 46px}
 .chat-row-me ~ .chat-actions{margin-left:0;margin-right:46px;justify-content:flex-end}
 .chat-meta{font-size:11px;color:var(--text-muted);margin-right:auto}

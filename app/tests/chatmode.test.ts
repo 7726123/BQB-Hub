@@ -106,7 +106,7 @@ beforeEach(() => {
     try { g.StorageManager.remove(k); } catch (e) { /* ignore */ }
   });
   ChatMode._sending = false; ChatMode._acc = ''; ChatMode._streamBookId = ''; ChatMode._loadedBookId = '';
-  ChatMode._window = 120; ChatMode._status = '';
+  ChatMode._window = 120; ChatMode._status = ''; ChatMode._reasoningChars = 0;
 });
 
 describe('按书隔离', () => {
@@ -322,20 +322,39 @@ describe('落库与诊断', () => {
     expect(g.App.toast).toHaveBeenCalled();
   });
 
-  it('被截断（finish_reason=length）与格式漂移都会标记出来', () => {
+  // 用户问「思考中被截断，是不是 token 限制太少」：推理模型的思考与正文共用同一个输出额度，
+  // 思考跑满就写不出正文。这里守住"把话说清楚"：文案要指出额度被思考吃掉多少。
+  it('空正文 + finish_reason=length + 思考很长 → 提示额度被思考吃满（不是笼统的"没拿到内容"）', () => {
     seedBooks();
     setupPreset(1000);
+    ChatMode._streamBookId = ChatMode.bookId();
+    ChatMode._reasoningChars = 7342;
+    ChatMode._finish('', false, 'length');
+    const msg = (g.App.toast as any).mock.calls.map((c: any[]) => String(c[0])).join('\n');
+    expect(msg).toContain('额度被思考吃满');
+    expect(msg).toContain('7342');
+    expect(ChatMode.log()).toHaveLength(0);
+  });
+
+  it('被截断（finish_reason=length）与格式漂移都会标记出来，截断文案带思考字数', () => {
+    seedBooks();
+    setupPreset(1000);
+    ChatMode._reasoningChars = 1200;
     ChatMode._finish('林薇：「一」', false, 'length');
     let last = ChatMode.log().slice(-1)[0];
     expect(last.truncated).toBe(true);
+    expect(last.reasoning).toBe(1200);                       // 落库带着思考字数
+    expect(ChatMode._bubbleHtml(last)).toContain('思考已用掉约 1200 字额度');
     // 整段散文（没有任何说话人前缀）→ 漂移
     ChatMode._finish('她把信放在桌上。'.repeat(10), false, 'stop');
     last = ChatMode.log().slice(-1)[0];
     expect(last.drift).toBe(true);
-    // 正常演出 → 不报漂移
+    // 正常演出 → 不报漂移、不带思考字数
+    ChatMode._reasoningChars = 0;
     ChatMode._finish('林薇：「你怎么才来。」\n林叶：我把笔帽扣上。', false, 'stop');
     last = ChatMode.log().slice(-1)[0];
     expect(last.drift).toBe(false);
+    expect(last.reasoning).toBe(undefined);
   });
 });
 
@@ -392,6 +411,38 @@ describe('渲染与流式', () => {
     expect(html.indexOf('演到她说出理由')).toBeGreaterThan(-1);         // 长句要求仍在
     expect(html.indexOf('chat-note')).toBeGreaterThan(-1);             // …但渲染成淡色一行，不是气泡
     expect(html.indexOf('21 字')).toBeGreaterThan(-1);                  // 字数标签还在
+  });
+
+  // 用户反馈：第一轮一点发送就挂一段「（这一轮没有内容）」，看着像这一轮白跑了。
+  // 真相：那是**流式占位**——推理模型先思考几十秒，这段时间正文还没吐出来；不是空回复。
+  it('流式占位显示思考状态，不是「这一轮没有内容」', () => {
+    seedBooks();
+    setupPreset(1000);
+    ChatMode._sending = true;
+    ChatMode._streamBookId = ChatMode.bookId();
+    ChatMode._acc = '';
+    ChatMode._status = '正在思考…（已想 128 字）';
+    ChatMode.render();
+    const html = els['chatStream'].innerHTML;
+    expect(html.indexOf('（这一轮没有内容）')).toBe(-1);      // 不能吓人
+    expect(html.indexOf('chat-waiting')).toBeGreaterThan(-1);
+    expect(html.indexOf('正在思考…（已想 128 字）')).toBeGreaterThan(-1);
+    // 正文到达后占位消失，正常出气泡
+    ChatMode._acc = '林薇：「你怎么才来。」';
+    ChatMode.render();
+    const html2 = els['chatStream'].innerHTML;
+    expect(html2.indexOf('chat-waiting')).toBe(-1);
+    expect(html2.indexOf('你怎么才来')).toBeGreaterThan(-1);
+    ChatMode._sending = false; ChatMode._acc = ''; ChatMode._streamBookId = '';
+  });
+
+  it('真的空回复（已落库、非流式）才显示「这一轮没有内容」', () => {
+    seedBooks();
+    setupPreset(1000);
+    const m = ChatMode.append('ai', '   ');
+    ChatMode.render();
+    expect(els['chatStream'].innerHTML.indexOf('（这一轮没有内容）')).toBeGreaterThan(-1);
+    expect(m.kind).toBe('ai');
   });
 
   it('旁白不带「白」头像与名字，直接一行淡色文字', () => {

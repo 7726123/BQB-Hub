@@ -29,6 +29,7 @@ export interface ChatMsg {
   truncated?: boolean;   // finish_reason=length：这轮被截断
   drift?: boolean;       // 解析诊断发现格式漂移或台词没加引号
   words?: number;        // 本轮字数（标记剥离后，仅用于显示）
+  reasoning?: number;    // 本轮思考字数（reasoning_content 通道）：被截断时用来判断"额度是不是被思考吃掉的"
 }
 
 const RENDER_WINDOW = 120;      // 一次渲染最近多少条（更早的用「载入更早」展开）
@@ -335,8 +336,12 @@ export const ChatMode = {
     const mine = m.kind === 'author';
     let out = '';
     if (bubbles.length === 0) {
-      // 空正文不该出现（生成端已拦），真出现时给一句提示而不是空白
-      out += '<div class="chat-note">（这一轮没有内容）</div>';
+      // 两种"空"要分开：真·空回复 vs **流式占位**（模型还在思考、第一个字还没吐出来）。
+      // 用户实测反馈：第一轮思考久（推理模型先思考 20 秒很正常），这期间挂着「（这一轮没有内容）」
+      // 像是这一轮白跑了——其实只是在想。占位期间显示思考状态（与顶部状态行同一句话）。
+      out += m.id === '_streaming'
+        ? '<div class="chat-note chat-waiting">' + esc(this._status || REASONING_HINT) + '</div>'
+        : '<div class="chat-note">（这一轮没有内容）</div>';
     }
     // 同一角色连续输出合并成一个气泡（一个角色一段戏只有一条气泡，不再一句一条）
     const merged: Bubble[] = [];
@@ -368,7 +373,13 @@ export const ChatMode = {
     });
     // 尾部状态：截断 / 漂移。撤回不再挂在气泡上——挪到输入行左侧的 ↩（与写作页一致）
     const flags: string[] = [];
-    if (m.truncated) flags.push('这一轮被截断了（模型额度用完）——点「发送」接着往下演');
+    if (m.truncated) {
+      // 推理模型（doubao-seed 这类）的思考 token 与正文共用同一个输出额度：截断多半是思考吃掉的，
+      // 说清楚"思考占了多少"用户才知道下一步该调什么（否则只会以为正文被砍了）。
+      flags.push(m.reasoning
+        ? '这一轮被截断了（思考已用掉约 ' + m.reasoning + ' 字额度，正文写不下了）——点「发送」接着往下演'
+        : '这一轮被截断了（模型额度用完）——点「发送」接着往下演');
+    }
     if (m.drift) flags.push('这一轮的格式没走对，已按旁白显示');
     if (m.kind === 'ai' && m.id !== '_streaming' && m.words) {
       out += '<div class="chat-actions"><span class="chat-meta">' + esc(m.words + ' 字') + '</span></div>';
@@ -614,8 +625,16 @@ export const ChatMode = {
     const bookIdAtStart = this._streamBookId || this.bookId();
     this._streamBookId = '';
     if (aborted) { this.render(); return; }
+    const _reasoning = this._reasoningChars || 0;
     if (!raw) {
-      try { App.toast('这一轮没有拿到内容（可能被截断或模型返回空），可以点「发送」重试'); } catch (e) { /* ignore */ }
+      // 一条都没写出来时把"是不是额度被思考吃掉了"说清楚：推理模型的思考与正文共用输出额度，
+      // 思考跑满就一个字都写不出来（用户实测场景）。不然用户只会以为是随机抽风。
+      const _cut = finishReason === 'length' || finishReason === 'max_tokens';
+      try {
+        App.toast(_cut && _reasoning > 0
+          ? '额度被思考吃满了（已想约 ' + _reasoning + ' 字），正文一个字没写出来：再点「发送」重试，反复如此就把「思考强度」调到最低或换个模型'
+          : '这一轮没有拿到内容（可能被截断或模型返回空），可以点「发送」重试');
+      } catch (e) { /* ignore */ }
       this.render();
       return;
     }
@@ -631,6 +650,7 @@ export const ChatMode = {
       truncated: finishReason === 'length' || finishReason === 'max_tokens',
       drift,
       words,
+      reasoning: _reasoning || undefined,
     });
     // 演出进归档（回读/检索用）：必须在这条落库之后，否则本轮内容要等到下一轮才归档
     if (bookIdAtStart === this.bookId()) { void this.syncArchive(); this.render(); }
