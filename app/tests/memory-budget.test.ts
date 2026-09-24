@@ -78,3 +78,34 @@ describe('窗口设置：旧默认 5 万字 → 自动（一次性）', () => {
     expect(App()._storyWindowChars()).toBe(0);
   });
 });
+
+describe('端点上下文上限 → 窗口预算自动收窄（A 类修复）', () => {
+  const g = globalThis as unknown as Record<string, any>;
+  it('端点档案里学到 131072 时：有效上下文按它算，窗口同步收窄（换到小上下文渠道不会撑爆请求）', () => {
+    const prevAH = g.APIHandler, prevPM = g.PresetManager;
+    try {
+      SM().set('modelContextTokens', 800000);
+      g.PresetManager = { getActiveAPIConfig: () => ({ endpoint: 'https://ark.example/api/coding/v3', model: 'doubao-seed-2-1-lite' }) };
+      g.APIHandler = { endpointContextCap: (ep: string) => (ep.indexOf('ark.example') >= 0 ? 131072 : 0) };
+      expect(App()._modelContextTokens()).toBe(800000);        // 用户填的还是 80 万
+      expect(App()._effectiveContextTokens()).toBe(131072);    // 但算窗口时按端点实测上限
+      // (131072×1.4 − 0 − 20000) ÷ 1.5 = 109000 → 取整到万位
+      expect(App()._effectiveStoryWindow(0)).toBe(100000);
+      // 别的端点没有上限 → 仍按 80 万算（40 万封顶）
+      g.PresetManager = { getActiveAPIConfig: () => ({ endpoint: 'https://other.example/v1', model: 'm' }) };
+      expect(App()._effectiveContextTokens()).toBe(800000);
+      expect(App()._effectiveStoryWindow(0)).toBe(400000);
+    } finally {
+      g.APIHandler = prevAH; g.PresetManager = prevPM;
+      SM().remove('modelContextTokens');
+    }
+  });
+  it('拿不到端点档案（老环境/异常）不影响：按全局值算', () => {
+    const prevAH = g.APIHandler;
+    try {
+      g.APIHandler = undefined;
+      SM().set('modelContextTokens', 800000);
+      expect(App()._effectiveContextTokens()).toBe(800000);
+    } finally { g.APIHandler = prevAH; SM().remove('modelContextTokens'); }
+  });
+});

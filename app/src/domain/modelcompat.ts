@@ -145,9 +145,76 @@ export function explainUpstreamError(status: number, bodyText: string): string {
   if (/InvalidEndpointOrModel/i.test(t)) return '（这个模型或入口地址该 key 没权限：核对端点地址与模型名是否搭配）';
   if (/model[^"]{0,24}(not found|does not exist|not exist)/i.test(t)) return '（模型名不被识别：检查模型 ID 拼写，或从端点支持的模型里选）';
   if (/InvalidParameter\.Model/i.test(t)) return '（模型参数不被接受：检查模型名与端点搭配）';
-  if (status === 401) return '（API Key 无效或已过期）';
-  if (status === 403) return '（该 key 无权访问这个模型/端点）';
+  if (status === 401) return '（API Key 无效或已过期；也请确认该端点接受 Authorization: Bearer 形式的密钥——Azure 系要 api-key、Anthropic 系要 x-api-key，本软件只发 Bearer）';
+  if (status === 403) return '（该 key 无权访问这个模型/端点；或端点要求别的认证头形式）';
   if (status === 429) return '（请求过于频繁或额度已用尽）';
   return '';
+}
+
+// ---- 上下文超长（A 类：端点上下文小于本地窗口预算）----
+// 为什么需要（2026-09-26）：窗口按「模型可用上下文」算，那个值是用户填的全局值（默认 80 万）。
+// 换到小上下文渠道（128k/256k）后，小说写到一定长度请求就会超长，而上游回的是英文 400
+// （"This model's maximum context length is N tokens..." / "input is too long" 等），
+// 旧代码既不认识它、也没法自愈。这里把它认出来并抽出上限，供 api.ts 学进端点档案、窗口据此收窄。
+const CONTEXT_OVERFLOW_RE = new RegExp([
+  'maximum\\s+context\\s+length',
+  'context[_ ]length[_ ]exceeded',
+  'max(?:imum)?\\s+(?:input|prompt|context)\\s+(?:length|tokens?)',
+  'input\\s+(?:is\\s+)?too\\s+long',
+  'prompt\\s+(?:is\\s+)?too\\s+long',
+  'too\\s+many\\s+(?:input\\s+)?tokens',
+  'exceed(?:s|ed)?\\s+the\\s+(?:maximum\\s+)?(?:context|token)',
+  'context\\s+(?:window|limit)',
+  '上下文长度', '超出(?:最大)?(?:上下文|长度)', '输入(?:过长|太长)', '上下文(?:窗口|限制|上限)',
+].join('|'), 'i');
+
+/** 是否是"上下文超长"类报错（这类不该走参数降级阶梯，也抽不出可摘的参数） */
+export function isContextOverflowError(bodyText: string): boolean {
+  return CONTEXT_OVERFLOW_RE.test(String(bodyText || ''));
+}
+
+/**
+ * 从上下文超长报错里抽出端点的上下文上限（token）。抽不到返回 0。
+ * 例："This model's maximum context length is 131072 tokens." → 131072
+ *     "maximum context length is 262144 tokens, however your messages resulted in 300000" → 262144
+ */
+export function parseContextOverflowCap(bodyText: string): number {
+  const t = String(bodyText || '');
+  if (!isContextOverflowError(t)) return 0;
+  const cands: number[] = [];
+  const push = (s: string | undefined) => { const n = parseInt(String(s || '').replace(/[,_ ]/g, ''), 10); if (n >= 2000 && n <= 40000000) cands.push(n); };
+  let m: RegExpExecArray | null;
+  // ① 明确说上限的句式：maximum context length is N / max context N / 上限 N
+  const re1 = /(?:maximum\s+context\s+length|max(?:imum)?\s+(?:context|input|prompt)\s+(?:length|tokens?|limit)|context\s+(?:window|limit)|上下文(?:长度|窗口)?(?:上限)?|最多)\D{0,12}([0-9][0-9,_]{3,12})/gi;
+  while ((m = re1.exec(t)) !== null) push(m[1]);
+  // ② 中文/英文"上限为 N token"变体：limit of N / up to N tokens
+  const re2 = /(?:limit\s+of|up\s+to|at\s+most|不超过|上限为?)\D{0,8}([0-9][0-9,_]{3,12})\s*(?:tokens?)?/gi;
+  while ((m = re2.exec(t)) !== null) push(m[1]);
+  if (cands.length > 0) return Math.min.apply(null, cands);
+  // ③ 抽不到：兜底从全部大数字里取最小的（"resulted in 300000 tokens" 这类大数不会是上限）
+  const all: number[] = [];
+  const re3 = /\b([0-9]{5,9})\b/g;
+  while ((m = re3.exec(t)) !== null) {
+    const n = parseInt(m[1], 10);
+    if (n >= 8000 && n <= 40000000) all.push(n);
+  }
+  return all.length ? Math.min.apply(null, all) : 0;
+}
+
+/**
+ * 上下文超长的用户提示 + 自愈说明（窗口已按学到的上限收窄，重试即可）。
+ * capTokens 为 0（没抽到上限）时只给通用建议。
+ */
+export function contextOverflowHint(capTokens: number): string {
+  const cap = Number(capTokens) || 0;
+  let tail = '请调小「模型可用上下文」或「正文窗口」，也可以换上下文更大的模型。';
+  if (cap > 0) {
+    // 与 windowFromContext 同一套算式（窗口 =(上限 × 字/token − 杂项) ÷ 1.5，正文最多 = 窗口 × 1.5），
+    // 让这里的数字与设置页提示行里的"最多 X 万"完全对得上。
+    const win = Math.floor(((cap * 1.4 - 20000) / 1.5) / 10000) * 10000;
+    const trig = win * 1.5;
+    tail = '已把该端点的上限记成 ' + cap + ' token，正文最多将收到约 ' + (trig / 10000).toFixed(0) + ' 万字——再发送一次即可。';
+  }
+  return '（输入超出该端点的上下文上限：' + tail + '）';
 }
 // 挂载已移除（单 bundle 改造 P3-A）：api.ts 直接 import 本模块；modelcompat.js 产物停发

@@ -1016,7 +1016,8 @@ const UIManager: UIManagerShape = {
         wbChars = selectInjectableEntries(entries, WB_INJECT_MAX_CHARS).chars;
       } catch (e) { /* 世界书不可读按 0 记 */ }
       // 自动窗口：和生成时同一套算法（含本书世界书字号）
-      const win = manual > 0 ? manual : windowFromContext({ contextTokens: App._modelContextTokens(), worldBookChars: wbChars });
+      const ctxTokens = App._effectiveContextTokens();   // 已含"该端点学到的上限"（换小上下文渠道会自动收窄）
+      const win = manual > 0 ? manual : windowFromContext({ contextTokens: ctxTokens, worldBookChars: wbChars });
       const trigger = storyWindowTrigger(win);
       // 这本书现在真的要发多少正文（= 全文 − 已归档；从没滚过就是全部）
       let bodyChars = 0, archived = 0;
@@ -1028,10 +1029,12 @@ const UIManager: UIManagerShape = {
       // 回读只在正文滚过归档后才注入
       const recall = archived > 0 ? (Number(SM().get<any>('archiveRecallBudget', 10000)) || 0) : 0;
       const total = bodyChars + wbChars + recall;
-      const ctxTokens = App._modelContextTokens();
       const totalTokens = estimateTokens(total);
       const over = totalTokens > ctxTokens;
-      el.textContent = '本轮注入 ≈ ' + wanChars(total) + ' 万字（' + wanChars(totalTokens) + ' 万 token / 可用 ' + wanChars(ctxTokens) + ' 万）：' +
+      // 端点实测上限比全局设置更小时说明一句（否则用户会奇怪"我填了 80 万，怎么窗口小了"）
+      const _globalCtx = App._modelContextTokens();
+      const capNote = ctxTokens < _globalCtx ? '（已按该端点实测上限收窄）' : '';
+      el.textContent = '本轮注入 ≈ ' + wanChars(total) + ' 万字（' + wanChars(totalTokens) + ' 万 token / 可用 ' + wanChars(ctxTokens) + ' 万' + capNote + '）：' +
         '正文 ' + wanChars(bodyChars) + ' 万' + (manual > 0 ? '（手动）' : '（自动，最多 ' + wanChars(trigger) + ' 万）') +
         ' + 世界书 ' + wanChars(wbChars) + ' 万' + (recall > 0 ? ' + 回读 ' + wanChars(recall) + ' 万' : '') + '。' +
         (over ? '⚠️ 超出可用上下文，请调小窗口或调大上面的「模型可用上下文」。' : '');

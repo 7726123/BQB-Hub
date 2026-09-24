@@ -2066,6 +2066,21 @@ const stripped = _preProcessed.replace(/^#{1,3}\s+.*(\n|$)/gm, '').trim(); var _
     try { return normalizeModelContext(SM().get<any>('modelContextTokens', MODEL_CONTEXT_DEFAULT)); }
     catch (e) { return MODEL_CONTEXT_DEFAULT; }
   },
+  // 算窗口用的"实际可用上下文"：全局设置 与 **本端点学到/实测过的上限** 取小。
+  // 为什么：全局值是用户填的（默认 80 万），换到 128k/256k 的渠道后窗口会撑爆请求；
+  // api.ts 收到"上下文超长"就把上限学进端点档案（键 = 端点|模型），这里据此自动收窄。
+  _effectiveContextTokens(): number {
+    let ctx = this._modelContextTokens();
+    try {
+      const g = globalThis as unknown as { APIHandler?: { endpointContextCap?: (e: string, m: string) => number } };
+      const cfg = (typeof PresetManager !== 'undefined' && PresetManager.getActiveAPIConfig) ? PresetManager.getActiveAPIConfig() : null;
+      const ep = String((cfg && cfg.endpoint) || ''); const md = String((cfg && cfg.model) || '');
+      const fn = g.APIHandler && g.APIHandler.endpointContextCap;
+      const cap = (typeof fn === 'function') ? fn(ep, md) : 0;
+      if (cap > 0 && cap < ctx) ctx = cap;
+    } catch (e) { /* 拿不到档案就按全局值 */ }
+    return ctx;
+  },
   setModelContextTokens(v: any) {
     const n = normalizeModelContext(v);
     try { SM().set('modelContextTokens', n); } catch (e) { /* ignore */ }
@@ -2085,7 +2100,7 @@ const stripped = _preProcessed.replace(/^#{1,3}\s+.*(\n|$)/gm, '').trim(); var _
   // 有效窗口：手动值优先；「自动」时按 模型上下文 × 字/token − 世界书 − 杂项（再除以触发倍率）
   _effectiveStoryWindow(wbChars: any): number {
     const manual = this._storyWindowChars();
-    const win = manual > 0 ? manual : windowFromContext({ contextTokens: this._modelContextTokens(), worldBookChars: wbChars });
+    const win = manual > 0 ? manual : windowFromContext({ contextTokens: this._effectiveContextTokens(), worldBookChars: wbChars });
     console.log('[Waterline] 正文窗口', win, '字' + (manual > 0 ? '（手动）' : '（自动）'),
       '（', storyWindowTrigger(win), '字触发归档；世界书', Math.round(Number(wbChars) || 0), '字）');
     return win;

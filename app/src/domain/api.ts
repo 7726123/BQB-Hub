@@ -296,6 +296,7 @@ export interface EndpointProfile {
   toolsUnsupported?: boolean;       // tools / tool_choice 被拒 → 该端点不支持工具调用
   thinkingOverride?: Record<string, string>; // 端点只接受特定取值的思考参数（如 reasoning_effort:'low'）
   maxTokensCap?: number;            // 该端点接受的输出上限（报"太大"时学到；发送前取 min）
+  contextCap?: number;              // 该端点接受的上下文上限（token；报"上下文超长"时学到；Windows 预算取 min）
 }
 
 function _profileKey(endpoint: string, model: string): string {
@@ -313,6 +314,15 @@ export function readEndpointProfile(endpoint: string, model: string): EndpointPr
   } catch (e) { return {}; }
 }
 
+/** 该端点学到的上下文上限（token；0 = 不知道）。app.ts 算正文窗口时用它收窄预算。 */
+export function contextCapFor(endpoint: unknown, model: unknown): number {
+  try {
+    const p = readEndpointProfile(String(endpoint || ''), String(model || ''));
+    const n = Number(p.contextCap) || 0;
+    return (n >= 2000 && n <= 40000000) ? n : 0;
+  } catch (e) { return 0; }
+}
+
 function _saveEndpointProfile(endpoint: string, model: string, learned: string[], delta: EndpointProfile): void {
   try {
     const sm = (globalThis as any).StorageManager;
@@ -328,6 +338,10 @@ function _saveEndpointProfile(endpoint: string, model: string, learned: string[]
     if (delta.usageUnavailable || cur.usageUnavailable) next.usageUnavailable = true;
     if (delta.toolsUnsupported || cur.toolsUnsupported) next.toolsUnsupported = true;
     if (delta.thinkingOverride || cur.thinkingOverride) next.thinkingOverride = { ...(cur.thinkingOverride || {}), ...(delta.thinkingOverride || {}) };
+    // 上下文上限：学到的更小值才收窄（端点/套餐改大时不自动放宽，避免来回抖动；用户可清档案重置）
+    if (delta.contextCap || cur.contextCap) {
+      next.contextCap = Math.min(delta.contextCap || Number.MAX_SAFE_INTEGER, cur.contextCap || Number.MAX_SAFE_INTEGER);
+    }
     sm.set(_profileKey(endpoint, model), next);
   } catch (e) { /* 档案写入失败不影响请求本身 */ }
 }
@@ -493,6 +507,9 @@ export const APIHandler = {
   _toolsSupport: null as boolean | null,  // 线路工具能力探测结果（按 endpoint+model 缓存）
   // 原生兜底（CapacitorHttp）拿到的上游错误：有它时报真实状态码，而不是把失败一律说成"CORS 受限"
   _lastFallbackError: null as { status: number; body: string } | null,
+  // 该端点学到/实测过的上下文上限（token；0 = 未知）。app.ts 算正文窗口时用它收窄预算——
+  // 之前算窗口只看用户填的全局「模型可用上下文」，换到 128k/256k 的渠道就会把请求撑爆。
+  endpointContextCap(endpoint: unknown, model: unknown): number { return contextCapFor(endpoint, model); },
   _toolsSupportKey: '',
 
   // 工具能力探测：发一条带 tools 的最小请求，是否返回结构化 tool_calls。
@@ -794,6 +811,7 @@ export const APIHandler = {
     if (_profile.toolsUnsupported) this._toolsSupport = false;
     // 参数降级阶梯轮数（每轮必须摘掉/改掉至少一个参数，否则终止，防死循环）
     let _ladderRounds = 0;
+    let _contextOverflowCap = 0;   // >0 = 本轮因"上下文超长"失败，并学到了端点上限
     let _response: Response | null = null;
     let _requestError: { status?: number; body?: string; name?: string; message?: string } | null = null;
     for (let _attempt = 0; _attempt <= 2; _attempt++) {
@@ -812,6 +830,15 @@ export const APIHandler = {
         // 参数降级阶梯（400/422）：解析被拒参数 → 摘除 / max_tokens 改名 → 重试
         if ((_status === 400 || _status === 422) && _ladderRounds < 5) {
           const _errText = await _response.text().catch(function () { return ''; });
+          // 上下文超长不是"参数问题"：既没有可摘的参数，也不该按参数降级白跑几轮
+          // （报错文本里常带 max_tokens 字样，会被误当成值域问题）。这里直接学上限 + 报清楚。
+          if (_mc().isContextOverflowError(_errText)) {
+            const _cap = _mc().parseContextOverflowCap(_errText) || 0;
+            if (_cap > 0) _saveEndpointProfile(_compatEndpoint, _compatModel, [], { contextCap: _cap });
+            _contextOverflowCap = _cap;
+            _requestError = { status: _status, body: _errText };
+            break;
+          }
           const _acts = parseRejectedParams(_errText, body);
           const _learned: string[] = [];
           const _profDelta: EndpointProfile = {};
@@ -884,8 +911,11 @@ export const APIHandler = {
       }
       if (_requestError.status) {
         const _b = String(_requestError.body || '');
-        _apiFailLog('生成(' + _label + ')', _requestError.status, _b);
-        _err('API 请求失败 (' + _requestError.status + '): ' + _b + _mc().explainUpstreamError(_requestError.status, _b));
+        _apiFailLog('生成(' + _label + (_contextOverflowCap ? '·上下文超长' : '') + ')', _requestError.status, _b);
+        _err('API 请求失败 (' + _requestError.status + '): ' + _b +
+          (_contextOverflowCap || _mc().isContextOverflowError(_b)
+            ? _mc().contextOverflowHint(_contextOverflowCap)
+            : _mc().explainUpstreamError(_requestError.status, _b)));
         return;
       }
       // 原生端 CORS 降级：endpoint 无 CORS 头时 WebView fetch 被浏览器拦截（TypeError: Failed to fetch），
