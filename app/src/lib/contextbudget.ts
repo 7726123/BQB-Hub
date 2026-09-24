@@ -23,6 +23,13 @@ export const MODEL_CONTEXT_MAX = 2000000;
 // 除正文外还要占 prompt 的部分（预设 + 主角 + 常驻角色 + 临时修订 + user 尾部）
 export const CTX_MISC_CHARS = 20000;
 
+// 「自动」窗口的天花板：40 万字（≈29 万 token）。
+// 为什么不一路顶到模型预算：大前缀每轮都要重读一遍，实测首字延迟 1.1 万 token 1.5s、
+// 35 万 token 3.8s、73 万 token 6.1s —— 40 万字约 +2 秒，再往上每轮多等 1~2 秒换来的
+// 边际质量收益很小（40 万字≈3~4 卷轻小说，更早的部分本来就有归档回读兜底）。
+// 需要更大时直接手填窗口数字（可到 100 万），不受这个上限约束。
+export const AUTO_WINDOW_CAP = 400000;
+
 // 0 = 自动（按模型上下文 + 本书世界书字号算）
 export const STORY_WINDOW_AUTO = 0;
 export const STORY_WINDOW_DEFAULT = STORY_WINDOW_AUTO;
@@ -50,10 +57,10 @@ export function normalizeStoryWindow(v: unknown): number {
 }
 
 /**
- * 自动窗口：由模型可用上下文反推"能常驻多少正文"。
+ * 自动窗口：由模型可用上下文反推"能常驻多少正文"，再压到「自动」天花板上。
  * 触发线 = 窗口 × 1.5 才是真正塞进 prompt 的正文上限，所以这里先把预算当触发线、再除以 1.5。
- * 例（默认 80 万 token、世界书 10 万字）：(80万×1.4 − 10万 − 2万) ÷ 1.5 ≈ 66 万字，
- * 即正文常驻 66 万字、涨到 99 万字才滚一次 —— 都还在 80 万 token 预算内。
+ * 例（默认 80 万 token、世界书 10 万字）：(80万×1.4 − 10万 − 2万) ÷ 1.5 ≈ 66 万字 → 压到 40 万字，
+ * 即正文常驻 40 万字、涨到 60 万字才滚一次。小模型（如 20 万 token）会算出比天花板更小的窗口。
  */
 export function windowFromContext(opts: { contextTokens?: unknown; worldBookChars?: unknown; miscChars?: number }): number {
   const ctx = normalizeModelContext(opts.contextTokens);
@@ -63,7 +70,7 @@ export function windowFromContext(opts: { contextTokens?: unknown; worldBookChar
   if (!(raw > 0)) return STORY_WINDOW_MIN;
   const win = Math.floor(raw / STORY_WINDOW_TRIGGER_RATIO / 10000) * 10000;
   if (win < STORY_WINDOW_MIN) return STORY_WINDOW_MIN;
-  if (win > STORY_WINDOW_MAX) return STORY_WINDOW_MAX;
+  if (win > AUTO_WINDOW_CAP) return AUTO_WINDOW_CAP;
   return win;
 }
 

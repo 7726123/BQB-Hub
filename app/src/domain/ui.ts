@@ -1000,8 +1000,8 @@ const UIManager: UIManagerShape = {
     } catch (e) { return ''; }
   },
 
-  // 本轮注入量估算（记忆页提示行）：正文窗口 + 世界书 + 回读。这三个数此前对用户完全不可见，
-  // 「填了 256k 上下文结果喂进去十几万字」就是它不可见的后果。
+  // 本轮注入量估算（记忆页提示行）：显示**这本书当前实际会注入多少**（正文 + 世界书 + 回读），
+  // 而不是只报上限——上限（窗口/触发线）是理论值，写之前先看到"实际才多少"才不会误判。
   renderCtxBudgetHint(): void {
     const el = document.getElementById('ctxBudgetHint');
     if (!el) return;
@@ -1017,22 +1017,24 @@ const UIManager: UIManagerShape = {
       } catch (e) { /* 世界书不可读按 0 记 */ }
       // 自动窗口：和生成时同一套算法（含本书世界书字号）
       const win = manual > 0 ? manual : windowFromContext({ contextTokens: App._modelContextTokens(), worldBookChars: wbChars });
-      // 回读只在正文滚过归档后才注入；没滚过时不该算进本轮注入量（否则提示虚高、还会误导用户调小窗口）
-      let rolled = 0;
-      try { rolled = Number((SM().get<any>('wline_' + (WorldBookManager.getActiveId() || 'none'), {}) || {}).x) || 0; }
-      catch (e) { rolled = 0; }
-      const recall = rolled > 0 ? (Number(SM().get<any>('archiveRecallBudget', 10000)) || 0) : 0;
-      const total = win + wbChars + recall;
-      // 预算余量：自动窗口永远在预算内；手动填太大时这里明确报警（否则只有请求 400 才暴露）
+      const trigger = storyWindowTrigger(win);
+      // 这本书现在真的要发多少正文（= 全文 − 已归档；从没滚过就是全部）
+      let bodyChars = 0, archived = 0;
+      try {
+        const canonLen = String(EditorManager.getFullNovelText(1000000) || '').length;
+        archived = Number((SM().get<any>('wline_' + (WorldBookManager.getActiveId() || 'none'), {}) || {}).x) || 0;
+        bodyChars = Math.max(0, canonLen - archived);
+      } catch (e) { bodyChars = 0; archived = 0; }
+      // 回读只在正文滚过归档后才注入
+      const recall = archived > 0 ? (Number(SM().get<any>('archiveRecallBudget', 10000)) || 0) : 0;
+      const total = bodyChars + wbChars + recall;
       const ctxTokens = App._modelContextTokens();
       const totalTokens = estimateTokens(total);
       const over = totalTokens > ctxTokens;
-      el.textContent = '本轮最多注入：正文窗口 ' + wanChars(win) + ' 万' + (manual > 0 ? '（手动）' : '（自动）') +
-        ' + 世界书 ' + wanChars(wbChars) + ' 万' + (recall > 0 ? ' + 回读 ' + wanChars(recall) + ' 万' : '') +
-        ' ≈ ' + wanChars(total) + ' 万字（≈ ' + wanChars(totalTokens) + ' 万 token / 可用 ' + wanChars(ctxTokens) + ' 万）；' +
-        (over
-          ? '⚠️ 已超出可用上下文，请调小窗口或调大上面的「模型可用上下文」。'
-          : '正文超过 ' + wanChars(storyWindowTrigger(win)) + ' 万字开始滚入归档（原文保留，可被回读检索）。');
+      el.textContent = '本轮注入 ≈ ' + wanChars(total) + ' 万字（' + wanChars(totalTokens) + ' 万 token / 可用 ' + wanChars(ctxTokens) + ' 万）：' +
+        '正文 ' + wanChars(bodyChars) + ' 万' + (manual > 0 ? '（手动）' : '（自动，最多 ' + wanChars(trigger) + ' 万）') +
+        ' + 世界书 ' + wanChars(wbChars) + ' 万' + (recall > 0 ? ' + 回读 ' + wanChars(recall) + ' 万' : '') + '。' +
+        (over ? '⚠️ 超出可用上下文，请调小窗口或调大上面的「模型可用上下文」。' : '');
       el.style.color = over ? 'var(--accent)' : '';
     } catch (e) { el.textContent = ''; }
   },

@@ -1427,18 +1427,18 @@ label{font-size:13px;color:var(--text-secondary);display:block;margin-bottom:4px
           <section class="set-group">
             <div class="set-group-head"><span class="set-badge">文</span><span class="set-group-name">正文窗口与归档</span><i class="set-rule"></i></div>
             <div class="set-row set-row-static">
-              <div class="set-main"><div class="set-title">模型可用上下文（token）</div><div class="set-sub">只用来算下面那个窗口，不参与请求。1M 上下文的模型建议填 800000（留边界防意外）</div></div>
+              <div class="set-main"><div class="set-title">模型可用上下文（token）</div><div class="set-sub">只用来算窗口，不发请求。1M 上下文填 800000</div></div>
               <div style="flex:0 0 110px;"><input type="number" id="modelContextTokens" min="64000" max="2000000" step="10000" value="800000" onchange="App.setModelContextTokens(this.value)" style="width:100%;padding:6px 8px;font-size:13px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);"></div>
             </div>
             <div class="set-row set-row-static">
-              <div class="set-main"><div class="set-title">正文窗口（字）</div><div class="set-sub">常驻 prompt 的正文上限；<b>留空 = 自动</b>（按上面的上下文、减掉世界书后算出；正文涨到它的 1.5 倍才把最旧的滚入归档）。缓存命中比新输入便宜 50 倍，所以默认给得很大——让整本书常驻既最省也最准</div></div>
+              <div class="set-main"><div class="set-title">正文窗口（字）</div><div class="set-sub">留空 = 自动（按上面的上下文算，最多 40 万字）；嫌大就调小上面那个数，也可以直接填固定值</div></div>
               <div style="flex:0 0 160px;display:flex;gap:6px;align-items:center;">
                 <input type="number" id="storyWindowChars" min="10000" max="1000000" step="10000" placeholder="自动" onchange="App.setStoryWindow(this.value)" style="width:100%;padding:6px 8px;font-size:13px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);">
                 <button class="small" onclick="App.setStoryWindow('')" title="清空 = 按模型可用上下文自动算" style="flex:0 0 auto;">自动</button>
               </div>
             </div>
             <div class="set-row set-row-static" style="border-top:none;padding-top:0;">
-              <div class="set-main"><div class="set-sub" id="ctxBudgetHint" style="line-height:1.5;">本轮最多注入：正文窗口 5.0 万 + 世界书 0.0 万 + 回读 3.0 万 ≈ 8.0 万字（≈ 5.7 万 token）</div></div>
+              <div class="set-main"><div class="set-sub" id="ctxBudgetHint" style="line-height:1.5;">本轮注入 ≈ 0.0 万字</div></div>
             </div>
           </section>
           <section class="set-group">
@@ -1448,7 +1448,7 @@ label{font-size:13px;color:var(--text-secondary);display:block;margin-bottom:4px
               <label class="toggle"><input type="checkbox" id="archiveBm25Enabled" checked onchange="StorageManager.set('archiveBm25Enabled', this.checked)"><span class="slider"></span></label>
             </div>
             <div class="set-row set-row-static">
-              <div class="set-main"><div class="set-title">回读预算（字）</div><div class="set-sub">每次续写最多注入多少字的旧正文回读；<b>只在正文已经滚入归档后才注入</b>（没滚过 = 全文都常驻在窗口里，再注入是重复）。回读按"新输入"计价，是最贵的一种内容，建议 5000~20000</div></div>
+              <div class="set-main"><div class="set-title">回读预算（字）</div><div class="set-sub">只在正文超出窗口、滚进归档后才注入；按"新输入"计价，建议 5000~20000</div></div>
               <div style="flex:0 0 110px;"><input type="number" id="archiveRecallBudget" min="1000" max="200000" step="1000" value="10000" onchange="StorageManager.set('archiveRecallBudget', parseInt(this.value, 10) || 10000)" style="width:100%;padding:6px 8px;font-size:13px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);"></div>
             </div>
           </section>

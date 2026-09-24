@@ -1,4 +1,4 @@
-// 正文窗口：默认「自动」（按模型可用上下文反推），也可手动固定。
+// 正文窗口：默认「自动」（按模型可用上下文反推，自动值封顶 40 万字），也可手动固定。
 // 口径依据（2026-09-26 真 API 实测 + 成本建模，见交接文档 §13.51）：
 // 命中价 0.04 / miss 2 / 输出 8（元/百万 token，实测小说散文 1.408 字/token），
 // 同一 prompt 重发命中 99.9%、改中段 47%、**窗口左移（滚动）0%**。
@@ -13,7 +13,7 @@ import { WorldBookManager as WBM } from '../src/domain/worldbook';
 import {
   normalizeStoryWindow, storyWindowTrigger, estimateTokens, wanChars,
   normalizeModelContext, windowFromContext, recallNeeded,
-  STORY_WINDOW_DEFAULT, STORY_WINDOW_MIN, STORY_WINDOW_MAX, STORY_WINDOW_AUTO,
+  STORY_WINDOW_DEFAULT, STORY_WINDOW_MIN, STORY_WINDOW_MAX, STORY_WINDOW_AUTO, AUTO_WINDOW_CAP,
   MODEL_CONTEXT_DEFAULT, MODEL_CONTEXT_MIN, MODEL_CONTEXT_MAX, CHARS_PER_TOKEN,
 } from '../src/lib/contextbudget';
 
@@ -68,23 +68,31 @@ describe('normalizeStoryWindow：0/空 = 自动，其余夹取', () => {
 });
 
 describe('windowFromContext：自动窗口 = （可用 token × 字/token − 世界书 − 杂项）÷ 1.5', () => {
-  it('默认 80 万 token + 10 万字世界书 → 66 万字窗口，触发线仍在预算内', () => {
+  it('默认 80 万 token：算式值 66 万字被自动天花板压到 40 万字，触发线 60 万字仍在预算内', () => {
     const win = windowFromContext({ contextTokens: MODEL_CONTEXT_DEFAULT, worldBookChars: 100000 });
-    // (800000×1.4 − 100000 − 20000) ÷ 1.5 = 666666 → 取整到万位
-    expect(win).toBe(660000);
+    // (800000×1.4 − 100000 − 20000) ÷ 1.5 = 666666 → 取整到万位 → 超 AUTO_WINDOW_CAP(40万) → 压到 40 万
+    expect(win).toBe(AUTO_WINDOW_CAP);
+    expect(win).toBe(400000);
     const trig = storyWindowTrigger(win);
-    expect(trig).toBe(990000);
+    expect(trig).toBe(600000);
     // 关键安全性质：触发线（真正塞进 prompt 的正文上限）不超过预算
     const budgetChars = MODEL_CONTEXT_DEFAULT * CHARS_PER_TOKEN - 100000 - 20000;
     expect(trig).toBeLessThanOrEqual(budgetChars);
   });
 
+  it('小模型/大世界书时会算出比天花板更小的窗口（天花板只封顶、不抬底）', () => {
+    const small = windowFromContext({ contextTokens: 200000, worldBookChars: 0 });
+    expect(small).toBeLessThan(AUTO_WINDOW_CAP);
+    expect(small).toBe(170000);   // (200000×1.4 − 20000) ÷ 1.5 = 173333 → 取整到万位
+  });
+
   it('世界书越大窗口越小（同一份预算里让位给世界书）', () => {
-    const big = windowFromContext({ contextTokens: 800000, worldBookChars: 100000 });
-    const small = windowFromContext({ contextTokens: 800000, worldBookChars: 20000 });
+    // 用 20 万 token 的小上下文，避开自动天花板（40 万），才看得到世界书的影响
+    const big = windowFromContext({ contextTokens: 200000, worldBookChars: 100000 });
+    const small = windowFromContext({ contextTokens: 200000, worldBookChars: 20000 });
     expect(small).toBeGreaterThan(big);
     // 世界书 0 字时窗口最大
-    expect(windowFromContext({ contextTokens: 800000, worldBookChars: 0 }))
+    expect(windowFromContext({ contextTokens: 200000, worldBookChars: 0 }))
       .toBeGreaterThan(small);
   });
 
@@ -95,12 +103,13 @@ describe('windowFromContext：自动窗口 = （可用 token × 字/token − �
       .toBe(windowFromContext({ contextTokens: MODEL_CONTEXT_DEFAULT, worldBookChars: 0 }));
   });
 
-  it('上下文越大窗口越大，且不超过上限', () => {
+  it('窗口随上下文单调不减，且一律不超过自动天花板', () => {
     const a = windowFromContext({ contextTokens: 200000, worldBookChars: 0 });
-    const b = windowFromContext({ contextTokens: 800000, worldBookChars: 0 });
+    const b = windowFromContext({ contextTokens: 500000, worldBookChars: 0 });
     const c = windowFromContext({ contextTokens: MODEL_CONTEXT_MAX, worldBookChars: 0 });
     expect(a).toBeLessThan(b);
-    expect(c).toBe(STORY_WINDOW_MAX);
+    expect(b).toBeLessThanOrEqual(AUTO_WINDOW_CAP);
+    expect(c).toBe(AUTO_WINDOW_CAP);
   });
 });
 
@@ -145,7 +154,7 @@ describe('Waterline 按新口径滚动（窗口 = 设定值，1.5 倍触发）',
     expect(archived + r.head + ROLLING).toBe(total);   // 归档 + 窗口 + 滚动区 == 全文
   });
 
-  it('大窗口（自动 66 万字）几乎不滚；5 万字窗口一半以上的轮次都在滚（每滚一次正文整段 miss）', () => {
+  it('大窗口（自动 40 万字）几乎不滚；5 万字窗口一半以上的轮次都在滚（每滚一次正文整段 miss）', () => {
     const auto = windowFromContext({ contextTokens: 800000, worldBookChars: 100000 });
     const sim = (win: number, rounds: number) => {
       WL().clear();
@@ -189,7 +198,7 @@ describe('Waterline 按新口径滚动（窗口 = 设定值，1.5 倍触发）',
     wb.entries = [{ id: 'x1', type: '角色', name: '甲', content: '甲'.repeat(80000), inject: true } as any];
     WBM.saveAll(WBM.getAll());
     expect(App()._injectedWbChars()).toBeGreaterThan(70000);
-    expect(App()._effectiveStoryWindow(100000)).toBe(660000);
+    expect(App()._effectiveStoryWindow(100000)).toBe(AUTO_WINDOW_CAP);   // 算式 66 万字 → 自动天花板 40 万
     App().setStoryWindow(30000);
     expect(App()._effectiveStoryWindow(100000)).toBe(30000);   // 手动值说了算
     App().setStoryWindow('');
