@@ -1205,13 +1205,15 @@ const App: AppShape = {
     if (typeof SettingSyncManager !== 'undefined' && SettingSyncManager.isActive()) {
       try { _wbEntries = SettingSyncManager.getEffectiveEntries(); } catch (e) { /* 回落原书 */ }
     }
-    // 按「临时世界书（比奇）碰没碰过」分流（2026-09-25 缓存整改）：
-    // overlay 改过的条目约每 5~10 次续写就会变一次，而它原本排在 prompt 第 2 位 —— 一变，
-    // 后面全部（含 5 万字正文窗口）都按 miss 计费。现在：原书条目留在稳定前缀（只有手改才变），
-    // 被改过/新增的条目带着**最终内容**挪到 user 区尾部 —— 变了只赔自己那几 KB，还顺带获得近端强调。
-    // 被改条目的原文不再进前缀，避免同一设定前后两版同时出现在 prompt 里。
-    // 未启用比奇/设定同步时 overlay 为空 → 两块自动合回一块，行为与整改前一致。
-    var _origEntries: any[] = _wbEntries;
+    // 按「临时世界书（比奇）碰没碰过」分流（2026-09-25 二轮整改，实测见交接文档 §13.48）：
+    // 稳定前缀里放的是**原书条目原文**（不随比奇改动而变），比奇改过/停用/新增的内容一律去 user 区尾部
+    // （那里本来就有"优先于上面的原书条目"的近端强调）。
+    // 关键：被改过的条目**不再从稳定前缀里挪走**——上一版是挪走（前缀里那一条消失），
+    // 前缀的字节就在那条的位置变了，那之后的一切（含 5 万字正文）全部按 miss 计费，实测一次改动
+    // 只剩 12%（只剩预设命中）。代价是同一条设定的原文与修订版会同时出现在 prompt 里，
+    // 由尾部那句"优先于上面的原书条目"裁决先后。
+    // 未启用比奇时 overlay 为空 → 与整改前完全一致。
+    var _origEntries: any[] = _wbEntries;   // 有效条目（overlay 生效后）——角色卡/规则提取用
     var _overlayEntries: any[] = [];
     if (typeof SettingSyncManager !== 'undefined' && SettingSyncManager.isActive()) {
       try {
@@ -1235,23 +1237,35 @@ const App: AppShape = {
           try { App.toast('世界书超过 10 万字上限：本轮未注入 ' + _pick.skipped + ' 条（世界书页可查看占用）'); } catch (e) { /* ignore */ }
         }
       }
-      if (_pick.kept.length > 0) {
-        const _ovIds: Record<string, boolean> = {};
-        _overlayEntries.forEach(function (e: any) { _ovIds[e.id] = true; });
-        const _early = _pick.kept.filter(function (e: any) { return !_ovIds[e.id]; });
-        const _late = _pick.kept.filter(function (e: any) { return !!_ovIds[e.id]; });
-        if (_early.length > 0) {
-          _stableCtx += '\n## 世界书条目（必须严格遵守，不得违反）\n';
-          _early.forEach(function (e: any) {
-            _stableCtx += '### [' + e.type + '] ' + e.name + '\n' + (e.content || '') + '\n\n';
+      // 稳定前缀 = **原书条目**（含被比奇停用的那些：它们的原文必须留在原地，字节才不变；
+      // 停用这件事由尾部修订块说明）。上限仍按有效条目那份 _pick 的口径算，避免同一份世界书两套取舍。
+      const _origWB = (_wb && _wb.entries) || [];
+      const _stable = selectInjectableEntries(_origWB, WB_INJECT_MAX_CHARS).kept;
+      if (_stable.length > 0) {
+        _stableCtx += '\n## 世界书条目（必须严格遵守，不得违反）\n';
+        _stable.forEach(function (e: any) {
+          _stableCtx += '### [' + e.type + '] ' + e.name + '\n' + (e.content || '') + '\n\n';
+        });
+      }
+      // 临时修订块：改过的条目（带最终内容）+ 停用标记 + 新增条目。全部在 user 区尾部 → 变了只赔这一小块。
+      const _late = _overlayEntries.slice();
+      const _disabledMarks: string[] = [];
+      if (typeof SettingSyncManager !== 'undefined' && SettingSyncManager.isActive()) {
+        try {
+          const _ov = SettingSyncManager.getOverlay();
+          (_ov.disabled || []).forEach(function (id: string) {
+            const _src = _origWB.filter(function (e: any) { return e && e.id === id; })[0];
+            _disabledMarks.push('### [' + ((_src && _src.type) || '其他') + '] ' + ((_src && _src.name) || id) +
+              '\n（本条已临时停用：视作不存在，不要再使用它的设定）\n');
           });
-        }
-        if (_late.length > 0) {
-          _overlayCtx = '\n## 世界书条目·临时修订（本书生效中，优先于上面的原书条目）\n';
-          _late.forEach(function (e: any) {
-            _overlayCtx += '### [' + e.type + '] ' + e.name + '\n' + (e.content || '') + '\n\n';
-          });
-        }
+        } catch (e) { /* ignore */ }
+      }
+      if (_late.length > 0 || _disabledMarks.length > 0) {
+        _overlayCtx = '\n## 世界书条目·临时修订（本书生效中，优先于上面的原书条目）\n';
+        _late.forEach(function (e: any) {
+          _overlayCtx += '### [' + e.type + '] ' + e.name + '\n' + (e.content || '') + '\n\n';
+        });
+        if (_disabledMarks.length > 0) _overlayCtx += _disabledMarks.join('\n');
       }
     }
 
@@ -1538,10 +1552,11 @@ const App: AppShape = {
     if (_alwaysCharCtx) messages.push({ role: 'system', content: _alwaysCharCtx });
     if (_archiveRecall) messages.push({ role: 'system', content: _archiveRecall });
 
-    // 正文 = 窗口块 + 滚动区，合并成**一段连续正文**（去掉中间那道分界）：
-    // 这样整段只在末尾追加，追加点之后只剩尾部小块与指令；旧实现把窗口放这里、滚动区放 user 区，
-    // 中间还夹着回读/档案，窗口一长就把后面全部打成 miss。
-    var _bodyText = (_frozenText ? _frozenText + '\n\n' : '') + (_rollingText || recentText || '');
+    // 正文 = 窗口块 + 滚动区。**直接拼原文**（不加任何人工分隔符）：
+    // Waterline.frozen 已是正文原文、rolling 是它后面的原文，两段合起来正好等于 canonical.slice(x)。
+    // 这样"跟一个窗口块"只是 x 不变、正文一字不动（纯追加，缓存全命中）；旧写法在两段之间插 '\n\n'，
+    // 每次跟新块都会把插入点之后的滚动区整段打成 miss（实测那一轮 81%）。
+    var _bodyText = (_frozenText || '') + (_rollingText || recentText || '');
     if (_bodyText) {
       messages.push({ role: 'system', content: '## 正文（历史 + 最新进度；最后一段就是接着往下写的位置）\n' + _bodyText });
     }

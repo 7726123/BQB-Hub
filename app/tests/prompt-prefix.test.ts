@@ -98,4 +98,51 @@ describe('窗口块冻结不变（缓存前提）', () => {
     // 窗口块必须与全文严格对齐（撤销/手改可被一致性检查发现）
     expect(text.slice(w1.x, w1.x + w1.frozen.length)).toBe(w1.frozen);
   });
+
+  // 二轮整改（2026-09-25）：正文块之间不再插人工分隔符，prompt 里的正文 = 正文原文的一段后缀。
+  // 这是"跟新块不破缓存"的前提——旧写法 join('\n\n') 会在新块末尾插一个分隔符，把之后的滚动区
+  // 整段打成 miss（真机实测那一轮 81%）。
+  it('正文块逐字节等于正文原文（不插分隔符）', () => {
+    sm().remove('worldBooks'); sm().remove('activeWorldBookId');
+    WBM.createBook('书1');
+    const text = Array.from({ length: 300 }, (_, i) => '第' + i + '段：' + '屋檐下的水还在滴。'.repeat(4)).join('\n\n');
+    const w = WL.update(text, 8000, 12000);
+    // app.ts 里的正文 = frozen + 之后的滚动区 → 必须正好等于 text.slice(x)
+    const body = w.frozen + text.slice(w.x + w.head);
+    expect(body).toBe(text.slice(w.x));
+    expect(body.length).toBe(text.length - w.x);
+  });
+
+  it('跟一个新块：上一轮的正文是新正文的前缀（纯追加，零字节损失）', () => {
+    sm().remove('worldBooks'); sm().remove('activeWorldBookId');
+    WBM.createBook('书1');
+    const base = Array.from({ length: 300 }, (_, i) => '段' + i + '：' + '她把伞收起来。'.repeat(4)).join('\n\n');
+    const w1 = WL.update(base, 8000, 30000);
+    const body1 = w1.frozen + base.slice(w1.x + w1.head);
+    const text2 = base + '\n\n' + '新写的正文。'.repeat(Math.ceil(WL.MIN_APPEND / 3));
+    const w2 = WL.update(text2, 8000, 30000);
+    const body2 = w2.frozen + text2.slice(w2.x + w2.head);
+    expect(w2.blockCount).toBeGreaterThan(w1.blockCount);   // 确实吐了新块
+    expect(w2.x).toBe(w1.x);                                // 没有滚动
+    expect(body2.startsWith(body1)).toBe(true);             // 上一轮正文是新正文的前缀 → 缓存全命中
+  });
+
+  // 二轮整改：窗口内改一处只重切改动点之后的块（旧实现整窗重建 → 正文第一个字节就变 → 只剩 43%）
+  it('窗口内改一处：x 不动、改动点之前的块原样保留，只赔改动点之后', () => {
+    sm().remove('worldBooks'); sm().remove('activeWorldBookId');
+    WBM.createBook('书1');
+    const base = '甲'.repeat(3000) + '\n\n' + '乙'.repeat(3000) + '\n\n' + '丙'.repeat(6000) + '\n\n' + '丁'.repeat(6000);
+    const w1 = WL.update(base, 12000, 20000);
+    const body1 = w1.frozen + base.slice(w1.x + w1.head);
+    const editAt = w1.x + Math.floor(w1.head * 0.4);            // 改动点落在窗口中部
+    const edited = base.slice(0, editAt) + '【改】' + base.slice(editAt);
+    const w2 = WL.update(edited, 12000, 20000);
+    expect(w2.x).toBe(w1.x);                                    // 没有重新锚定（旧实现 x 会变）
+    const body2 = w2.frozen + edited.slice(w2.x + w2.head);
+    let same = 0;
+    const n = Math.min(body1.length, body2.length);
+    while (same < n && body1.charCodeAt(same) === body2.charCodeAt(same)) same++;
+    expect(same).toBe(editAt - w1.x);                           // 公共前缀 = 改动点之前那一段
+    expect(edited.slice(w2.x, w2.x + w2.frozen.length)).toBe(w2.frozen);   // 窗口仍与正文严格对齐
+  });
 });

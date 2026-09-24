@@ -175,22 +175,107 @@ describe('提示词组装（同一份世界书 + 指定字数）', () => {
     setupPreset(1500);
     // chatmode 走 ES import 拿 SettingSyncManager（不是全局），桩要打在真实对象上
     const SS = SettingSyncManager as any;
-    const orig = { isActive: SS.isActive, setMode: SS.setMode, getEffectiveEntries: SS.getEffectiveEntries };
+    const orig = { isActive: SS.isActive, setMode: SS.setMode, getEffectiveEntries: SS.getEffectiveEntries, getOverlay: SS.getOverlay };
     let mode = 'novel';
     SS.isActive = () => true;
     SS.setMode = (m: string) => { mode = m; };
+    const chatOverlay = {
+      modified: { e1: { content: '说话直接。【对话模式改过】' } },
+      disabled: ['e4'],
+      added: [{ id: 'c1', type: '角色', name: '对话模式新增', content: '只存在于对话模式 overlay' }],
+    };
+    const novelOverlay = {
+      modified: {}, disabled: [],
+      added: [{ id: 'n1', type: '角色', name: '小说模式新增', content: '只存在于小说模式 overlay' }],
+    };
     SS.getEffectiveEntries = () => (mode === 'chat'
-      ? [{ id: 'e1', type: '角色', name: '林薇', content: '说话直接。' }, { id: 'c1', type: '角色', name: '对话模式新增', content: '只存在于对话模式 overlay' }]
-      : [{ id: 'e1', type: '角色', name: '林薇', content: '说话直接。' }, { id: 'n1', type: '角色', name: '小说模式新增', content: '只存在于小说模式 overlay' }]);
+      ? [{ id: 'e1', type: '角色', name: '林薇', content: '说话直接。【对话模式改过】' }, chatOverlay.added[0]]
+      : [{ id: 'e1', type: '角色', name: '林薇', content: '说话直接。【小说模式改过】' }, novelOverlay.added[0]]);
+    SS.getOverlay = () => (mode === 'chat' ? chatOverlay : novelOverlay);
     try {
       const sys = ChatMode.buildSystem();
       expect(mode).toBe('chat');                                  // 组装前已切到对话模式
-      expect(sys.indexOf('对话模式新增')).toBeGreaterThan(-1);      // 对话模式的改动参与演出
-      expect(sys.indexOf('小说模式新增')).toBe(-1);                 // 小说模式的改动不参与
+      const user = ChatMode.buildUser('接着演');
+      // 稳定块（system）只放原书原文：比奇改过的那条，前缀里仍是原文（改了前缀字节，缓存就断了）
+      expect(sys.indexOf('说话直接')).toBeGreaterThan(-1);
+      expect(sys.indexOf('【对话模式改过】')).toBe(-1);
+      expect(sys.indexOf('【小说模式改过】')).toBe(-1);
+      // 对话模式的改动/新增进 user 区尾部的「临时修订」块，小说模式那份不参与
+      expect(user.indexOf('临时修订')).toBeGreaterThan(-1);
+      expect(user.indexOf('说话直接。【对话模式改过】')).toBeGreaterThan(-1);
+      expect(user.indexOf('只存在于对话模式 overlay')).toBeGreaterThan(-1);
+      expect(user.indexOf('小说模式新增')).toBe(-1);
+      expect(user.indexOf('小说模式 overlay')).toBe(-1);
       expect(ChatMode.roster()).toContain('对话模式新增');           // 新增角色也进名单（有气泡有头像）
     } finally {
-      SS.isActive = orig.isActive; SS.setMode = orig.setMode; SS.getEffectiveEntries = orig.getEffectiveEntries;
+      SS.isActive = orig.isActive; SS.setMode = orig.setMode;
+      SS.getEffectiveEntries = orig.getEffectiveEntries; SS.getOverlay = orig.getOverlay;
     }
+  });
+
+  // 二轮整改（2026-09-25）：演出记录改成 append-only 水位线。旧实现取"最后 6000 字"，
+  // 块首每轮往后滑一点 → 整个 user 消息（含演出记录）永远 miss（实测真机就是这种情况）。
+  describe('演出记录：append-only 水位线（缓存）', () => {
+    const CTX = 6000;
+    it('只追加：上一轮的演出记录是本轮的纯前缀', () => {
+      seedBooks();
+      setupPreset(null);
+      ChatMode.append('ai', '第一轮演出。'.repeat(40));
+      const ctx1 = ChatMode.recentContext();
+      ChatMode.append('ai', '第二轮演出。'.repeat(40));
+      const ctx2 = ChatMode.recentContext();
+      expect(ctx2.startsWith(ctx1)).toBe(true);
+      expect(ctx2.length).toBeGreaterThan(ctx1.length);
+    });
+
+    it('攒到 1.5 倍上限才推进水位线：推进后长度回到目标值附近，之后又是纯追加', () => {
+      const { a } = seedBooks();
+      setupPreset(null);
+      for (let i = 0; i < 12; i++) ChatMode.append('ai', '第' + i + '轮：' + '她把伞收起来。'.repeat(120));
+      const ctx1 = ChatMode.recentContext();
+      // 反复调用不推进（同一个水位线 → 字节不变，这一轮和第二轮完全一致）
+      expect(ChatMode.recentContext()).toBe(ctx1);
+      expect(a).toBe(WBM.getActiveId());
+      const from1 = Number(g.StorageManager.get('chatCtxFrom_' + a, 0));
+      // 再攒几轮 → 超过 1.5 倍 → 水位线前移一次
+      for (let i = 12; i < 20; i++) ChatMode.append('ai', '第' + i + '轮：' + '她把伞收起来。'.repeat(120));
+      const ctx2 = ChatMode.recentContext();
+      const from2 = Number(g.StorageManager.get('chatCtxFrom_' + a, 0));
+      expect(from2).toBeGreaterThan(from1);
+      expect(ctx1.startsWith(ctx2)).toBe(false);      // 推进那一轮本来就重写（前缀断在这里）
+      expect(ctx2.length).toBeLessThanOrEqual(CTX);
+      // 推进之后又恢复纯追加
+      ChatMode.append('ai', '推进之后的新一轮。');
+      expect(ChatMode.recentContext().startsWith(ctx2)).toBe(true);
+    });
+
+    it('水位线按书隔离：切书各自从自己的起点开始', () => {
+      const { a, b } = seedBooks();
+      setupPreset(null);
+      for (let i = 0; i < 12; i++) ChatMode.append('ai', ('甲书第' + i + '轮。').repeat(200));
+      ChatMode.recentContext();
+      expect(Number(g.StorageManager.get('chatCtxFrom_' + a, 0))).toBeGreaterThan(0);
+      WBM.setActiveId(b);
+      expect(Number(g.StorageManager.get('chatCtxFrom_' + b, 0))).toBe(0);
+      ChatMode.append('ai', '乙书第一轮');
+      expect(ChatMode.recentContext()).toBe('乙书第一轮');
+    });
+
+    it('撤回（日志变短）不会让水位线越界：越界值夹回 0 后按正常规则重算', () => {
+      const { a } = seedBooks();
+      setupPreset(null);
+      for (let i = 0; i < 12; i++) ChatMode.append('ai', '第' + i + '轮：' + '她把伞收起来。'.repeat(120));
+      ChatMode.recentContext();
+      expect(Number(g.StorageManager.get('chatCtxFrom_' + a, 0))).toBeGreaterThan(0);
+      g.StorageManager.set('chatCtxFrom_' + a, 999);   // 比日志还长（模拟撤回后日志变短）→ 夹回 0 再按阈值重算
+      const ctx = ChatMode.recentContext();
+      expect(ctx.length).toBeGreaterThan(0);
+      expect(ctx.length).toBeLessThanOrEqual(6000);              // 仍受目标长度约束
+      const w = Number(g.StorageManager.get('chatCtxFrom_' + a, 0));
+      expect(w).toBeGreaterThanOrEqual(0);
+      expect(w).toBeLessThanOrEqual(ChatMode.log().length);      // 水位线永远落在日志范围内
+      expect(ChatMode.recentContext()).toBe(ctx);                // 稳定：同一水位线 → 字节不变
+    });
   });
 
   it('user：带演出记录、【作者】与【本轮目标】——字数写在这里（实测只写 system 会掉到 65–80%）', () => {
@@ -204,6 +289,28 @@ describe('提示词组装（同一份世界书 + 指定字数）', () => {
     expect(user.indexOf('【作者的指令】演到她说出理由')).toBeGreaterThan(-1);
     expect(user.indexOf('【作者】接着演')).toBeGreaterThan(-1);
     expect(/【本轮目标】约 1500 字/.test(user)).toBe(true);   // 预设写了字数 → 用户消息末尾重申一次
+  });
+
+  it('user 里的顺序：演出记录 → 临时修订 → 【作者】→【本轮目标】（修订块排在指令前、记录后）', () => {
+    seedBooks();
+    setupPreset(1500);
+    const SS = SettingSyncManager as any;
+    const orig = { isActive: SS.isActive, setMode: SS.setMode, getOverlay: SS.getOverlay };
+    SS.isActive = () => true; SS.setMode = () => {};
+    SS.getOverlay = () => ({ modified: { e2: { content: '话少，会弹吉他。【改】' } }, disabled: ['e4'], added: [] });
+    try {
+      ChatMode.append('ai', '第一轮演出内容');
+      const user = ChatMode.buildUser('接着演');
+      const at = (s: string) => user.indexOf(s);
+      expect(at('演出记录')).toBeGreaterThan(-1);
+      expect(at('临时修订')).toBeGreaterThan(at('演出记录'));
+      expect(at('话少，会弹吉他。【改】')).toBeGreaterThan(at('临时修订'));
+      expect(at('本条已临时停用')).toBeGreaterThan(at('临时修订'));     // 停用只写说明，原文留在 system 里
+      expect(at('【作者】接着演')).toBeGreaterThan(at('临时修订'));
+      expect(at('【本轮目标】')).toBeGreaterThan(at('【作者】接着演'));
+    } finally {
+      SS.isActive = orig.isActive; SS.setMode = orig.setMode; SS.getOverlay = orig.getOverlay;
+    }
   });
 
   it('字数只认预设：预设写了就取它，没写就返回 null（不兜底、不注入数字）', () => {

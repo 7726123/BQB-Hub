@@ -549,9 +549,11 @@ export const ChatMode = {
         .map((m: any) => m.content).join('\n\n');
     }
     if (!sys) sys = PresetManager.getActiveSystemPrompt();
-    // 世界书：原书条目 + 对话模式自己的临时 overlay（见 _entries 注释）
-    const entries = this._entries();
-    const pick = selectInjectableEntries(entries, WB_INJECT_MAX_CHARS);
+    // 世界书：稳定块只放**原书条目原文**（比奇改过/停用/新增的一律去 user 区尾部的「临时修订」块，
+    // 见 overlayCtx()）——比奇一改，前缀的字节不能动，否则后面（含整段演出记录）全部按 miss 计费。
+    const wb = this.book();
+    const origEntries: any[] = ((wb && wb.entries) || []).slice();
+    const pick = selectInjectableEntries(origEntries, WB_INJECT_MAX_CHARS);
     let wbBlock = '';
     if (pick.kept.length > 0) {
       wbBlock = '## 世界书条目（必须严格遵守，不得违反）\n';
@@ -559,10 +561,9 @@ export const ChatMode = {
     }
     // 初始条目：正文与演出记录都还空着时才注入（开局状态）
     const logEmpty = this.log().length === 0;
-    const wb = this.book();
     const bodyEmpty = !((wb && wb.chapters) || []).some((ch: any) => String(ch.content || '').replace(/<[^>]*>/g, '').trim().length > 0);
     if (logEmpty && bodyEmpty) {
-      const init = entries.filter((e: any) => e && e.type === '初始' && e.content);
+      const init = origEntries.filter((e: any) => e && e.type === '初始' && e.content);
       if (init.length > 0) {
         wbBlock += '## 故事初始状态\n';
         init.forEach((e: any) => { wbBlock += '### [' + e.type + '] ' + e.name + '\n' + e.content + '\n\n'; });
@@ -573,20 +574,76 @@ export const ChatMode = {
     return [sys, wbBlock, fmt].filter(Boolean).join('\n\n');
   },
 
+  /**
+   * 对话模式的临时世界书修订块（比奇的改动 + 停用标记 + 新增条目）。
+   * 放在 user 区尾部（演出记录之后、作者指令之前）：变了只赔这一小块，且自带近端强调。
+   * 关掉比奇 / overlay 为空时返回空串。
+   */
+  overlayCtx(): string {
+    try {
+      if (typeof SettingSyncManager === 'undefined' || !SettingSyncManager.isActive()) return '';
+      SettingSyncManager.setMode('chat');
+      const ov = SettingSyncManager.getOverlay();
+      const orig: any[] = ((this.book() || {}).entries) || [];
+      const byId: Record<string, any> = {};
+      orig.forEach((e: any) => { if (e && e.id) byId[e.id] = e; });
+      let out = '';
+      // 改过的条目：带最终内容
+      Object.keys(ov.modified || {}).forEach((id: string) => {
+        const src = byId[id];
+        const m = (ov.modified || {})[id] || {};
+        const name = m.name || (src && src.name) || id;
+        const type = m.type || (src && src.type) || '其他';
+        const content = (typeof m.content === 'string') ? m.content : ((src && src.content) || '');
+        if (!content) return;
+        out += '### [' + type + '] ' + name + '\n' + content + '\n\n';
+      });
+      // 停用：原文留在上面的稳定块里不动，这里只说明它失效
+      (ov.disabled || []).forEach((id: string) => {
+        const src = byId[id];
+        out += '### [' + ((src && src.type) || '其他') + '] ' + ((src && src.name) || id) +
+          '\n（本条已临时停用：视作不存在，不要再使用它的设定）\n\n';
+      });
+      // 新增条目
+      (ov.added || []).forEach((e: any) => {
+        if (!e || !e.content) return;
+        out += '### [' + (e.type || '其他') + '] ' + (e.name || '（未命名）') + '\n' + e.content + '\n\n';
+      });
+      if (!out) return '';
+      return '## 世界书条目·临时修订（本次演出生效，优先于上面的原书条目）\n' + out;
+    } catch (e) { return ''; }
+  },
+
   thinkingLevelOff(): boolean {
     try { return typeof App.thinkingLevel === 'function' && App.thinkingLevel() === 'off'; } catch (e) { return false; }
   },
 
+  // 演出记录注入块：**append-only 水位线**（缓存）。
+  // 旧实现取"最后 6000 字"——块首每轮都往后滑一点，前缀缓存就断在块的第一个字节，
+  // 于是整个 user 消息（含演出记录）永远 miss，只剩 system 命中。
+  // 现在记一个起点下标（每本书一个），只包含 [from, end)：起点固定 → 每轮只往末尾追加，
+  // 缓存能一路命中到上一轮结尾；攒到 1.5 倍目标长度才把起点往前推一次（那一轮本来就整段重写）。
+  _ctxFromKey(): string { return 'chatCtxFrom_' + (this.bookId() || 'none'); },
+  _msgPiece(m: ChatMsg): string {
+    return m.kind === 'ai' ? m.raw : (m.kind === 'author' ? '【作者】' + m.raw : '【作者的指令】' + m.raw);
+  },
   recentContext(): string {
     const all = this.log();
-    let out = '';
-    for (let i = all.length - 1; i >= 0; i--) {
-      const m = all[i];
-      const piece = m.kind === 'ai' ? m.raw : (m.kind === 'author' ? '【作者】' + m.raw : '【作者的指令】' + m.raw);
-      out = piece + '\n\n' + out;
-      if (out.length >= CTX_CHARS) break;
+    let from = Number(smGet(this._ctxFromKey(), 0)) || 0;
+    if (!(from >= 0) || from > all.length) from = 0;
+    const build = (f: number) => {
+      const parts: string[] = [];
+      for (let i = f; i < all.length; i++) parts.push(this._msgPiece(all[i]));
+      return parts.join('\n\n').trim();
+    };
+    let out = build(from);
+    if (out.length > CTX_CHARS * 1.5) {
+      // 超阈值：把起点推到"剩下的正好 ≤ 目标长度"，落盘（下一轮从这里开始，又是一次纯追加）
+      let f = from;
+      while (f < all.length && build(f).length > CTX_CHARS) f++;
+      if (f > from) { from = f; smSet(this._ctxFromKey(), f); out = build(from); }
     }
-    return out.trim();
+    return out;
   },
 
   buildUser(instruction: string): string {
@@ -594,6 +651,9 @@ export const ChatMode = {
     const n = this.lengthWords();
     const parts: string[] = [];
     if (ctx) parts.push('## 演出记录（按时间先后，最后一条离现在最近）\n' + ctx);
+    // 临时世界书修订块：之后变也只赔这一块（在演出记录后面 = 不拖累历史命中）
+    const ovCtx = this.overlayCtx();
+    if (ovCtx) parts.push(ovCtx);
     parts.push('【作者】' + (instruction || '（没有新要求，接着往下演）'));
     if (n) parts.push('【本轮目标】约 ' + n + ' 字。不足 ' + n + ' 字算没写完，不要提前收尾。');
     return parts.join('\n\n');

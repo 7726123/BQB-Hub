@@ -470,6 +470,14 @@ export const Waterline = {
   // 每轮生成前调用：维护「尾部锚定」窗口块并将最旧块分批滚入归档。
   // 窗口 = canonical[x .. x+head]，x 只在滚动时右移（仅滚动轮缓存失效一次）。
   // canonical 必须与上一轮相同来源（getFullNovelText 不截断）。
+  //
+  // 缓存语义（2026-09-25 二轮整改，实测见交接文档 §13.48）：
+  //   ① 返回的 frozen 是**正文原文**（块用 join('') 拼，不插人工分隔符）——prompt 里的正文
+  //      就等于 canonical.slice(x)，于是「跟一个新块」不再产生任何字节变化（纯追加，之前每次
+  //      要赔掉新块之后的一整段滚动区；实测那一轮只有 81%）。
+  //   ② 窗口与正文不一致时**只重切变更点之后的块**（前面字节未变的块原样保留、x 不动）——
+  //      改一处只赔到那一处为止。旧实现整窗重建（重新算 x + 全部重切），正文块第一个字节就变，
+  //      5 万字正文全部按 miss 计费（实测只剩 43%，正好只剩预设+世界书命中）。
   update(canonical: string, waterChars: number, triggerChars: number): { frozen: string; head: number; blockCount: number; rolled: number; x: number } {
     canonical = String(canonical || '');
     const s = this.get();
@@ -477,14 +485,36 @@ export const Waterline = {
 
     // 一致性：窗口内容（无分隔符拼接）必须等于 canonical[x .. x+head]
     let head = this._head(s);
-    const joinedNow = s.blocks.map(function (b) { return b.text; }).join('');
     if (s.blocks.length > 0) {
-      if (s.x + head > canonical.length || canonical.slice(s.x, s.x + head) !== joinedNow) {
-        console.warn('[Waterline] 窗口与正文不一致（撤回/手改），重建');
+      if (s.x + head > canonical.length) {
+        // 正文被删短到窗口末尾之后（撤回/大段删除）：重新锚定，这一轮本来就要重写正文块
+        console.warn('[Waterline] 正文短于窗口末尾（撤回/删除），重新锚定');
         s.blocks = [];
         s.x = Math.max(0, canonical.length - this.ROLLING - waterChars);
         head = 0;
         changed = true;
+      } else {
+        // 逐块核对：保留前面逐字节仍能对上的块（它们的偏移没变），从第一处对不上的块开始重切。
+        let keep = 0;
+        let off = s.x;
+        while (keep < s.blocks.length) {
+          const b = s.blocks[keep];
+          if (off + b.text.length > canonical.length) break;
+          if (canonical.slice(off, off + b.text.length) !== b.text) break;
+          off += b.text.length;
+          keep++;
+        }
+        if (keep < s.blocks.length) {
+          const at = s.x + this._head({ blocks: s.blocks.slice(0, keep), x: s.x });
+          console.warn('[Waterline] 正文在窗口内被改动，只重切改动点之后的块（at=' + at + '，保留 ' + keep + '/' + s.blocks.length + ' 块）');
+          s.blocks = s.blocks.slice(0, keep);
+          head = this._head(s);
+          changed = true;
+          // 改动点已经落在窗口末尾之后（没有块可留、也没内容可重切）→ 重新锚定，别留一个空窗口
+          if (keep === 0 && head === 0 && s.x > Math.max(0, canonical.length - this.ROLLING - waterChars)) {
+            s.x = Math.max(0, canonical.length - this.ROLLING - waterChars);
+          }
+        }
       }
     } else if (s.x > canonical.length) {
       s.x = Math.max(0, canonical.length - this.ROLLING - waterChars);
@@ -517,7 +547,8 @@ export const Waterline = {
     }
     if (changed || rolled.length) this._save(s);
     return {
-      frozen: s.blocks.map(function (b) { return b.text; }).join('\n\n'),
+      // 正文原文（join('')）：prompt 里的正文 = canonical.slice(x)，跟新块不再改变任何字节
+      frozen: s.blocks.map(function (b) { return b.text; }).join(''),
       head: this._head(s),
       blockCount: s.blocks.length,
       rolled: rolled.length,
