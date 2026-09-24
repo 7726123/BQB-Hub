@@ -12,7 +12,8 @@
 // 或用户在装完之前就进了 App）不再干等下次冷启动——抓下一次机会自己生效（见 _bindApplyHooks）：
 //   · 切后台/锁屏时立刻就地切换：过程用户看不见，回来就是新版；
 //   · 回到前台时仍有待生效的包，直接切（新包自己的启动画面接住这次重载）；
-//   · 回到前台顺手补一次检查（节流 10 分钟）：长时间开着 App 也能拿到新包，不必等下次冷启动。
+//   · 回到前台顺手补一次检查（节流 1 分钟——查一次只是一个 1KB 的 manifest，重活只在真有新版时发生）；
+//   · 装好时人在前台：问一句"立即生效"（重载会丢未保存输入，必须用户点头），不再干等切后台。
 // 切换前一律先 saveCurrentChapter 落盘；仍然绝不在"前台 + 用户正在写"时无故重载。
 import { ClientLog } from './clientlog';
 import { BootSplash } from './bootsplash';
@@ -103,6 +104,11 @@ function _applyViaWebView(st: HotBundleState): boolean {
 /** 原生就地生效（优先，APK 158 起）：目录由原生算（内置资源也能切）、切完 arm 回退看门狗。null = 该 APK 没有这个方法。 */
 function _nativeApply(p: HotBundlePlugin, st: HotBundleState): Promise<boolean> | null {
   if (typeof p.applyPending !== 'function') return null;
+  // APK 157 及更早的原生侧没有这个方法：Capacitor 的插件对象是代理，typeof 恒为 function，
+  // 真调下去只会拿到一句 "not implemented"（每次生效都白跑一趟桥、留一条失败日志）。
+  // 按 nativeCode 直接判定，交给 WebView 老路径。
+  const nv = Number(st && st.nativeCode) || 0;
+  if (nv > 0 && nv < 158) return null;
   try {
     ClientLog.note('热更新', '切换到网页包 ' + st.pending + '（原生就地生效）');
     return Promise.resolve(p.applyPending()).then(function (r) {
@@ -198,6 +204,8 @@ export const HotBundle = {
     const boot = !manual && BootSplash.available();
     // 先读本地状态：待生效的那一版就是服务端现在给的这一版 → 直接告知，别去撞原生
     const st = HotBundle._state || { active: '', pending: '', code: 0, blocked: '', nativeCode: 0 };
+    // getState 还没回来时先占位：安装成功后要把 pending 记在这儿，事件钩子才找得到它
+    if (!HotBundle._state) HotBundle._state = st;
     fetch(server + '/api/app/web-bundle?_=' + Date.now(), { cache: 'no-store' })
       .then(function (r) { if (!r.ok) throw new Error('http ' + r.status); return r.json() as Promise<HotBundleManifest>; })
       .then(function (j) {
@@ -226,6 +234,10 @@ export const HotBundle = {
             if (st) { st.pending = got; }
             // 装完时若已经切到后台（用户先干别的去了）：当场静默换上，下次回到前台就是新版
             try { if (document.hidden) HotBundle.commitPending('装完时在后台'); } catch (e) { /* 忽略 */ }
+            // 装完时人在前台（回前台补检查撞上新版的常见路径）：不再干等"切一次后台"——
+            // 问一句立即生效（重载会丢未保存输入，必须用户点头；选取消也不耽误，切后台/回前台照旧自动换）。
+            // 启动画面期间与手动检查各有自己的编排，不在这儿重复问。
+            if (!document.hidden && !boot && !manual) { try { HotBundle._offerApplyForeground(got); } catch (e) { /* 忽略 */ } }
             return { ok: true, version: got, msg: '' };
           }, function (err) {
             const msg = String((err && (err as Error).message) || err || '未知错误');
@@ -300,8 +312,25 @@ export const HotBundle = {
   // 现在改成：待生效的包挂在这儿，切后台/回前台/装机完成时自己生效。
   _applyHooksBound: false,
   _lastForegroundCheckAt: 0,
-  /** 前台补检查的节流：太频繁会把"切回 App"变成每次都下载 */
-  FOREGROUND_CHECK_MS: 10 * 60 * 1000,
+  /** 前台补检查的节流：查一次只是一个 1KB 的 manifest（zip 只在真有新版时才下），可以勤快一点；
+   *  以前 10 分钟是按"每次都下载"的旧假设设的——表现为"发了新版，切回 App 十分钟内看不到"。 */
+  FOREGROUND_CHECK_MS: 60 * 1000,
+
+  /**
+   * 装好后人在前台（非启动画面、非手动检查）：问一句是否立即生效。
+   * 以前这里什么都不做，只等用户"切一次后台"才换上——用户感知就是"更新了没生效，得退出再进"。
+   * 重载会丢掉没保存的输入，所以必须问；选取消也不耽误：切后台/回前台/下次冷启动都会自动换上。
+   */
+  _offerApplyForeground(version?: string): void {
+    const UI = (globalThis as unknown as { UIManager?: { showConfirm?: (m: string, cb: () => void) => void } }).UIManager;
+    if (!UI || typeof UI.showConfirm !== 'function') return;   // 没有弹窗可用：不打扰，切后台/回前台照样自动生效
+    const self = this;
+    const msg = '新版本' + (version ? ' ' + version : '') + ' 已就绪。\n现在重启界面立即生效？'
+      + '\n（未保存的输入会丢失，建议先确认已保存；选「取消」则切回本应用时自动生效）';
+    try {
+      UI.showConfirm.call(UI, msg, function () { self.commitPending('前台确认'); });
+    } catch (e) { /* 弹窗异常不影响任何流程 */ }
+  },
 
   /**
    * 把"已装好、待生效"的那一版切过去（会重载页面）。

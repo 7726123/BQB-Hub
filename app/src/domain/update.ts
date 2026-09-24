@@ -27,7 +27,13 @@ export function offerHotApply(version?: string, confirmFn?: (msg: string, cb: ()
   const msg = '新版本' + (version ? ' ' + version : '') + ' 已就绪。\n现在重启界面立即生效？'
     + '\n（未保存的输入会丢失，建议先确认已保存；选「取消」则切回本应用时自动生效）';
   const run = applyFn || function () { HotBundle.applyPendingNow(); };
-  try { ask(msg, run); } catch (e) { /* 弹窗不可用：不打扰，切后台/回前台时照样自动生效 */ }
+  try {
+    // 必须作为 UI 的方法调用（内部靠 this 拿 confirmCallback / showModal）——
+    // 之前写成 `ask(msg, run)` 脱开了 this，showConfirm 一进来就抛错被下面这行 catch 吞掉，
+    // 结果"要不要立即生效"的弹窗永远不出现（更新只能靠切后台/重启生效）。
+    if (confirmFn) confirmFn(msg, run);
+    else (UI as { showConfirm: (m: string, cb: () => void) => void }).showConfirm(msg, run);
+  } catch (e) { /* 弹窗不可用：不打扰，切后台/回前台时照样自动生效 */ }
 }
 
 // Capacitor 原生插件的最小类型声明（UpdateChecker）

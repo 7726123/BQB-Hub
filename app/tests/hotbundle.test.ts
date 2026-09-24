@@ -605,6 +605,159 @@ describe('错过启动窗口的包：抓机会自动生效（不必退出再进�
   });
 });
 
+// 用户报「热更了没生效，得退出再进」的另两个时机缺口（2026-09-24 真机反馈）：
+// ① 装好时人在前台 → 以前干等"切一次后台"，现在直接问一句；
+// ② 回前台补检查原来节流 10 分钟（按"每次都下载"的旧假设）→ 降到 1 分钟，查一次只是一个 1KB manifest。
+describe('前台装完即问 / 补检查节流收紧', () => {
+  const manifest = { payload: 'cGF5bG9hZA==', sig: 'c2ln', v: '1.5.97w2' };
+  const hotState = () => ({
+    active: '1.5.97w1', pending: '', code: 157001, blocked: '', nativeCode: 157,
+    serving: '/data/user/0/com.novelwriter.app/files/hot/1.5.97w1',
+  });
+  function stubFetch(body: unknown) {
+    (globalThis as unknown as Record<string, unknown>).fetch = () =>
+      Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(body) });
+  }
+  function stubHot() {
+    (globalThis as unknown as Record<string, unknown>).Capacitor = {
+      getPlatform: () => 'android',
+      Plugins: {
+        HotBundle: { getState: () => Promise.resolve(stateReply), install: () => Promise.resolve({ ok: true, version: '1.5.97w2' }) },
+        WebView: { setServerBasePath: () => Promise.resolve() },
+      },
+    };
+  }
+
+  test('自动检查（非启动画面、非手动）装完时人在前台：弹确认，点确定就切目录并落盘', async () => {
+    const msgs: string[] = [];
+    const sets: { path: string }[] = [];
+    let saved = 0;
+    (globalThis as unknown as Record<string, unknown>).Capacitor = {
+      getPlatform: () => 'android',
+      Plugins: {
+        HotBundle: { getState: () => Promise.resolve(stateReply), install: () => Promise.resolve({ ok: true, version: '1.5.97w2' }) },
+        WebView: { setServerBasePath: (o: { path: string }) => { sets.push(o); return Promise.resolve(); } },
+      },
+    };
+    (globalThis as unknown as Record<string, unknown>).UIManager = {
+      showConfirm: (m: string, cb: () => void) => { msgs.push(m); cb(); },
+    };
+    (globalThis as unknown as Record<string, unknown>).App = {
+      toast: (m: string) => { toasts.push(m); },
+      saveCurrentChapter: () => { saved++; },
+    };
+    try {
+      stateReply = hotState();
+      HotBundle._applyUnavailable = false;
+      HotBundle.init();
+      await flush();
+      stubFetch(manifest);
+      HotBundle.check(false);                 // 回前台补检查式的自动检查
+      await flush(); await flush();
+      expect(msgs.length).toBe(1);
+      expect(msgs[0]).toContain('立即生效');
+      expect(msgs[0]).toContain('未保存');
+      expect(sets[0].path).toBe('/data/user/0/com.novelwriter.app/files/hot/1.5.97w2');
+      expect(saved).toBe(1);                  // 重载前先落盘
+    } finally {
+      delete (globalThis as unknown as Record<string, unknown>).UIManager;
+      HotBundle._applyUnavailable = false;
+    }
+  });
+
+  test('手动检查不问（update.ts 有自己的编排，避免弹两条）', async () => {
+    stubHot();
+    let asked = 0;
+    (globalThis as unknown as Record<string, unknown>).UIManager = {
+      showConfirm: () => { asked++; },
+    };
+    try {
+      stateReply = hotState();
+      HotBundle.init();
+      await flush();
+      stubFetch(manifest);
+      HotBundle.check(true);
+      await flush(); await flush();
+      expect(asked).toBe(0);
+    } finally { delete (globalThis as unknown as Record<string, unknown>).UIManager; }
+  });
+
+  test('补检查节流 1 分钟：30 秒内不重查，超过就查', async () => {
+    const bound: Record<string, () => void> = {};
+    const doc = (globalThis as unknown as { document: { addEventListener: unknown } }).document;
+    const origAdd = doc.addEventListener;
+    doc.addEventListener = (t: string, fn: () => void) => { bound[t] = fn; };
+    try {
+      stubHot();
+      stateReply = hotState();
+      HotBundle._state = { ...hotState() };
+      HotBundle._applyHooksBound = false;
+      HotBundle._lastForegroundCheckAt = 0;
+      HotBundle.init();
+      await flush();
+      stubFetch({ v: '1.5.97w1', payload: 'x', sig: 'y' });   // 已在跑的最新版：只查不装
+      HotBundle._lastForegroundCheckAt = Date.now() - 30 * 1000;   // 30 秒前查过 → 节流期内
+      bound['visibilitychange']();
+      await flush();
+      expect(notes.filter(x => x.includes('前台补检查')).length).toBe(0);
+      HotBundle._lastForegroundCheckAt = Date.now() - 61 * 1000;   // 1 分钟前查过 → 该查了
+      bound['visibilitychange']();
+      await flush();
+      expect(notes.filter(x => x.includes('前台补检查')).length).toBe(1);
+    } finally {
+      doc.addEventListener = origAdd;
+      HotBundle._applyHooksBound = false;
+      HotBundle._lastForegroundCheckAt = 0;
+    }
+  });
+
+  // APK 157 的原生侧没有 applyPending：Capacitor 插件对象是代理，typeof 恒为 function，
+  // 真调下去只会拿到 "not implemented"（每次生效白跑一趟桥 + 一条失败日志）。
+  test('nativeCode 157：跳过原生 applyPending，直接走 WebView 老路径', async () => {
+    let native = 0;
+    const sets: unknown[] = [];
+    (globalThis as unknown as Record<string, unknown>).Capacitor = {
+      getPlatform: () => 'android',
+      Plugins: {
+        HotBundle: {
+          getState: () => Promise.resolve(stateReply),
+          install: () => Promise.resolve({}),
+          applyPending: () => { native++; return Promise.resolve({ ok: true }); },
+        },
+        WebView: { setServerBasePath: (o: unknown) => { sets.push(o); return Promise.resolve(); } },
+      },
+    };
+    stateReply = { ...hotState(), pending: '1.5.97w2' };
+    HotBundle.init();
+    await flush();
+    expect(HotBundle.applyPendingNow()).toBe(true);
+    await flush();
+    expect(native).toBe(0);
+    expect(sets.length).toBe(1);
+  });
+
+  test('nativeCode 158：原生方法与 WebView 都不再需要，原生优先照旧', async () => {
+    let native = 0;
+    (globalThis as unknown as Record<string, unknown>).Capacitor = {
+      getPlatform: () => 'android',
+      Plugins: {
+        HotBundle: {
+          getState: () => Promise.resolve(stateReply),
+          install: () => Promise.resolve({}),
+          applyPending: () => { native++; return Promise.resolve({ ok: true }); },
+        },
+        WebView: { setServerBasePath: () => Promise.resolve() },
+      },
+    };
+    stateReply = { ...hotState(), nativeCode: 158, pending: '1.5.97w2' };
+    HotBundle.init();
+    await flush();
+    expect(HotBundle.applyPendingNow()).toBe(true);
+    await flush();
+    expect(native).toBe(1);
+  });
+});
+
 describe('版本展示', () => {
   test('内置资源：只显示 APK 版本', () => {
     setWebVersion('');
@@ -645,5 +798,26 @@ describe('立即生效的询问（offerHotApply）', () => {
 
   test('没有确认框可用时不抛错、不打扰', () => {
     expect(() => offerHotApply('1.5.97w2', undefined, undefined)).not.toThrow();
+  });
+
+  // 回归（2026-09-24 审查发现）：之前写成 `ask(msg, run)`，把 UI.showConfirm 脱开 this 调用，
+  // 而它内部靠 this.confirmCallback / this.showModal 干活 → 一进来就抛错被 catch 吞掉，
+  // "要不要立即生效"的弹窗永远不出现（更新只能靠切后台/重启）。
+  test('UIManager 的方法必须作为方法调用（脱开 this 会让弹窗永远不出现）', () => {
+    const calls: string[] = [];
+    const UI = {
+      confirmCallback: null as null | (() => void),
+      modal: '',
+      showModal(name: string) { this.modal = name; },
+      showConfirm(msg: string, cb: () => void) { this.confirmCallback = cb; this.showModal('modalConfirm'); calls.push(msg); },
+    };
+    (globalThis as unknown as Record<string, unknown>).UIManager = UI;
+    try {
+      offerHotApply('1.5.97w2', undefined, () => { calls.push('applied'); });
+      expect(UI.modal).toBe('modalConfirm');    // 弹窗真的弹出来了
+      expect(calls.length).toBe(1);
+      UI.confirmCallback!();                    // 用户点「确定」
+      expect(calls).toContain('applied');
+    } finally { delete (globalThis as unknown as Record<string, unknown>).UIManager; }
   });
 });
