@@ -44,8 +44,10 @@ const server = http.createServer((req, res) => {
   let host = req.headers['x-upstream-host'] || null;
   let realPath = req.url;
   const pathHostMatch = req.url.match(/^\/([a-zA-Z0-9.-]+(?::\d+)?)\/(.*)$/);
-  if (pathHostMatch) {
-    if (!host) host = pathHostMatch[1];
+  // 只有「没带 x-upstream-host 头」时才把首段当上游 host 剥掉：
+  // 带了头还照剥的话，/api/coding/v3/chat/completions 会被吃成 /coding/v3/... → 上游 404（2026-09-25 实测踩到）。
+  if (pathHostMatch && !host) {
+    host = pathHostMatch[1];
     realPath = '/' + pathHostMatch[2];
   }
   if (!host || !/^[a-zA-Z0-9.-]+(:\d+)?$/.test(host)) {
@@ -68,9 +70,14 @@ const server = http.createServer((req, res) => {
     upRes.pipe(res);
   });
   upstream.on('error', function(e) {
-    res.writeHead(502, CORS_HEADERS);
-    res.end('proxy error: ' + e.message);
+    // 上游报错既可能发生在写响应头之前（DNS/连接失败），也可能在之后（浏览器中途 reload、上游断流）。
+    // 之后那种情况再 writeHead 会抛 ERR_HTTP_HEADERS_SENT 把整个代理进程带崩（2026-09-25 实测踩到：
+    // 页面刷新把请求掐掉 → 代理直接退出，后续浏览器调试全部连不上）。
+    if (res.headersSent) { res.destroy(); return; }
+    try { res.writeHead(502, CORS_HEADERS); res.end('proxy error: ' + e.message); }
+    catch (e2) { try { res.destroy(); } catch (e3) { /* ignore */ } }
   });
+  req.on('error', function() { try { upstream.destroy(); } catch (e) { /* ignore */ } });
   req.pipe(upstream);
 });
 

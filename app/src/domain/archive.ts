@@ -430,7 +430,13 @@ interface WindowState { blocks: WindowBlock[]; x: number }
 export const Waterline = {
   ROLLING: 5000,      // 滚动区（窗口之后、user 之前，固定保留原文）
   BLOCK_SIZE: 8000,   // 单块目标字符数
-  MIN_APPEND: 1500,   // 不足则不追加（减少中间态）
+  // 不足则不追加（减少中间态）。这个值是**缓存的关键旋钮**（2026-09-25 实测，见 tools/cache-probe.mjs）：
+  // 每吐一个新块，prompt 里「窗口」这段就在正文中间插入一段新文字 → 公共前缀断在插入处，
+  // 其后的一切（回读块/滚动区/尾部小块）本轮全部按 miss 计费。1500 时几乎每次续写（1500~2500 字）
+  // 都吐块，等于**每轮**都在中间插一刀；调到 ~4000（约 2 倍单次输出）后多数轮次窗口字节不变，
+  // 整个 prompt 变成「只在末尾追加」→ 命中率才有机会上来。
+  // 代价：窗口右缘跟进变慢，滚动区最长可到 ROLLING + MIN_APPEND；信息不丢（最新正文始终在滚动区里）。
+  MIN_APPEND: 4000,
 
   _bookId(): string {
     return (typeof WorldBookManager !== 'undefined' && WorldBookManager.getActiveId) ? (WorldBookManager.getActiveId() || 'none') : 'none';

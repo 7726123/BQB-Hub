@@ -880,7 +880,7 @@ export const APIHandler = {
       // 部分网关（如 opencode router）流式每帧都带 usage——若每帧入账一次，
       // 一次续写会被用量统计记成几千次调用（token/费用也重复累加）。
       // 只暂存最后一帧，流结束后统一入账一次。
-      let lastUsage: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number; prompt_tokens_details?: { cached_tokens?: number } } | null = null;
+      let lastUsage: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number; prompt_tokens_details?: { cached_tokens?: number }; prompt_cache_hit_tokens?: number } | null = null;
       // 流结束原因（stop=模型自然收笔 / length=输出额度到顶被截断）：用于向用户区分「模型自己停」与「额度不够」
       let _finishReason: string | null = null;
       type DeltaLike = { content?: string; reasoning_content?: string; reasoning?: string; thinking?: string | { text?: string }; thought?: string; analysis?: string; tool_calls?: { index?: number; id?: string; function?: { name?: string; arguments?: string } }[] };
@@ -923,7 +923,7 @@ export const APIHandler = {
             const p = JSON.parse(data) as {
               __proxy_error__?: boolean; type?: string; message?: string;
               choices?: { delta?: DeltaLike; message?: DeltaLike; finish_reason?: string }[];
-              usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number; prompt_tokens_details?: { cached_tokens?: number } };
+              usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number; prompt_tokens_details?: { cached_tokens?: number }; prompt_cache_hit_tokens?: number };
               reasoning_content?: string; reasoning?: string; thinking?: string;
             };
             const _fr = p.choices?.[0]?.finish_reason;
@@ -1021,7 +1021,9 @@ export const APIHandler = {
       if (lastUsage) {
         const u = lastUsage;
         const label = overrides.callLabel || 'unknown';
-        const cached = (u.prompt_tokens_details && u.prompt_tokens_details.cached_tokens) || 0;
+        // 缓存命中 token：两种方言都要认。OpenAI/火山方舟走 prompt_tokens_details.cached_tokens；
+        // DeepSeek 直连走顶层 prompt_cache_hit_tokens（只认前者的后果：命中率恒显 0%、费用按全 miss 估，偏贵）。
+        const cached = (u.prompt_tokens_details && u.prompt_tokens_details.cached_tokens) || u.prompt_cache_hit_tokens || 0;
         const uncached = (u.prompt_tokens || 0) - cached;
         const prices = App.getPricingConfig?.() ?? { input: 0, cached: 0, output: 0 };
         this._apiCalls.push({

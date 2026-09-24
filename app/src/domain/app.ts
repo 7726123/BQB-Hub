@@ -2,6 +2,7 @@ import { SM } from '../infra/gate';
 import { decodeNovelText, novelTextToEditorHtml, mergeChapterText } from '../lib/textfile';
 import { htmlToPlainText } from '../lib/htmltext';
 import { recallKey, recallFits } from '../lib/recallgate';
+import { RecallPin } from './recallpin';
 import { AdminMode } from './adminmode';
 import { UsageStats, _wbKey } from '../lib/usage';
 import { SettingSyncManager } from './settingsync';
@@ -1185,12 +1186,8 @@ const App: AppShape = {
         // 世界观 = 世界书条目（type=世界观 的条目），无独立 worldSetting 字段注入
         // （旧「全局世界观设定」文本框已随写卡 agent 版移除，字段残留不再注入）
 
-    // 世界书条目：开启注入的条目全部进入稳定前缀（关键词/常驻/条件机制已移除）
-    const filteredWB = WorldBookManager.filterRelevantEntries();
-    const _intensity = 'medium';
-    // 稳定前缀已全量注入，动态区不再重复注入
-    const _alwaysWB: any[] = [];
-    const _matchedWB = filteredWB.filter(function (e: any) { return e.type !== '变量' && e.type !== '前端'; });
+    // 世界书条目：开启注入的条目全部进入稳定前缀（关键词/常驻/条件机制已移除）；
+    // 旧的「_matchedWB + _intensity」动态区随 _variableCtx 一起去掉了（见下方注释）
 
     // Dedup: skip role-type WB entries already covered by character descriptions
     const _coveredCharNames = new Set();
@@ -1206,6 +1203,24 @@ const App: AppShape = {
     if (typeof SettingSyncManager !== 'undefined' && SettingSyncManager.isActive()) {
       try { _wbEntries = SettingSyncManager.getEffectiveEntries(); } catch (e) { /* 回落原书 */ }
     }
+    // 按「临时世界书（比奇 / Agent 设定同步）碰没碰过」分流（2026-09-25 缓存整改）：
+    // overlay 改过的条目约每 5~10 次续写就会变一次，而它原本排在 prompt 第 2 位 —— 一变，
+    // 后面全部（含 5 万字正文窗口）都按 miss 计费。现在：原书条目留在稳定前缀（只有手改才变），
+    // 被改过/新增的条目带着**最终内容**挪到 user 区尾部 —— 变了只赔自己那几 KB，还顺带获得近端强调。
+    // 被改条目的原文不再进前缀，避免同一设定前后两版同时出现在 prompt 里。
+    // 未启用比奇/设定同步时 overlay 为空 → 两块自动合回一块，行为与整改前一致。
+    var _origEntries: any[] = _wbEntries;
+    var _overlayEntries: any[] = [];
+    if (typeof SettingSyncManager !== 'undefined' && SettingSyncManager.isActive()) {
+      try {
+        _origEntries = []; _overlayEntries = [];
+        _wbEntries.forEach(function (e: any) {
+          const _st = SettingSyncManager.entryStatus(e.id);
+          (_st === 'orig' ? _origEntries : _overlayEntries).push(e);
+        });
+      } catch (e) { _origEntries = _wbEntries; _overlayEntries = []; }
+    }
+    let _overlayCtx = '';
     if (_wbEntries.length > 0) {
       // 注入上限固定 10 万字（不再提供用户设置项；只依赖条目 + 上限这两个稳定输入 → 稳定前缀逐字节可缓存）：
       // 条目过多时按 角色 > 世界观 > 其他 优先级取用，超出部分整体跳过并在世界书页显示占用。
@@ -1219,10 +1234,22 @@ const App: AppShape = {
         }
       }
       if (_pick.kept.length > 0) {
-        _stableCtx += '\n## 世界书条目（必须严格遵守，不得违反）\n';
-        _pick.kept.forEach(function (e: any) {
-          _stableCtx += '### [' + e.type + '] ' + e.name + '\n' + (e.content || '') + '\n\n';
-        });
+        const _ovIds: Record<string, boolean> = {};
+        _overlayEntries.forEach(function (e: any) { _ovIds[e.id] = true; });
+        const _early = _pick.kept.filter(function (e: any) { return !_ovIds[e.id]; });
+        const _late = _pick.kept.filter(function (e: any) { return !!_ovIds[e.id]; });
+        if (_early.length > 0) {
+          _stableCtx += '\n## 世界书条目（必须严格遵守，不得违反）\n';
+          _early.forEach(function (e: any) {
+            _stableCtx += '### [' + e.type + '] ' + e.name + '\n' + (e.content || '') + '\n\n';
+          });
+        }
+        if (_late.length > 0) {
+          _overlayCtx = '\n## 世界书条目·临时修订（本书生效中，优先于上面的原书条目）\n';
+          _late.forEach(function (e: any) {
+            _overlayCtx += '### [' + e.type + '] ' + e.name + '\n' + (e.content || '') + '\n\n';
+          });
+        }
       }
     }
 
@@ -1234,7 +1261,7 @@ const App: AppShape = {
         return (ch.content || '').replace(/<[^>]*>/g, '').trim().length > 0;
       });
       if (_bodyEmpty) {
-        var _initEntries = _wbEntries.filter(function (e) { return e.type === '初始' && e.content; });
+        var _initEntries = _origEntries.filter(function (e) { return e.type === '初始' && e.content; });
         if (_initEntries.length > 0) {
           _stableCtx += '\n## 故事初始状态\n';
           _initEntries.forEach(function (e) {
@@ -1246,8 +1273,8 @@ const App: AppShape = {
 
     // Add behavior rules summary extracted from character cards
     let _ruleSummary = '';
-    if (_wbEntries.length > 0) {
-      _wbEntries.forEach(function (e) {
+    if (_origEntries.length > 0) {
+      _origEntries.forEach(function (e) {
         if (e.inject !== false && e.type === '角色' && e.content) {
           var match = e.content.match(/【行为铁则】\n([\s\S]*?)(?=\n【|$)/);
           if (match && match[1].trim()) {
@@ -1260,34 +1287,14 @@ const App: AppShape = {
       _stableCtx += '## 角色行为约束\n' + _ruleSummary + '\n';
     }
 
-    // Variable suffix: keyword-matched entries (capped), story memories
-    let _variableCtx = '';
-    if (_matchedWB.length > 0) {
-      const _isHighOrExtreme = String(_intensity) === 'high' || String(_intensity) === 'extreme';
-      const _wbMaxEntries = _isHighOrExtreme ? 20 : String(_intensity) === 'low' ? 10 : 15;
-      const _wbMaxEntryChars = _isHighOrExtreme ? 200 : String(_intensity) === 'low' ? 120 : 150;
-      _variableCtx += '\n## 世界书条目（以下设定必须严格遵守，不得违反）\n';
-      const _cappedMatched = _isHighOrExtreme ? _matchedWB : _matchedWB.slice(0, _wbMaxEntries);
-      _cappedMatched.forEach((e: any) => {
-        // Skip if entry content already appears in recentText (dedup)
-        if (e.content && e.content.length > 50) {
-          var lines = e.content.split('\n').filter(function (s: any) { return s.trim().length > 5; });
-          if (lines.length > 0) {
-            var matched = lines.filter(function (s: any) { return recentText.indexOf(s.trim()) >= 0; }).length;
-            if (matched / lines.length > 0.6) return;
-          }
-        }
-        _variableCtx += '### [' + e.type + '] ' + e.name + '\n' + e.content + '\n\n';
-      });
-      if (_matchedWB.length > _wbMaxEntries && !_isHighOrExtreme) {
-        _variableCtx += '… 等 ' + _matchedWB.length + ' 条相关设定（已省略 ' + (_matchedWB.length - _wbMaxEntries) + ' 条）\n\n';
-      }
-    }
+    // （原「_variableCtx 变量区」= 把同一批世界书条目再注入一遍，已删：
+    //  稳定前缀已全量注入（上限 10 万字），重复那份每轮都按全价买、且坐在召回后面把召回一起拖下水。）
 
     // === 记忆体系（v31：STM/LTM 事件记忆已移除，记忆职责并入记忆数据库）===
     // 归档区原文回读：查询 = 滚动区尾部的实体/罕见词短查询；BM25 以 ~800 字子块为
     // 检索单元（小块判别力强），命中子块相邻合并成片段后按字符预算填充注入。
-    var _archiveRecall = '';
+    var _archiveRecall = '';   // epoch 冻结块（system，稳定命中）
+    var _recallFresh = '';      // 本轮补充回读（user 尾部，每轮变）
     var _genTrace: any = null;   // 管理员模式留档：本轮召回内容（上报见 _uploadAdminTrace）
     if (typeof ArchiveStore !== 'undefined' && ArchiveStore.initStorage) await ArchiveStore.initStorage();
     if (ArchiveStore.count() > 0) {
@@ -1396,7 +1403,8 @@ const App: AppShape = {
         // 实测反而把段命中拉到 64.5%（byId 取各实体最大 tf，多实体混排会互相顶掉
         // 对方的最密块）。历史注意：早期限制 4→2 是因为旧版直收块跨轮 87% 重复——
         // 该问题源于当时没有 df 下限门控，与条数无关，现由 _topDfQuery 负责。
-        var _picked: any[] = [];
+        var _picked: any[] = [];              // ① 点名锚：每轮必达，不进钉住列表（它跟着指令变）
+        var _candItems: { key: string; text: string; blockId?: string }[] = [];  // ②③ 参与钉住的候选
         var _pickedBids: string[] = [];
         var _seenRecall = {} as Record<string, any>;
         var _usedChars = 0;
@@ -1428,11 +1436,8 @@ const App: AppShape = {
               if (!text) return;
               const key = recallKey(text);
               if (key && _seenRecall[key]) return;
-              if (!recallFits(_usedChars, text.length, _budget, _picked.length)) return;
               if (key) _seenRecall[key] = 1;
-              _picked.push('【旧正文】' + text);
-              if (x.blockId) _pickedBids.push(String(x.blockId));
-              _usedChars += text.length;
+              _candItems.push({ key: key || ('d' + _candItems.length), text: text, blockId: x.blockId ? String(x.blockId) : undefined });
             });
           } catch (e) { /* 忽略 */ }
         }
@@ -1445,27 +1450,42 @@ const App: AppShape = {
           var sp = _spans[_si];
           var key = recallKey(String(sp.text || ''));
           if (!key || _seenRecall[key]) continue;
-          var _segLen = String(sp.text || '').length;
-          if (!recallFits(_usedChars, _segLen, _budget, _picked.length)) continue;
           _seenRecall[key] = 1;
-          _picked.push('【旧正文】' + String(sp.text || ''));
-          if (sp.blockId) _pickedBids.push(String(sp.blockId));
-          _usedChars += _segLen;
-          if (_usedChars >= _budget) break;
+          _candItems.push({ key: key, text: String(sp.text || ''), blockId: sp.blockId ? String(sp.blockId) : undefined });
         }
+        // 钉住（epoch 块 + 本轮补充）：同一归档周期内 epoch 块字节不变 → 这块能命中缓存；
+        // 新命中只追加进「本轮补充」区（易变区），归档轮一起并进 epoch 块（重置与本来就 miss 的一轮对齐）。
+        // 动机与实测见 domain/recallpin.ts 顶部注释、tools/cache-probe.mjs。
+        var _pinBookId = (typeof WorldBookManager !== 'undefined' && WorldBookManager.getActiveId) ? (WorldBookManager.getActiveId() || 'none') : 'none';
+        var _pin = (typeof RecallPin !== 'undefined')
+          ? RecallPin.step(_pinBookId, {
+              x: (_win.x || 0),
+              rolled: (_win.rolled || 0) > 0,
+              cands: _candItems,
+              epochCap: Math.max(6000, Math.round(_budget * 2 / 3)),
+              freshCap: Math.max(4000, Math.round(_budget / 3)),
+            })
+          : { epoch: [], fresh: _candItems, rotated: false };
         // 稀有实体键控：窗口命中低频实体 → 拉取事件行（摘要+quote 定位的原文片段）。
         // 高频实体（主角名）被键频门控抑制。_probe/_rareKeys 已在查询构建前算好。
-        var _recallParts: string[] = [];
-        if (_picked.length > 0) _recallParts.push('## 归档原文回读（与当前剧情相关的旧正文片段，原样引用）\n' + _picked.join('\n\n'));
+        var _fmtPieces = function (list: any[]): string {
+          return list.map(function (it: any) { return '【旧正文】' + String(it.text || ''); }).join('\n\n');
+        };
+        if (_pin.epoch.length > 0) {
+          _archiveRecall = '## 归档原文回读（与当前剧情相关的旧正文片段，原样引用）\n' + _fmtPieces(_pin.epoch);
+        }
+        var _freshParts: string[] = [];
+        if (_picked.length > 0) _freshParts.push('## 本轮点名词条（用户点名要用的原文，务必据此写）\n' + _picked.join('\n\n'));
+        if (_pin.fresh.length > 0) _freshParts.push('## 本轮补充回读（本归档周期内新检出的相关旧正文）\n' + _fmtPieces(_pin.fresh));
         var _evRows = (typeof ArchiveStore !== 'undefined' && ArchiveStore.recallEvents)
           ? ArchiveStore.recallEvents(_probe, { limit: 5, excludeBlockIds: _pickedBids, strongText: String(userInstruction || '') })
           : [];
         if (_evRows.length > 0) {
-          _recallParts.push('## 相关旧事（按稀有实体召回）\n' + _evRows.map(function (e: any) {
+          _freshParts.push('## 相关旧事（按稀有实体召回）\n' + _evRows.map(function (e: any) {
             return '【旧事·' + (e.keys || []).join('/') + '】' + String(e.text || '') + (e.span ? '\n「' + e.span + '」' : '');
           }).join('\n'));
         }
-        if (_recallParts.length > 0) _archiveRecall = _recallParts.join('\n\n');
+        if (_freshParts.length > 0) _recallFresh = _freshParts.join('\n\n');
         try {
           const _g2 = App as unknown as { _lastMemTrace?: { archive?: string[] } };
           if (_g2._lastMemTrace) _g2._lastMemTrace.archive = _picked.slice(0, 6).map(function (t: string) { return t.slice(0, 40); });
@@ -1478,7 +1498,9 @@ const App: AppShape = {
           archiveBlocks: (typeof ArchiveStore !== 'undefined' && ArchiveStore.count) ? ArchiveStore.count() : 0,
           recallChars: _usedChars || 0,
           candidates: _recallCands.length,
-          pieces: _picked.slice(0, 40).map(function (t: string) {
+          pinnedChars: _pin.epoch.reduce(function (n: number, it: any) { return n + String(it.text || '').length; }, 0),
+          freshChars: _pin.fresh.reduce(function (n: number, it: any) { return n + String(it.text || '').length; }, 0),
+          pieces: _picked.concat(_pin.epoch.map(function (it: any) { return '【旧正文】' + it.text; })).slice(0, 40).map(function (t: string) {
             const raw = String(t).replace(/^【旧正文】/, '');
             const at = String(_canonicalText || '').indexOf(raw.slice(0, 30));
             return { head: raw.replace(/\s+/g, ' ').slice(0, 120), chars: raw.length, pos: at };
@@ -1500,58 +1522,59 @@ const App: AppShape = {
     }
     if (_genTrace) { _genTrace.factCards = !!_factCardCtx; _genTrace.instruction = String(userInstruction || ''); App._lastGenTrace = _genTrace; }
 
-    // Messages ordered for max cache: stable prefix first, variable suffix last
+    // ===== 消息装配：按「变化越晚越靠后」排布（2026-09-25 缓存整改，实测见 tools/cache-probe.mjs）=====
+    // 命中长度 = 与上一轮请求的**最长公共前缀**，据此把块分三类：
+    //   ① 极稳（预设 / 原书世界书 / 主角 / 常驻角色）：放最前，几乎永久命中；
+    //   ② 只追加（归档回读 epoch 块、正文「窗口+滚动区」合并成一段）：变化只赔追加的那一小段，放中间；
+    //   ③ 原地重写且频繁变（临时世界书 overlay、登场角色、相关档案、本轮补充回读、指令）：放最后，
+    //      一变只赔自己那一块 —— 关键是它们必须排在正文之后，否则每轮正文追加都会把它们一起打成 miss。
     const messages = [
       { role: 'system', content: _effectiveSP },
     ];
     if (_stableCtx) messages.push({ role: 'system', content: _stableCtx });
     if (charCtx) messages.push({ role: 'system', content: charCtx });
     if (_alwaysCharCtx) messages.push({ role: 'system', content: _alwaysCharCtx });
+    if (_archiveRecall) messages.push({ role: 'system', content: _archiveRecall });
 
-    // ===== 统一模式三层结构（全文模式已移除）=====
-    // L0 绝对稳定前缀（上方已推）→ L1 正文窗口块 → L3 归档回读/事实卡 → user 滚动区
-    if (_frozenText) {
-      messages.push({ role: 'system', content: '## 已完成的正文（历史部分，保证剧情、人物、细节连贯的事实依据）\n' + _frozenText });
+    // 正文 = 窗口块 + 滚动区，合并成**一段连续正文**（去掉中间那道分界）：
+    // 这样整段只在末尾追加，追加点之后只剩尾部小块与指令；旧实现把窗口放这里、滚动区放 user 区，
+    // 中间还夹着回读/档案，窗口一长就把后面全部打成 miss。
+    var _bodyText = (_frozenText ? _frozenText + '\n\n' : '') + (_rollingText || recentText || '');
+    if (_bodyText) {
+      messages.push({ role: 'system', content: '## 正文（历史 + 最新进度；最后一段就是接着往下写的位置）\n' + _bodyText });
     }
 
-    // L3a/L3b 归档回读与事实卡：每轮随正文重检索而大改，若作为 system 消息会切断前缀缓存
-    // （网关命中到第一条变化消息为止，其后全部 miss）。实测：中间 system 槽每轮大改会把
-    // 缓存率打到 ~50%。因此收进 user 滚动区开头（每轮必变内容全部后置，system 前缀纯稳定）。
-    // 变量/场景已按此原则处理；此处把回读资料也归位。滚动区组装见 _userParts。
-
-    // 缓存诊断：与上轮快照逐条对比，计算 system 前缀命中长度（命中越多缓存越省）
+    // 缓存诊断：与上轮**整串** prompt 逐字符比对，报最长公共前缀（按消息条数比对会低估：
+    // 某条消息里中段变了一点点，其实前缀仍命中大半）
     var _prevCache = SM().get<any>('_cacheDebug2', null);
-    var _curSnap = messages.map(function (m, i: any) {
-      var s = m.content;
-      return { i: i, len: s.length, head: s.slice(0, 50), tail: s.slice(-30) };
-    });
-    if (_prevCache) {
-      var _hitChars = 0, _ci;
-      for (_ci = 0; _ci < Math.min(_curSnap.length, _prevCache.length); _ci++) {
-        var cur = _curSnap[_ci], prev = _prevCache[_ci];
-        if (cur.len === prev.len && cur.head === prev.head && cur.tail === prev.tail) _hitChars += cur.len;
-        else break;
+    var _curJoined = messages.map(function (m) { return m.content; }).join('') + (_overlayCtx || '') + (_recallFresh || '');
+    var _totChars = _curJoined.length;
+    if (_prevCache && typeof _prevCache.text === 'string') {
+      var _prev = _prevCache.text;
+      var _limit = Math.min(_prev.length, _curJoined.length);
+      var _same = 0;
+      while (_same < _limit && _prev.charCodeAt(_same) === _curJoined.charCodeAt(_same)) _same++;
+      console.log('[Cache2] 与上轮公共前缀 ≈ ' + _same + ' 字 / 本轮 ' + _totChars + ' 字 (' + (_totChars ? Math.round(_same / _totChars * 100) : 100) + '%)');
+      var _at = -1, _acc = 0;
+      for (var _mi = 0; _mi < messages.length; _mi++) {
+        var _len = messages[_mi].content.length;
+        if (_same < _acc + _len) { _at = _mi; break; }
+        _acc += _len;
       }
-      var _totChars = _curSnap.reduce(function (s, m: any) { return s + m.len; }, 0);
-      console.log('[Cache2] system 前缀命中 ≈ ' + _hitChars + ' 字 / ' + _totChars + ' 字 (' + (_totChars ? Math.round(_hitChars / _totChars * 100) : 100) + '%)');
-      for (_ci = 0; _ci < _curSnap.length; _ci++) {
-        if (_ci < _prevCache.length && !(_curSnap[_ci].len === _prevCache[_ci].len && _curSnap[_ci].head === _prevCache[_ci].head && _curSnap[_ci].tail === _prevCache[_ci].tail)) {
-          console.log('[Cache2] 首个变化消息: msg' + _ci + ' "' + _curSnap[_ci].head.slice(0, 24) + '..."');
-          break;
-        }
-      }
+      if (_at >= 0) console.log('[Cache2] 前缀断在第 ' + _at + ' 条消息（' + _same + ' 字处）"' + messages[_at].content.slice(Math.max(0, _same - _acc - 20), _same - _acc + 20).replace(/\s+/g, ' ') + '"');
     } else {
       console.log('[Cache2] 首次运行，保存快照');
     }
-    SM().set('_cacheDebug2', _curSnap);
+    SM().set('_cacheDebug2', { text: _curJoined });
 
     var _userParts: any[] = [];
-    // 回读资料（每轮随正文变化 → 放 user 区开头，system 前缀保持纯稳定以最大化缓存命中）
-    if (_archiveRecall) _userParts.push(_archiveRecall);
-    if (_factCardCtx) _userParts.push(_factCardCtx);
+    // ③ 原地重写区：越靠后越好。临时世界书放最前（它是"设定"，比回读资料更要紧），
+    //    且"被改过的条目"在这里出现 = 近端强调，比埋在 system 前缀里更容易被遵守。
+    if (_overlayCtx) _userParts.push(_overlayCtx);
     if (extraCharCtx) _userParts.push(extraCharCtx);
-    if (_variableCtx) _userParts.push(_variableCtx);
-    // Agent 设定同步：待裁决覆盖指令进 rolling 区（本来就不命中缓存，多带一份零损失）
+    if (_factCardCtx) _userParts.push(_factCardCtx);
+    if (_recallFresh) _userParts.push(_recallFresh);
+    // Agent 设定同步：待裁决覆盖指令（本来就不命中缓存，多带一份零损失）
     if (typeof SettingSyncManager !== 'undefined' && SettingSyncManager.isEnabled()) {
       try {
         var _ssDeltaCtx = SettingSyncManager.buildCoverageText();
@@ -1564,12 +1587,7 @@ const App: AppShape = {
         }
       } catch (e) { /* 旁路失败忽略 */ }
     }
-    // 构建上下文：滚动区正文 + 指令（归档回读/档案已作为 user 区开头注入，见 _userParts）
-    var _contextParts: any[] = [];
-    // 滚动区 = 窗口块之后的正文尾部（与窗口无缝衔接，共同构成完整近期上下文）
-    _contextParts.push('【上下文】\n' + (_rollingText || recentText || '(空白)'));
-    _contextParts.push('【指令】\n' + userInstruction);
-    _userParts.push(_contextParts.join('\n\n'));
+    _userParts.push('【指令】' + '\n' + userInstruction);
     messages.push({ role: 'user', content: _userParts.join('\n\n') });
     // 展开预设里的酒馆模板语法（setvar/getvar/{{//}}/${...}），让豆包等模型看到完整指令
     _expandSTInMessages(messages);

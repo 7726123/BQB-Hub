@@ -181,11 +181,17 @@ describe('Waterline 水位线生命周期', () => {
     const r1 = WL.update(c1, 20000, 30000); // 高水位：不滚动
     expect(r1.x).toBe(0);
     expect(r1.head).toBe(c1.length - WL.ROLLING);
+    // 一次续写的增量（这里 2000 字）**不**吐新块：MIN_APPEND 的用意就是让窗口边界别每轮都动
+    // （边界一动，prompt 中间就插入一段新文字 → 缓存前缀断在这里；见 Waterline.MIN_APPEND 注释）
     const c2 = c1 + 'b'.repeat(2000);
     const r2 = WL.update(c2, 20000, 30000);
     expect(r2.x).toBe(0);
-    expect(r2.head).toBe(c2.length - WL.ROLLING);
-    expect(r2.head).toBe(r1.head + 2000);
+    expect(r2.head).toBe(r1.head);            // 边界不动
+    // 攒够 MIN_APPEND 之后才吐块：再次追加后边界跟进到「正文末尾 - 滚动区」
+    const c3 = c2 + 'c'.repeat(WL.MIN_APPEND);
+    const r3 = WL.update(c3, 20000, 30000);
+    expect(r3.head).toBe(c3.length - WL.ROLLING);
+    expect(r3.head).toBeGreaterThan(r1.head);
   });
 
   it('超触发线滚动：最旧块进归档，x 右移，窗口回到水位线（块粒度）', () => {
