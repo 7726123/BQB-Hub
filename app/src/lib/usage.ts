@@ -9,6 +9,7 @@ interface ApiCallRecord {
   cachedTokens?: number;
   completionTokens?: number;
   cost?: number;
+  usageMissing?: boolean;
 }
 interface ApiConfigLike { priceInput?: number; priceCached?: number; priceOutput?: number }
 
@@ -25,6 +26,7 @@ export interface UsageRecord {
   cost: number;
   wordCount: number;
   byLabel: Record<string, { count: number; promptTokens: number; cachedTokens: number; completionTokens: number }>;
+  noUsage?: number;   // 本轮里"端点没回 usage"的调用数（token 记 0）——用量页据此提示，而不是静默显示 0
 }
 
 export const UsageStats = {
@@ -34,7 +36,11 @@ export const UsageStats = {
   _sessionStartTime: null as number | null,
   _currentSessionId: null as string | null,
 
+  // 开一轮记账。**不要抢已经开着的那一轮**：小说模式与对话模式各有各的生成入口，
+  // 万一交叠（生成中切视图再发一条），抢走起点会让先开那一轮的 token 记到后开的账上。
+  // 超过 10 分钟的老会话视为残留（某个出口漏了 endSession），允许重新开。
   beginSession(): void {
+    if (this._sessionStartIndex !== null && Date.now() - (this._sessionStartTime || 0) < 10 * 60 * 1000) return;
     this._sessionCalls = [];
     this._sessionStartIndex = APIHandler._apiCalls.length;
     this._sessionStartTime = Date.now();
@@ -44,15 +50,19 @@ export const UsageStats = {
   endSession(wordCount: number): UsageRecord | null {
     if (this._sessionStartIndex === null) return null;
     const calls = APIHandler._apiCalls.slice(this._sessionStartIndex);
-    if (calls.length === 0) return null;
+    // 收尾统一清状态（哪怕这一轮没有任何调用、不产生记录）：留着"已开未结束"的会话，
+    // beginSession 的守卫会把下一轮的记账挡在门外（表现为"用量统计不计算"）。
+    const _clear = () => { this._sessionStartIndex = null; this._currentSessionId = null; };
+    if (calls.length === 0) { _clear(); return null; }
 
-    let totalPrompt = 0, totalCached = 0, totalCompletion = 0, totalCost = 0;
+    let totalPrompt = 0, totalCached = 0, totalCompletion = 0, totalCost = 0, noUsage = 0;
     const byLabel: UsageRecord['byLabel'] = {};
     calls.forEach(c => {
       totalPrompt += c.promptTokens || 0;
       totalCached += c.cachedTokens || 0;
       totalCompletion += c.completionTokens || 0;
       totalCost += c.cost || 0;
+      if (c.usageMissing) noUsage++;
       if (!byLabel[c.label]) byLabel[c.label] = { count: 0, promptTokens: 0, cachedTokens: 0, completionTokens: 0 };
       byLabel[c.label].count++;
       byLabel[c.label].promptTokens += c.promptTokens || 0;
@@ -72,7 +82,8 @@ export const UsageStats = {
       hitRate: hitRate,
       cost: totalCost,
       wordCount: wordCount || 0,
-      byLabel: byLabel
+      byLabel: byLabel,
+      noUsage: noUsage
     };
 
     const history = SM().get<UsageRecord[]>('usageHistory', []) ?? [];
@@ -163,6 +174,10 @@ export const UsageStats = {
       listEl.innerHTML = history.map((r, i) => {
         const date = new Date(r.time ?? 0);
         const timeStr = date.toLocaleDateString() + ' ' + date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        // 端点没回 usage（token 全是 0 但确实调过接口）：把原因写出来，别让用户以为是"没统计"
+        const missHint = (r.noUsage || 0) > 0
+          ? '<div class="uh-foot" style="color:var(--accent);">本轮有 ' + r.noUsage + ' 次调用未取到用量（端点未返回 usage：流式没带用量，或该网关不支持），token 与费用无法估算</div>'
+          : '';
         return `
         <div class="uh-card">
           <div class="uh-head">
@@ -178,6 +193,7 @@ export const UsageStats = {
             <div>缓存<b style="color:var(--primary)">${r.hitRate}%</b></div>
             <div>输出<b>${r.completionTokens.toLocaleString()}</b></div>
           </div>
+          ${missHint}
           ${r.wordCount > 0 ? '<div class="uh-foot">输出速度 ' + this.formatSpeed(r.completionTokens, r.duration) + ' · 输出 ' + r.completionTokens.toLocaleString() + ' tokens</div>' : '<div class="uh-foot">输出速度 ' + this.formatSpeed(r.completionTokens, r.duration) + '</div>'}
         </div>`;
       }).join('');

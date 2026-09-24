@@ -55,6 +55,7 @@ export interface ApiCallLog {
   completionTokens?: number;
   totalTokens?: number;
   cost?: number;
+  usageMissing?: boolean;   // 这次请求端点没回 usage（token 记 0）：用量页会提示"本轮未取到用量"
 }
 
 // 默认输出上限（"不限制"）：项目不再提供 max_tokens 设置项，一律按各端能接受的最大值发送。
@@ -1018,9 +1019,9 @@ export const APIHandler = {
         return;
       }
       // 本次请求用量入账（一次请求一条记录，取最后一帧 usage = 最终累计值）
+      const label = overrides.callLabel || 'unknown';
       if (lastUsage) {
         const u = lastUsage;
-        const label = overrides.callLabel || 'unknown';
         // 缓存命中 token：两种方言都要认。OpenAI/火山方舟走 prompt_tokens_details.cached_tokens；
         // DeepSeek 直连走顶层 prompt_cache_hit_tokens（只认前者的后果：命中率恒显 0%、费用按全 miss 估，偏贵）。
         const cached = (u.prompt_tokens_details && u.prompt_tokens_details.cached_tokens) || u.prompt_cache_hit_tokens || 0;
@@ -1034,6 +1035,11 @@ export const APIHandler = {
           totalTokens: u.total_tokens || 0,
           cost: uncached * prices.input + cached * prices.cached + (u.completion_tokens || 0) * prices.output
         });
+      } else if (!_proxyError) {
+        // 端点没回 usage（流式未带 usage / stream_options 被拒 / 非标准网关）：
+        // **也要记一条**（token 记 0，标 usageMissing）。以前这里什么都不记 → 整轮从用量统计里消失，
+        // 用户看到的是"续写不算用量"（本轮明明跑过一次请求）。记下来才能显示"本轮未取到用量"。
+        this._apiCalls.push({ label, time: Date.now(), promptTokens: 0, completionTokens: 0, cachedTokens: 0, totalTokens: 0, cost: 0, usageMissing: true });
       }
       // 有工具调用：交给 onTools 处理；无则普通文本流程
       if (toolCalls.length > 0 && overrides.onTools) {

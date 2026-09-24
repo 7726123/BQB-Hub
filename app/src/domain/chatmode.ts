@@ -20,6 +20,7 @@ import { PluginManager } from './plugins';
 import { parseBubbles, analyzeParse, stripSpeakerPrefixes, NARRATOR } from '../lib/bubble';
 import type { Bubble } from '../lib/bubble';
 import { bindAutoGrow } from '../lib/inputgrow';
+import { UsageStats } from '../lib/usage';
 import { chatFormatBlock, chatRoster } from './chatprompt';
 
 export interface ChatMsg {
@@ -59,7 +60,10 @@ export const ChatMode = {
   _streamBookId: '',
   _lastPaint: 0,
   _lastInstruction: '',
-  _autoScroll: true,
+  // 贴底时机（用户要求：流式输出不许自己滚动，完全按用户自己的滑动来）：
+  // 这个标记只在"用户刚做了动作"时置位（发一条 / 撤回 / 换书），下一次 render 贴一次底就清掉。
+  // 流式增量渲染**不**碰它，所以写着写着页面不会自己往下跑。
+  _scrollOnce: true,
   _reasoningChars: 0,
   _profileName: '',       // 打开着的角色简介是谁（换头像后按名字重开，见 refreshAvatars）
 
@@ -110,6 +114,7 @@ export const ChatMode = {
     this._status = '';
     this._acc = '';
     this._streamBookId = '';
+    this._scrollOnce = true;   // 换书是用户主动动作：贴到底看最新一轮
     this.render();
   },
 
@@ -275,6 +280,9 @@ export const ChatMode = {
   render(): void {
     const stream = document.getElementById('chatStream');
     if (!stream) return;
+    // 贴底标记只在这里消费一次（空记录分支也要消费掉，否则它会一直挂着，下一次渲染莫名贴底）
+    const wantBottom = this._scrollOnce;
+    this._scrollOnce = false;
     if (this.bookId() !== this._loadedBookId) { this._loadedBookId = this.bookId(); this._window = RENDER_WINDOW; }
     this._renderHead();
     const all = this.log();
@@ -300,11 +308,22 @@ export const ChatMode = {
     });
     html += '<div id="chatBottomAnchor"></div>';
     stream.innerHTML = html;
-    if (this._autoScroll) this._scrollToBottom();
+    // 只有用户主动动作后的那一次渲染才贴底；流式增量渲染不贴（否则页面会跟着输出自己往下跑）
+    if (wantBottom) this._scrollToBottom();
     this._syncScrollBottomBtn();
   },
 
-  loadMore(): void { this._window += RENDER_WINDOW; this.render(); },
+  // 载入更早的消息：新内容插在**上面**，不锚定的话用户正看着的那条会被顶走。
+  // 按插入前后的高度差补 scrollTop，视觉上停在原地。
+  loadMore(): void {
+    const stream = document.getElementById('chatStream');
+    const beforeH = stream ? stream.scrollHeight : 0;
+    const beforeTop = stream ? stream.scrollTop : 0;
+    this._window += RENDER_WINDOW;
+    this.render();
+    if (stream) stream.scrollTop = beforeTop + (stream.scrollHeight - beforeH);
+    this._syncScrollBottomBtn();
+  },
 
   // ---------- 跳到底部（与写作页那颗 ↩ 同款；浮在气泡区右下角）----------
 
@@ -321,11 +340,11 @@ export const ChatMode = {
     btn.classList.toggle('show', this._scrollGap() > 80);
   },
 
-  // 点一下：缓动滚到底，并把"跟随新内容"恢复（否则下一轮流式还会把用户钉在原地）
+  // 点一下：缓动滚到底（用户主动动作）。注意**不恢复"自动跟随"**——streaming 期间页面永远不自己动，
+  // 想看新内容就再点一下（或者自己往下滑）。
   scrollToBottomAnimated(): void {
     const stream = document.getElementById('chatStream');
     if (!stream) return;
-    this._autoScroll = true;
     const from = stream.scrollTop;
     const to = Math.max(0, stream.scrollHeight - stream.clientHeight);
     if (to <= from + 1) { this._syncScrollBottomBtn(); return; }
@@ -444,10 +463,7 @@ export const ChatMode = {
   },
 
   onScroll(): void {
-    const stream = document.getElementById('chatStream');
-    if (!stream) return;
-    const gap = stream.scrollHeight - stream.scrollTop - stream.clientHeight;
-    this._autoScroll = gap < 60;
+    // 用户自己的滑动：只更新"回到底部"按钮的显隐，不做任何自动贴底
     this._syncScrollBottomBtn();
   },
 
@@ -608,9 +624,14 @@ export const ChatMode = {
     this._reasoningChars = 0;
     this._streamBookId = this.bookId();
     this._status = REASONING_HINT;
-    this._autoScroll = true;
+    // 用户要求：流式输出**不要自己滚动**，完全按用户自己的滑动来。
+    // 只有"用户刚做了一个动作"才贴一次底（发一条、撤回、换书），之后输出再多也不动。
+    this._scrollOnce = true;
     this._lastPaint = 0;
     this.render();
+    // 本轮用量记账：对话模式与小说模式一样，演出完成/失败都要留一条记录
+    // （以前这里没有 begin/end，演出轮的 token 根本不算进「用量统计」）
+    try { UsageStats.beginSession(); } catch (e) { /* 记账失败不影响演出 */ }
 
     const msgs = this.buildMessages(instruction);
     let finishReason: string | null = null;
@@ -635,6 +656,7 @@ export const ChatMode = {
             this._status = '';
             this._acc = '';
             this.render();
+            try { UsageStats.endSession(0); } catch (e) { /* ignore */ }
             try { App.toast('请求失败：' + err); } catch (e) { /* ignore */ }
             done();
           },
@@ -656,6 +678,7 @@ export const ChatMode = {
         this._sending = false;
         this._status = '';
         this.render();
+        try { UsageStats.endSession(0); } catch (e2) { /* 记账失败不影响提示 */ }
         try { App.toast('请求异常：' + String((e && e.message) || e)); } catch (e2) { /* ignore */ }
         done();
       }
@@ -676,12 +699,13 @@ export const ChatMode = {
     // 落库目标：这一轮开始时的那本书；拿不到（例如异常路径）就退回当前书
     const bookIdAtStart = this._streamBookId || this.bookId();
     this._streamBookId = '';
-    if (aborted) { this.render(); return; }
+    if (aborted) { try { UsageStats.endSession(0); } catch (e) { /* ignore */ } this.render(); return; }
     const _reasoning = this._reasoningChars || 0;
     if (!raw) {
       // 一条都没写出来时把"是不是额度被思考吃掉了"说清楚：推理模型的思考与正文共用输出额度，
       // 思考跑满就一个字都写不出来（用户实测场景）。不然用户只会以为是随机抽风。
       const _cut = finishReason === 'length' || finishReason === 'max_tokens';
+      try { UsageStats.endSession(0); } catch (e) { /* 记账失败不影响提示 */ }
       try {
         App.toast(_cut && _reasoning > 0
           ? '额度被思考吃满了（已想约 ' + _reasoning + ' 字），正文一个字没写出来：再点「发送」重试，反复如此就把「思考强度」调到最低或换个模型'
@@ -704,6 +728,8 @@ export const ChatMode = {
       words,
       reasoning: _reasoning || undefined,
     });
+    // 本轮用量记账收尾（字数就是这次演出的净字数；token 由 APIHandler 内记）
+    try { UsageStats.endSession(words); } catch (e) { /* 记账失败不影响落库 */ }
     // 演出进归档（回读/检索用）：必须在这条落库之后，否则本轮内容要等到下一轮才归档
     if (bookIdAtStart === this.bookId()) { void this.syncArchive(); this.render(); }
   },
@@ -734,6 +760,7 @@ export const ChatMode = {
     }
     this._saveLog(all.slice(0, cut));       // 本轮之前的所有记录保留
     if (ta) { ta.value = restore; ta.style.height = 'auto'; ta.style.height = Math.min(140, ta.scrollHeight) + 'px'; }
+    this._scrollOnce = true;                 // 撤回是用户主动动作：贴到底看撤回后的尾部
     this.render();
   },
 

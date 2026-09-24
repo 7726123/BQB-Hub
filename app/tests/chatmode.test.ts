@@ -11,6 +11,7 @@ import { PresetManager } from '../src/domain/preset';
 import { APIHandler } from '../src/domain/api';
 import { SettingSyncManager } from '../src/domain/settingsync';
 import { parseBubbles } from '../src/lib/bubble';
+import { UsageStats } from '../src/lib/usage';
 import { ChatMode } from '../src/domain/chatmode';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -112,7 +113,10 @@ beforeEach(() => {
     try { g.StorageManager.remove(k); } catch (e) { /* ignore */ }
   });
   ChatMode._sending = false; ChatMode._acc = ''; ChatMode._streamBookId = ''; ChatMode._loadedBookId = '';
-  ChatMode._window = 120; ChatMode._status = ''; ChatMode._reasoningChars = 0;
+  ChatMode._window = 120; ChatMode._status = ''; ChatMode._reasoningChars = 0; ChatMode._scrollOnce = true;
+  // 用量记账的会话状态归零：上一个用例若中途结束，beginSession 的"不抢已开会话"守卫会挡住新会话
+  (UsageStats as unknown as { _sessionStartIndex: number | null; _sessionStartTime: number | null })._sessionStartIndex = null;
+  (UsageStats as unknown as { _sessionStartIndex: number | null; _sessionStartTime: number | null })._sessionStartTime = null;
 });
 
 describe('按书隔离', () => {
@@ -516,25 +520,71 @@ describe('渲染与流式', () => {
     expect(html.slice(html.lastIndexOf('<div class="chat-row', i), i)).toContain('chat-row-me');
   });
 
-  it('回到最下面：离底部远了才显示按钮，点一下恢复"跟随新内容"', () => {
+  // 用户要求：流式输出不许自己滚动，完全按用户自己的滑动来。
+  it('流式增量渲染不动滚动位置（页面不会跟着输出往下跑）', () => {
+    seedBooks();
+    setupPreset(1000);
+    ChatMode.append('ai', '林薇：「第一轮。」');
+    const stream = els['chatStream'];
+    stream.scrollHeight = 2000; stream.clientHeight = 400;
+    stream.scrollTop = 120;                      // 用户滑到中间看旧内容
+    ChatMode._scrollOnce = false;                 // 发送时的那一次贴底已经用掉了
+    ChatMode._sending = true;
+    ChatMode._streamBookId = ChatMode.bookId();
+    ChatMode._acc = '林薇：「新的一句话。」';      // 流式吐字
+    ChatMode.render();
+    expect(stream.scrollTop).toBe(120);           // 位置纹丝不动
+    ChatMode._acc += '\n她抬手把窗帘拉上。';
+    ChatMode.render();
+    expect(stream.scrollTop).toBe(120);
+    ChatMode._sending = false; ChatMode._acc = ''; ChatMode._streamBookId = '';
+  });
+
+  it('只有用户主动动作才贴一次底（发一条 / 撤回 / 换书）', () => {
+    seedBooks();
+    setupPreset(1000);
+    const stream = els['chatStream'];
+    ChatMode.append('ai', '林薇：「一。」');
+    stream.scrollHeight = 2000; stream.clientHeight = 400;
+    stream.scrollTop = 9999;
+    ChatMode._scrollOnce = true;                  // 发一条时置位（generate 里）
+    ChatMode.render();
+    expect(ChatMode._scrollOnce).toBe(false);     // 一次用完就清
+    expect(stream.scrollTop).toBe(2000);          // 贴到底
+    stream.scrollTop = 300;
+    ChatMode.render();                            // 后续渲染不再贴底
+    expect(stream.scrollTop).toBe(300);
+  });
+
+  it('回到最下面：离底部远了才显示按钮，点一下滚到底（不恢复自动跟随）', () => {
     seedBooks();
     setupPreset(1000);
     ChatMode.append('ai', '林薇：「一。」');
     const stream = els['chatStream'];
     stream.scrollHeight = 2000; stream.clientHeight = 400;
-    stream.scrollTop = 100;                                  // 停在上面 → 按钮出现、不再自动跟随
+    stream.scrollTop = 100;                                  // 停在上面 → 按钮出现
     ChatMode.onScroll();
     expect(els['chatScrollBottom'].classList.contains('show')).toBe(true);
-    expect(ChatMode._autoScroll).toBe(false);
-    stream.scrollTop = 1598;                                 // 滚到底（gap 2）→ 按钮收起、恢复跟随
+    stream.scrollTop = 1598;                                 // 滚到底（gap 2）→ 按钮收起
     ChatMode.onScroll();
     expect(els['chatScrollBottom'].classList.contains('show')).toBe(false);
-    expect(ChatMode._autoScroll).toBe(true);
-    stream.scrollTop = 300;
-    ChatMode.onScroll();
-    expect(ChatMode._autoScroll).toBe(false);
-    ChatMode.scrollToBottomAnimated();                        // 点按钮：立刻恢复"跟随"，然后缓动滚到底
-    expect(ChatMode._autoScroll).toBe(true);
+    ChatMode._scrollOnce = false;
+    ChatMode.scrollToBottomAnimated();                        // 点按钮：缓动滚到底
+    expect(ChatMode._scrollOnce).toBe(false);                 // 不恢复"自动跟随"
+  });
+
+  it('载入更早：按插入前后的高度差补 scrollTop（正在看的那条不被顶走）', () => {
+    seedBooks();
+    setupPreset(1000);
+    const stream = els['chatStream'];
+    stream.scrollHeight = 1000; stream.clientHeight = 400;
+    stream.scrollTop = 50;
+    // render 之后 scrollHeight 变高（模拟上面插入了更早的消息）
+    const origRender = ChatMode.render;
+    ChatMode.render = function () { stream.scrollHeight = 1600; };
+    ChatMode.loadMore();
+    ChatMode.render = origRender;
+    expect(stream.scrollTop).toBe(650);                       // 50 + (1600-1000)
   });
 
   it('流式：末尾半截说话人前缀先扣住，不画进上一个气泡', () => {
@@ -668,5 +718,44 @@ describe('共用顶部选书（对话模式不再自带标题与选书栏）', (
     const i = uiSrc.indexOf('switchWorldBook(bookId: any)');
     expect(i).toBeGreaterThan(-1);
     expect(uiSrc.slice(i, i + 1200).indexOf('ChatMode.reload()')).toBeGreaterThan(-1);
+  });
+});
+
+// 用户报「续写的用量统计不计算（可能只有对话模式）」：对话模式以前根本没有
+// UsageStats.beginSession/endSession，演出轮跑完不留任何记录（token/费用全丢）。
+describe('演出轮记进用量统计', () => {
+  it('一轮演出产生一条用量记录（label=chat，含 tokens/命中率/字数）', async () => {
+    seedBooks();
+    setupPreset(1000);
+    const raw = APIHandler as unknown as { _apiCalls: unknown[]; fetchCompletions: unknown };
+    raw._apiCalls = [];                                  // 真实记账在 APIHandler 内部，这里手工模拟
+    raw.fetchCompletions = (msgs: any[], onDelta: any, onOk: any) => {
+      raw._apiCalls.push({ label: 'chat', promptTokens: 1200, cachedTokens: 900, completionTokens: 300, cost: 0.002 });
+      onDelta('林薇：「一。」');
+      onOk('林薇：「一。」', false, '');
+    };
+    const before = UsageStats.getHistory().length;
+    await ChatMode.generate('演一段');
+    const history = UsageStats.getHistory();
+    expect(history.length).toBe(before + 1);
+    expect(history[0].apiCalls).toBe(1);
+    expect(history[0].promptTokens).toBe(1200);
+    expect(history[0].cachedTokens).toBe(900);
+    expect(history[0].hitRate).toBe('75.0');
+    expect(history[0].byLabel['chat'].count).toBe(1);
+    expect(history[0].wordCount).toBeGreaterThan(0);
+  });
+
+  it('请求失败也收尾（不留开着没人结束的会话，免得挡住下一轮的记账）', async () => {
+    seedBooks();
+    setupPreset(1000);
+    const raw = APIHandler as unknown as { _apiCalls: unknown[]; fetchCompletions: unknown };
+    raw._apiCalls = [];
+    raw.fetchCompletions = (msgs: any[], _onDelta: any, _onOk: any, onErr: any) => { onErr('网络错误'); };
+    const before = UsageStats.getHistory().length;
+    await ChatMode.generate('演一段');
+    const st = UsageStats as unknown as { _sessionStartIndex: number | null };
+    expect(st._sessionStartIndex).toBeNull();            // 会话已结束（没调用 → 不产生记录，但状态干净）
+    expect(UsageStats.getHistory().length).toBe(before); // 失败轮不产生记录
   });
 });

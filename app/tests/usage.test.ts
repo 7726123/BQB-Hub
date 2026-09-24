@@ -36,9 +36,12 @@ describe('UsageStats', () => {
     expect(rec!.byLabel['summary'].completionTokens).toBe(100);
   });
 
-  it('无调用时返回 null；重复 endSession 也为 null', () => {
+  it('无调用时返回 null 并收尾；重复 endSession 也为 null', () => {
     UsageStats.beginSession();
     expect(UsageStats.endSession(10)).toBeNull();
+    // 空收尾必须把会话状态清干净（否则 beginSession 的"不抢已开会话"守卫会挡住下一轮记账）
+    expect((UsageStats as unknown as { _sessionStartIndex: number | null })._sessionStartIndex).toBeNull();
+    UsageStats.beginSession();
     calls.push({ label: 'x', promptTokens: 1 });
     expect(UsageStats.endSession(10)).not.toBeNull();
     expect(UsageStats.endSession(10)).toBeNull(); // 已结束
@@ -82,5 +85,31 @@ describe('UsageStats', () => {
 
   it('_wbKey 按当前世界书加作用域后缀', () => {
     expect(_wbKey('activeOpeningId')).toBe('activeOpeningId_wb_wb9');
+  });
+});
+// 用户报「续写用量不计算」的另一半原因：端点没回 usage 时，APIHandler 以前什么都不记
+// → 本轮从用量统计里彻底消失（明明跑过请求）。现在会记一条 usageMissing 的调用，
+// 记录里带上 noUsage 计数，用量页据此显示"本轮未取到用量"。
+describe('端点未回 usage', () => {
+  it('调用记了但没 token：仍然产出一条记录，并标出 noUsage', () => {
+    UsageStats.beginSession();
+    calls.push({ label: 'generate', usageMissing: true } as never);
+    const rec = UsageStats.endSession(120);
+    expect(rec).not.toBeNull();
+    expect(rec!.apiCalls).toBe(1);
+    expect(rec!.noUsage).toBe(1);
+    expect(rec!.promptTokens).toBe(0);
+    expect(rec!.completionTokens).toBe(0);
+    expect(rec!.wordCount).toBe(120);
+  });
+
+  it('beginSession 不抢已经开着的那一轮（两个模式交叠时不串账）', () => {
+    UsageStats.beginSession();
+    const first = (UsageStats as unknown as { _sessionStartIndex: number | null })._sessionStartIndex;
+    calls.push({ label: 'generate', promptTokens: 10, completionTokens: 5, cost: 0 });
+    UsageStats.beginSession();                       // 第二轮想插队 → 被挡住
+    expect((UsageStats as unknown as { _sessionStartIndex: number | null })._sessionStartIndex).toBe(first);
+    const rec = UsageStats.endSession(1);
+    expect(rec!.apiCalls).toBe(1);                   // 先开那一轮的账没被抢走
   });
 });

@@ -102,7 +102,7 @@ declare const UIManager: {
 
 declare const APIHandler: {
   [k: string]: any;
-  _apiCalls: { label: string; time?: number; promptTokens?: number; cachedTokens?: number; completionTokens?: number; totalTokens?: number; cost?: number }[];
+  _apiCalls: { label: string; time?: number; promptTokens?: number; cachedTokens?: number; completionTokens?: number; totalTokens?: number; cost?: number; usageMissing?: boolean }[];
   fetchCompletions(
     messages: { role: string; content: string }[],
     onDelta: (s: string) => void,
