@@ -3749,7 +3749,10 @@ const App: AppShape = {
   toast(message: any) { const el = document.getElementById('toast'); el!.textContent = message; el!.classList.add('show'); clearTimeout(el!._timeout); el!._timeout = setTimeout(() => el!.classList.remove('show'), 2500); }
 };
 
-document.addEventListener('DOMContentLoaded', () => {
+// 启动引导。**不能只挂 DOMContentLoaded**：index.html 的启动画面是「先画一帧、再用
+// createElement 注入 main.js」，动态脚本可能在 DOMContentLoaded 之后才执行（那时监听器永远等不到），
+// 于是按 readyState 兜住——启动画面那段改动依赖这一点。
+function _bootApp(): void {
   void (async () => {
     try { await _storageInit; } catch (e) { console.warn('[Init] 存储就绪等待异常:', e); }
     App.init();
@@ -3772,7 +3775,9 @@ document.addEventListener('DOMContentLoaded', () => {
   });
   // v1.5.75 起移除：启动时自动导入第三方酒馆预设 TGbreak.json（开源合规，文件已下架）。
   // 存量用户设备里已导入的那份仍在其本地 storage，功能不受影响。
-});
+}
+if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', _bootApp);
+else _bootApp();
 
 
 // ---- build-legacy 构建管线生成的全局挂载 ----

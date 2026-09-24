@@ -183,6 +183,37 @@ public class HotBundlePlugin extends Plugin {
         }
     }
 
+    /**
+     * 就地生效（APK 158 起）：把资源目录切到「已安装待生效」的那一版并重载页面，不必退出再打开。
+     *
+     * 为什么放在原生而不是让前端调 WebView 插件的 setServerBasePath：
+     *   ① 目录只有原生算得准——当前跑 APK 内置资源时前端拿不到 filesDir，那条路只能提示"下次启动生效"；
+     *   ② 切完必须 arm 看门狗：就地切换不走 Activity 启动路径，不 arm 的话新包起不来这一次会话没人回退
+     *      （要等下一次冷启动 25 秒后才自愈）。
+     * 安全性与冷启动完全一致：新包的 JS 仍要过 confirm，看门狗照常生效，失败自动回退并拉黑该版本。
+     */
+    @PluginMethod
+    public void applyPending(PluginCall call) {
+        try {
+            SharedPreferences sp = prefs();
+            String pending = sp.getString(K_PENDING, "");
+            if (pending.isEmpty()) { call.reject("没有待生效的网页包"); return; }
+            File dir = hotDir(pending);
+            if (!new File(dir, "index.html").isFile()) { call.reject("待生效目录不完整，已忽略"); return; }
+            Bridge b = getBridge();
+            if (b == null) { call.reject("Bridge 未就绪"); return; }
+            Log.d(TAG, "就地生效：切到 " + dir.getAbsolutePath());
+            b.setServerBasePath(dir.getAbsolutePath());   // hostFiles + webView.loadUrl(appUrl)
+            armWatchdog();                                 // 本次会话内也要能回退（见方法注释①）
+            JSObject ret = new JSObject();
+            ret.put("ok", true);
+            ret.put("version", pending);
+            call.resolve(ret);
+        } catch (Throwable t) {
+            call.reject(t.getMessage() == null ? t.toString() : t.getMessage());
+        }
+    }
+
     /** 前端启动时读一次状态：active = 正在运行的热包版本（空 = 内置资源）。 */
     @PluginMethod
     public void getState(PluginCall call) {

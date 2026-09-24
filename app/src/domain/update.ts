@@ -44,6 +44,7 @@ interface CapacitorLike {
 
 import { SM } from '../infra/gate';
 import { AdminMode } from './adminmode';
+import { BootSplash } from './bootsplash';
 import { ClientLog } from './clientlog';
 import { HotBundle } from './hotbundle';
 import { UsagePing } from './stats';
@@ -93,8 +94,11 @@ export const UpdateManager: {
     // 仅 Android 原生环境检查
     try {
       if (!(window as unknown as { Capacitor?: CapacitorLike }).Capacitor
-        || ((window as unknown as { Capacitor?: CapacitorLike }).Capacitor as CapacitorLike).getPlatform?.() !== 'android') return;
-    } catch (e) { return; }
+        || ((window as unknown as { Capacitor?: CapacitorLike }).Capacitor as CapacitorLike).getPlatform?.() !== 'android') {
+        BootSplash.hide();   // 浏览器/桌面环境没有热更新可等，别让启动画面白等 12 秒
+        return;
+      }
+    } catch (e) { BootSplash.hide(); return; }
     // 网页包热更新：读状态 + 确认启动 + 有回退时告知。放在版本检查之前——它决定"当前跑的是哪个网页包"，
     // 后续版本显示与错误上报都要用（失败静默，绝不阻塞启动）。
     try { HotBundle.init(); } catch (e) { /* 忽略 */ }
@@ -141,6 +145,8 @@ export const UpdateManager: {
     }
     const cap = (window as unknown as { Capacitor?: CapacitorLike }).Capacitor;
     if (!self.local || !cap || !cap.Plugins || !cap.Plugins.UpdateChecker) {
+      // 非 Android / 配置缺失：不会有热更新可等，启动画面不能因此多停 12 秒
+      BootSplash.hide();
       if (manual) App.toast('请在 Android 应用内检查更新');
       return;
     }
@@ -150,25 +156,35 @@ export const UpdateManager: {
       .then(function (j: AppVersionInfo) {
         // 服务器可达性已被本次版本请求证明：捎带上报本地攒的错误日志（fire-and-forget 旁路）
         try { if (typeof ClientLog !== 'undefined') ClientLog.flush('version'); } catch (e) { /* 旁路失败忽略 */ }
-        if (!j || !j.versionCode) { if (manual) App.toast('服务器未配置更新'); return; }
+        if (!j || !j.versionCode) { BootSplash.hide(); if (manual) App.toast('服务器未配置更新'); return; }
         if (!shouldUpdate(j.versionCode, self.local!.versionCode)) {
           // 没有新 APK 时顺带看一眼网页包（热更新，无需安装）。
+          // 启动画面（web/index.html 内联）此时还盖着：这次检查 + 下载 + 就地换页面的等待全由它盖住。
           // 提示分工：装了/已就绪/失败由 HotBundle 自己提示；"没有更新的包"这里统一提示，避免弹两条。
+          if (!manual) BootSplash.text('正在检查更新…');
           try {
             HotBundle.check(manual, function (r) {
-              if (!manual) return;
-              // 刚装好、或之前装好还没重启 → 问一句要不要立即生效（原地换目录 + 重载）
-              if (r && (r.installed || r.ready)) { offerHotApply(r.version); return; }
-              if (r && r.reason) return;   // 失败提示已由 HotBundle 弹出
-              App.toast('已是最新版本 v' + (self.local!.versionName || ''));
+              if (manual) {
+                // 刚装好、或之前装好还没重启 → 问一句要不要立即生效（原地换目录 + 重载）
+                if (r && (r.installed || r.ready)) { offerHotApply(r.version); return; }
+                if (r && r.reason) return;   // 失败提示已由 HotBundle 弹出
+                App.toast('已是最新版本 v' + (self.local!.versionName || ''));
+                return;
+              }
+              // 自动检查：就绪/失败/超时都收画面（就地切换成功那条分支不会回调——
+              // 那时页面正在重载，启动画面由新包自己的接上，收了反而闪一下旧界面）
+              BootSplash.onSkip(null);
+              BootSplash.busy(false);
+              BootSplash.hide();
             });
-          } catch (e) { /* 热更新门面异常不影响整包更新流程 */ }
+          } catch (e) { BootSplash.hide(); }
           return;
         }
+        BootSplash.hide();     // 有新 APK：让更新弹窗直接露出来
         self.remote = j;
         self._showDialog();
       })
-      .catch(function () { if (manual) App.toast('检查失败：网络错误'); });
+      .catch(function () { BootSplash.hide(); if (manual) App.toast('检查失败：网络错误'); });
   },
 
   _showDialog(): void {

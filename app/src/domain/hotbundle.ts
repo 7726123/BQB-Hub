@@ -8,8 +8,10 @@
 //   ③ 检查更新：取回（已签名）manifest 后连同服务器地址交给原生，本模块不解析、不信任其中任何字段；
 //   ④ 所有失败一律静默 + ClientLog.note（排查靠日志不靠猜），仅手动检查时弹提示。
 //
-// 生效时机：安装成功只写 pref，**下次冷启动才换页面**——绝不在用户写作中途重载。
+// 生效时机：安装成功后**启动画面还盖着就当场换页面**（用户打开即新版）；错过启动窗口只写 pref，
+// 下次冷启动生效——绝不在用户写作中途重载（就地切换由 applyPending 负责，页面会重载）。
 import { ClientLog } from './clientlog';
+import { BootSplash } from './bootsplash';
 import { defaultServerBase } from '../lib/server-url';
 import { getWebVersion, setWebVersion } from '../lib/webver';
 
@@ -31,6 +33,9 @@ export interface HotBundleResult { installed?: boolean; ready?: boolean; version
 interface HotBundlePlugin {
   getState?: () => Promise<HotBundleState>;
   confirm?: (o: { version: string }) => Promise<{ ok: boolean }>;  install?: (o: { serverBase: string; payload: string; sig: string }) => Promise<HotBundleInstallResult>;
+  // 原生就地生效（APK 158 起）：目录由原生算（跑内置资源时也能切），切换后原生还会 arm 回退看门狗。
+  // 老 APK 没有这个方法 → 退回 Capacitor 的 WebView.setServerBasePath（只在已跑热包时可用）。
+  applyPending?: () => Promise<{ ok?: boolean; version?: string }>;
   clearBlocked?: () => Promise<{ ok: boolean }>;
 }
 interface CapacitorLike {
@@ -67,8 +72,50 @@ export function manualResultText(r: { installed?: boolean; version?: string; rea
   return r.reason || '已是最新版本';
 }
 
+/** 启动期间的安装等待预算：超时就不再等（原生那边继续装，装好后下次启动生效）——启动画面绝不能变成"卡住"。 */
+const BOOT_INSTALL_BUDGET_MS = 8000;
+
+/** 就地切换（老路径，Capacitor 内置的 WebView 插件）：只在当前已经跑着热包时可用。返回是否发出了切换。 */
+function _applyViaWebView(st: HotBundleState): boolean {
+  const serving = String(st.serving || '');
+  const i = serving.lastIndexOf('/');
+  if (i <= 0 || serving.indexOf('/hot/') < 0) {
+    _toast('新版本已就绪，下次打开 App 时生效');
+    return false;
+  }
+  const dir = serving.slice(0, i + 1) + st.pending;
+  try {
+    const cap = (window as unknown as { Capacitor?: { Plugins?: { WebView?: { setServerBasePath?: (o: { path: string }) => Promise<void> } } } }).Capacitor;
+    const wv = cap && cap.Plugins && cap.Plugins.WebView;
+    if (!wv || !wv.setServerBasePath) { _toast('新版本已就绪，下次打开 App 时生效'); return false; }
+    ClientLog.note('热更新', '切换到网页包 ' + st.pending + '（就地生效）');
+    Promise.resolve(wv.setServerBasePath({ path: dir })).catch(function () { /* 失败则等下次启动 */ });
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+/** 原生就地生效（优先，APK 158 起）：目录由原生算（内置资源也能切）、切完 arm 回退看门狗。null = 该 APK 没有这个方法。 */
+function _nativeApply(p: HotBundlePlugin, st: HotBundleState): Promise<boolean> | null {
+  if (typeof p.applyPending !== 'function') return null;
+  try {
+    ClientLog.note('热更新', '切换到网页包 ' + st.pending + '（原生就地生效）');
+    return Promise.resolve(p.applyPending()).then(function (r) {
+      return !(r && r.ok === false);
+    }, function (e) {
+      ClientLog.note('热更新', '原生就地生效失败：' + String((e && (e as Error).message) || e));
+      return false;
+    });
+  } catch (e) {
+    return null;
+  }
+}
+
 export const HotBundle = {
   _lastResult: null as null | HotBundleResult,
+  /** 启动期间的安装等待预算（毫秒）。测试改小它来跑超时分支。 */
+  _bootBudgetMs: BOOT_INSTALL_BUDGET_MS,
 
   /** 启动时调用一次（早于版本检查）。失败静默，绝不阻塞启动。 */
   init(): void {
@@ -130,6 +177,9 @@ export const HotBundle = {
       return;
     }
     const server = _serverBase();
+    // 启动画面还盖着（冷启动的自动检查）→ 这次检查 + 下载 + 切换的等待全由它盖住，
+    // 装完当场换页面：用户看到的是"启动画面 → 新版界面"，不用退出再打开。
+    const boot = !manual && BootSplash.available();
     // 先读本地状态：待生效的那一版就是服务端现在给的这一版 → 直接告知，别去撞原生
     const st = HotBundle._state || { active: '', pending: '', code: 0, blocked: '', nativeCode: 0 };
     fetch(server + '/api/app/web-bundle?_=' + Date.now(), { cache: 'no-store' })
@@ -145,17 +195,44 @@ export const HotBundle = {
           finish({ installed: false });                            // 正在跑的就是最新
           return;
         }
-        return Promise.resolve(p.install!({ serverBase: server, payload: j.payload, sig: j.sig }))
+        let gaveUp = false;
+        if (boot) {
+          BootSplash.text('正在同步最新版本…');
+          BootSplash.busy(true);
+          // 「稍后」= 不等了，直接进 App；包在原生那边继续装，装好下次打开生效
+          BootSplash.onSkip(function () { gaveUp = true; });
+        }
+        // 安装本身（含"装好了记账"）与预算解耦：超时/稍后只是不再等，原生装完照样下次生效
+        const instP = Promise.resolve(p.install!({ serverBase: server, payload: j.payload, sig: j.sig }))
           .then(function (res) {
             const got = (res && res.version) || v;
-            ClientLog.note('热更新', '网页包 ' + got + ' 已就绪，下次启动生效');
+            ClientLog.note('热更新', '网页包 ' + got + ' 已就绪' + (boot ? '（启动期间就地生效）' : '，下次启动生效'));
             if (st) { st.pending = got; }
-            finish({ installed: !!(res && res.ok), version: got });
+            return { ok: true, version: got, msg: '' };
           }, function (err) {
             const msg = String((err && (err as Error).message) || err || '未知错误');
             ClientLog.note('热更新', '安装失败：' + msg);
-            finish({ installed: false, reason: '更新失败：' + msg });
+            return { ok: false, version: v, msg: msg };
           });
+        const timeoutP = new Promise<string>(function (resolve) {
+          setTimeout(function () { resolve('timeout'); }, HotBundle._bootBudgetMs);
+        });
+        return Promise.race([instP, timeoutP]).then(function (out: any) {
+          if (out === 'timeout') {
+            ClientLog.note('热更新', '安装超过 ' + Math.round(HotBundle._bootBudgetMs / 1000) + ' 秒，不再等（后台继续，下次启动生效）');
+            finish({ installed: false, version: v });
+            return;
+          }
+          if (!out.ok) { finish({ installed: false, version: v, reason: '更新失败：' + out.msg }); return; }
+          if (boot && !gaveUp) {
+            BootSplash.text('正在准备新版本…');
+            return HotBundle.applyPending().then(function (switched) {
+              if (switched) { return; }   // 页面马上重载：不收启动画面、不回调——新包自己的启动画面接上
+              finish({ installed: true, version: out.version });
+            });
+          }
+          finish({ installed: true, version: out.version });
+        });
       })
       .catch(function (e) {
         // 静默留痕（服务器不可达 / 接口未上线都很正常，不该打扰用户）
@@ -165,37 +242,38 @@ export const HotBundle = {
   },
 
   /**
-   * 立即生效（不必重启 App）：把资源目录就地切到已装好的那一版并重载页面。
+   * 立即生效（Promise 版）：把资源目录切到已装好的那一版并重载页面。
+   * 原生方法优先（目录由原生算，跑内置资源时也能切，切完原生 arm 回退看门狗）；
+   * 旧 APK 没有这个方法 → 退回 Capacitor 内置 WebView 插件的 setServerBasePath（见 _applyViaWebView）。
+   * 返回 true = 已经发出切换（页面随后重载）。
    *
-   * 为什么 JS 能做：Capacitor 内置的 WebView 插件公开了 setServerBasePath（见其 WebView.java），
-   * 换目录后会 reload——同 origin，localStorage 与所有本地数据不受影响。
-   * 目录名由「当前实际加载的热包目录」推出（同一父目录 + 待生效版本号），
-   * 拿不到热包目录（当前跑内置资源）时只能下次启动生效。
-   *
+   * 为什么 JS 能做：换目录后会 reload——同 origin，localStorage 与所有本地数据不受影响。
    * 安全性：这条路径不比冷启动弱——重启后新包的 JS 仍要过 confirm，看门狗也照常生效；
-   * 若新包起不来，25 秒后自动回退到内置资源并把该版本拉黑。
+   * 若新包起不来，25 秒后自动回退并拉黑该版本。
+   */
+  applyPending(): Promise<boolean> {
+    const st = HotBundle._state;
+    const p = _plugin();
+    if (!p || !st || !st.pending) return Promise.resolve(false);
+    const nat = _nativeApply(p, st);
+    if (nat) return nat.then(function (ok) { return ok ? true : _applyViaWebView(st); });
+    return Promise.resolve(_applyViaWebView(st));
+  },
+
+  /**
+   * 立即生效（同步版，手动检查的确认框用）：返回值只表示"是否发出了切换"。
+   * 原生优先；原生失败时退回 WebView 路径。
    */
   applyPendingNow(): boolean {
     const st = HotBundle._state;
     const p = _plugin();
     if (!p || !st || !st.pending) return false;
-    const serving = String(st.serving || '');
-    const i = serving.lastIndexOf('/');
-    if (i <= 0 || serving.indexOf('/hot/') < 0) {
-      _toast('新版本已就绪，下次打开 App 时生效');
-      return false;
-    }
-    const dir = serving.slice(0, i + 1) + st.pending;
-    try {
-      const cap = (window as unknown as { Capacitor?: { Plugins?: { WebView?: { setServerBasePath?: (o: { path: string }) => Promise<void> } } } }).Capacitor;
-      const wv = cap && cap.Plugins && cap.Plugins.WebView;
-      if (!wv || !wv.setServerBasePath) { _toast('新版本已就绪，下次打开 App 时生效'); return false; }
-      ClientLog.note('热更新', '切换到网页包 ' + st.pending + '（就地生效）');
-      Promise.resolve(wv.setServerBasePath({ path: dir })).catch(function () { /* 失败则等下次启动 */ });
+    const nat = _nativeApply(p, st);
+    if (nat) {
+      void nat.then(function (ok) { if (!ok) { _applyViaWebView(st); } });
       return true;
-    } catch (e) {
-      return false;
     }
+    return _applyViaWebView(st);
   },
 
   /** 本地已知状态（init 时读一次；check 后同步 pending） */

@@ -321,6 +321,145 @@ describe('就地生效（applyPendingNow）', () => {
     await flush();
     expect(HotBundle.applyPendingNow()).toBe(false);
   });
+
+  // 原生方法（APK 158 起）优先：目录由原生算（内置资源也能切）、切完 arm 看门狗
+  test('原生有 applyPending 时优先用它，不再走 WebView 插件', async () => {
+    let native = 0;
+    const sets: unknown[] = [];
+    (globalThis as unknown as Record<string, unknown>).Capacitor = {
+      getPlatform: () => 'android',
+      Plugins: {
+        HotBundle: {
+          getState: () => Promise.resolve(stateReply),
+          install: () => Promise.resolve({}),
+          applyPending: () => { native++; return Promise.resolve({ ok: true, version: '1.5.97w2' }); },
+        },
+        WebView: { setServerBasePath: (o: unknown) => { sets.push(o); return Promise.resolve(); } },
+      },
+    };
+    stateReply = { active: '1.5.97w1', pending: '1.5.97w2', code: 157001, blocked: '', nativeCode: 158, serving: 'public', isAsset: true };
+    HotBundle.init();
+    await flush();
+    expect(HotBundle.applyPendingNow()).toBe(true);
+    await flush();
+    expect(native).toBe(1);
+    expect(sets).toEqual([]);                                  // 原生成功 → 不动 WebView 那条路
+    expect(notes.join('\n')).toContain('原生就地生效');
+  });
+
+  test('原生 applyPending 失败时退回 WebView 插件（跑内置资源时它切不了，给"下次打开"提示）', async () => {
+    const sets: unknown[] = [];
+    (globalThis as unknown as Record<string, unknown>).Capacitor = {
+      getPlatform: () => 'android',
+      Plugins: {
+        HotBundle: {
+          getState: () => Promise.resolve(stateReply),
+          install: () => Promise.resolve({}),
+          applyPending: () => Promise.reject(new Error('没有待生效的网页包')),
+        },
+        WebView: { setServerBasePath: (o: unknown) => { sets.push(o); return Promise.resolve(); } },
+      },
+    };
+    stateReply = { active: '', pending: '1.5.97w2', code: 0, blocked: '', nativeCode: 158, serving: 'public', isAsset: true };
+    HotBundle.init();
+    await flush();
+    expect(HotBundle.applyPendingNow()).toBe(true);            // 发出了切换（先走原生）
+    await flush();
+    expect(notes.join('\n')).toContain('原生就地生效失败');
+    expect(sets).toEqual([]);                                  // 内置资源 → WebView 路径也切不了
+    expect(toasts.join('\n')).toContain('下次打开 App');
+  });
+});
+
+// 启动画面还盖着时的自动检查：安装 → 就地切换 → 页面重载（不回调），以及 8 秒预算
+describe('启动画面期间的更新（boot splash）', () => {
+  const manifest = { payload: 'cGF5bG9hZA==', sig: 'c2ln', v: '1.5.97w2' };
+  const splash = { hide: 0, text: [] as string[], busy: [] as boolean[], skip: 0 };
+
+  function stubSplash(): void {
+    splash.hide = 0; splash.text = []; splash.busy = []; splash.skip = 0;
+    (globalThis as unknown as Record<string, unknown>).__bootSplash = {
+      hide: () => { splash.hide++; },
+      text: (s: string) => { splash.text.push(s); },
+      busy: (on: boolean) => { splash.busy.push(on); },
+      skip: () => { splash.skip++; },
+      live: () => {},
+    };
+  }
+  function stubFetch(body: unknown) {
+    (globalThis as unknown as Record<string, unknown>).fetch = () =>
+      Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(body) });
+  }
+
+  beforeEach(() => { stubSplash(); });
+  afterEach(() => { delete (globalThis as unknown as Record<string, unknown>).__bootSplash; });
+
+  test('启动期间装上就地生效：显示同步状态、回调不触发（页面即将重载）', async () => {
+    let native = 0;
+    (globalThis as unknown as Record<string, unknown>).Capacitor = {
+      getPlatform: () => 'android',
+      Plugins: {
+        HotBundle: {
+          getState: () => Promise.resolve(stateReply),
+          install: () => Promise.resolve({ ok: true, version: '1.5.97w2' }),
+          applyPending: () => { native++; return Promise.resolve({ ok: true }); },
+        },
+      },
+    };
+    stateReply = { active: '1.5.97w1', pending: '', code: 157001, blocked: '', nativeCode: 158, serving: '/x/hot/1.5.97w1' };
+    HotBundle.init();
+    await flush();
+    stubFetch(manifest);
+    const seen: unknown[] = [];
+    HotBundle.check(false, (r) => seen.push(r));
+    await flush();
+    await flush();
+    expect(splash.text).toContain('正在同步最新版本…');
+    expect(splash.text).toContain('正在准备新版本…');
+    expect(splash.busy).toEqual([true]);
+    expect(native).toBe(1);
+    expect(seen).toEqual([]);          // 页面要重载了：不回调，调用方也就不会去收启动画面
+    expect(splash.hide).toBe(0);       // （新包自己的启动画面接上，中间不闪旧界面）
+  });
+
+  test('安装超过预算就不再等：回调一次、画面由调用方收起（原生那边继续装）', async () => {
+    (globalThis as unknown as Record<string, unknown>).Capacitor = {
+      getPlatform: () => 'android',
+      Plugins: {
+        HotBundle: {
+          getState: () => Promise.resolve(stateReply),
+          install: () => new Promise(() => { /* 永不完成，模拟慢网 */ }),
+          applyPending: () => Promise.resolve({ ok: true }),
+        },
+      },
+    };
+    stateReply = { active: '1.5.97w1', pending: '', code: 157001, blocked: '', nativeCode: 158, serving: '/x/hot/1.5.97w1' };
+    HotBundle.init();
+    await flush();
+    stubFetch(manifest);
+    HotBundle._bootBudgetMs = 20;
+    try {
+      const seen: { installed?: boolean }[] = [];
+      HotBundle.check(false, (r) => seen.push(r));
+      await new Promise((r) => setTimeout(r, 60));
+      expect(seen.length).toBe(1);
+      expect(seen[0].installed).toBe(false);
+      expect(notes.join('\n')).toContain('不再等');
+    } finally { HotBundle._bootBudgetMs = 8000; }
+  });
+
+  test('没有更新的包：不显示进度、回调一次（调用方据此收起画面）', async () => {
+    stubFetch({ v: '1.5.97w1', payload: 'x', sig: 'y' });
+    stateReply = { active: '1.5.97w1', pending: '', code: 157001, blocked: '', nativeCode: 158, serving: '/x/hot/1.5.97w1' };
+    HotBundle.init();
+    await flush();
+    const seen: unknown[] = [];
+    HotBundle.check(false, (r) => seen.push(r));
+    await flush();
+    expect(seen).toEqual([{ installed: false }]);
+    expect(splash.busy).toEqual([]);
+    expect(splash.text).toEqual([]);
+  });
 });
 
 describe('版本展示', () => {
