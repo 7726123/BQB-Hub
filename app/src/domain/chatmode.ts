@@ -20,6 +20,7 @@ import { PluginManager } from './plugins';
 import { parseBubbles, analyzeParse, stripSpeakerPrefixes, NARRATOR } from '../lib/bubble';
 import type { Bubble } from '../lib/bubble';
 import { bindAutoGrow } from '../lib/inputgrow';
+import { avatarUrl } from '../lib/avatarurl';
 import { UsageStats } from '../lib/usage';
 import { chatFormatBlock, chatRoster } from './chatprompt';
 
@@ -196,7 +197,8 @@ export const ChatMode = {
     const color = 'hsl(' + h + ', 42%, 52%)';
     if (!name || name === NARRATOR) return { src: null, initial: '白', color: 'hsl(220, 12%, 52%)' };
     const e = this._entryByName(name);
-    return { src: (e && e.avatar) ? String(e.avatar) : null, initial, color };
+    // 短地址（blob:）而不是原 data URL：流式时每 200ms 会重画整屏气泡，塞原图会把 JS 线程占满
+    return { src: (e && e.avatar) ? avatarUrl(e.avatar) : null, initial, color };
   },
 
   // 角色简介 = 自动聚合：精确名 → 去尊称后包含匹配，命中的条目按「条目名 + 类型」分组显示

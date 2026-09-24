@@ -10,6 +10,7 @@ import { BookManager } from './book';
 import { ProtagonistManager } from './protagonist';
 import { DatabaseManager } from './database';
 import { formatVersion } from '../lib/webver';
+import { avatarUrl } from '../lib/avatarurl';
 // 社区聊天：独立 legacy 全局（modules/community.js），运行时成员按 typeof 探测
 declare const CommunityChat: { [k: string]: any };
 export interface UIManagerShape {
@@ -1068,7 +1069,7 @@ const UIManager: UIManagerShape = {
       if (e.type === '角色') {
         h += '<div class="ec-avatar-row">' +
           (e.avatar
-            ? '<img class="wb-avatar" src="' + htmlEscape(e.avatar) + '" onclick="UIManager.viewAvatar(this.src)" alt="">'
+            ? '<img class="wb-avatar" src="' + htmlEscape(avatarUrl(e.avatar) || '') + '" onclick="UIManager.viewAvatar(this.src)" alt="">'
             : '<span class="wb-avatar-empty">👤</span>') +
           '<button class="ghost-btn" onclick="UIManager.pickAvatar(\'wb\',\'' + e.id + '\')">换头像</button></div>';
       }
@@ -1794,7 +1795,7 @@ const UIManager: UIManagerShape = {
         var avSrc = UIManager._dbAvatarFor(r, tableId);
         avatarHtml = '<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">' +
           (avSrc
-            ? '<img class="db-avatar" src="' + htmlEscape(avSrc) + '" onclick="UIManager.viewAvatar(this.src)" alt="">'
+            ? '<img class="db-avatar" src="' + htmlEscape(avatarUrl(avSrc) || '') + '" onclick="UIManager.viewAvatar(this.src)" alt="">'
             : '<span class="db-avatar-empty">👤</span>') +
           '<button class="small" onclick="event.stopPropagation();UIManager.pickAvatar(\'db\',\'' + r.id + '\')">换头像</button>' +
         '</div>';
@@ -1861,7 +1862,7 @@ const UIManager: UIManagerShape = {
       if (tableId === 'character_profile') {
         var headAv = UIManager._dbAvatarFor(r, tableId);
         headAvatar = headAv
-          ? '<img class="db-rr-avatar" src="' + htmlEscape(headAv) + '" onclick="event.stopPropagation();UIManager.viewAvatar(this.src)" alt="">'
+          ? '<img class="db-rr-avatar" src="' + htmlEscape(avatarUrl(headAv) || '') + '" onclick="event.stopPropagation();UIManager.viewAvatar(this.src)" alt="">'
           : '<span class="db-rr-initial">' + htmlEscape(pkVal.trim().charAt(0) || '?') + '</span>';
       }
       var html = '<div class="db-record-row' + (isEdit ? ' open' : '') + '" onclick="UIManager.toggleDBRecord(this)">' +

@@ -372,7 +372,14 @@ describe('落库与诊断', () => {
 describe('头像与角色简介（自动聚合）', () => {
   it('头像优先取世界书角色条目的 avatar，缺省用首字色块且颜色稳定', () => {
     seedBooks();
-    expect(ChatMode.avatar('林薇').src).toBe('data:image/jpeg;base64,AAAA');
+    // 渲染层拿到的是**短地址**（blob:），不是原 data URL：流式时每 200ms 重画整屏气泡，
+    // 塞原图会把 JS 线程占满（卡死 + 之后一次性补字），见 lib/avatarurl.ts
+    const av = ChatMode.avatar('林薇').src;
+    expect(String(av).startsWith('blob:')).toBe(true);
+    expect(String(av).startsWith('data:')).toBe(false);
+    expect(String(av).length).toBeLessThan(80);
+    // 同一份头像数据每次都是同一个地址（缓存命中，不重复解码）
+    expect(ChatMode.avatar('林薇').src).toBe(av);
     const a1 = ChatMode.avatar('陈亦'), a2 = ChatMode.avatar('陈亦');
     expect(a1.src).toBe(null);
     expect(a1.initial).toBe('陈');
