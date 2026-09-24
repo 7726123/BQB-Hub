@@ -17,17 +17,17 @@ export function shouldUpdate(remoteCode: number, localCode: number): boolean {
 
 /**
  * 网页包已就绪 → 问一句是否立即生效（就地换资源目录并重载，免去"退出 App 再打开"）。
- * 之所以要问：重载会丢弃未保存的输入；选取消则维持原设计，下次冷启动生效。
- * 没有确认框可用时不打扰（下次启动照样生效）。
+ * 之所以要问：重载会丢弃未保存的输入；选取消也不耽误——切后台/回前台/下次冷启动都会自动换上（见 HotBundle._bindApplyHooks）。
+ * 没有确认框可用时不打扰（照样会在切后台/回前台时自动生效）。
  */
 export function offerHotApply(version?: string, confirmFn?: (msg: string, cb: () => void) => void, applyFn?: () => void): void {
   const UI = (globalThis as unknown as { UIManager?: { showConfirm?: (msg: string, cb: () => void) => void } }).UIManager;
   const ask = confirmFn || (UI && UI.showConfirm);
   if (!ask) return;
   const msg = '新版本' + (version ? ' ' + version : '') + ' 已就绪。\n现在重启界面立即生效？'
-    + '\n（未保存的输入会丢失，建议先确认已保存；选「取消」则下次打开 App 时生效）';
+    + '\n（未保存的输入会丢失，建议先确认已保存；选「取消」则切回本应用时自动生效）';
   const run = applyFn || function () { HotBundle.applyPendingNow(); };
-  try { ask(msg, run); } catch (e) { /* 弹窗不可用：不打扰，等下次启动 */ }
+  try { ask(msg, run); } catch (e) { /* 弹窗不可用：不打扰，切后台/回前台时照样自动生效 */ }
 }
 
 // Capacitor 原生插件的最小类型声明（UpdateChecker）

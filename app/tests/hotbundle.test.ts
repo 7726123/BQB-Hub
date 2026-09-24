@@ -140,7 +140,7 @@ describe('检查与安装', () => {
       Promise.resolve({ ok, status: ok ? 200 : 500, json: () => Promise.resolve(body) });
   }
 
-  test('拿到 manifest 后原样交给原生，成功提示「下次启动生效」', async () => {
+  test('拿到 manifest 后原样交给原生，成功提示「切回本应用时自动生效」', async () => {
     stubFetch(manifest);
     const seen: unknown[] = [];
     HotBundle.check(true, (r) => seen.push(r));
@@ -149,7 +149,7 @@ describe('检查与安装', () => {
     expect(calls.install[0].payload).toBe(manifest.payload);
     expect(calls.install[0].sig).toBe(manifest.sig);
     expect(calls.install[0].serverBase).toContain('43.155.128.242');
-    expect(toasts.join('\n')).toContain('下次启动自动生效');
+    expect(toasts.join('\n')).toContain('切回本应用时自动生效');
     expect(notes.join('\n')).toContain('已就绪');
     expect(seen).toEqual([{ installed: true, version: '1.5.97w1' }]);
   });
@@ -249,7 +249,7 @@ describe('已装未生效 / 已在运行：不再触发安装（避免"安装失
     await flush();
     expect(calls.install.length).toBe(0);
     expect(seen).toEqual([{ installed: false, ready: true, version: '1.5.97w2' }]);
-    expect(toasts.join('\n')).toContain('重启 App 后生效');
+    expect(toasts.join('\n')).toContain('切回本应用时自动生效');
     expect(notes.join('\n')).not.toContain('安装');
   });
 
@@ -305,7 +305,7 @@ describe('就地生效（applyPendingNow）', () => {
     expect(sets[0].path).toBe('/data/user/0/com.novelwriter.app/files/hot/1.5.97w2');
   });
 
-  test('当前跑内置资源（拿不到热包目录）：不动手，提示下次启动生效', async () => {
+  test('当前跑内置资源（拿不到热包目录）：不动手，提示下次打开生效', async () => {
     stateReply = {
       active: '', pending: '1.5.97w2', code: 0, blocked: '', nativeCode: 157, serving: 'public', isAsset: true,
     };
@@ -444,7 +444,7 @@ describe('启动画面期间的更新（boot splash）', () => {
       await new Promise((r) => setTimeout(r, 60));
       expect(seen.length).toBe(1);
       expect(seen[0].installed).toBe(false);
-      expect(notes.join('\n')).toContain('不再等');
+      expect(notes.join('\n')).toContain('先放行启动');
     } finally { HotBundle._bootBudgetMs = 8000; }
   });
 
@@ -459,6 +459,149 @@ describe('启动画面期间的更新（boot splash）', () => {
     expect(seen).toEqual([{ installed: false }]);
     expect(splash.busy).toEqual([]);
     expect(splash.text).toEqual([]);
+  });
+});
+
+// 真机日志实测过的问题：慢网/失败时安装超过 8 秒预算 → 包只写进 pref 等下次冷启动
+// → 用户报「热更新了还要退出再进」。现在错过启动窗口的包由这几个时机自己换上。
+describe('错过启动窗口的包：抓机会自动生效（不必退出再进）', () => {
+  const manifest = { payload: 'cGF5bG9hZA==', sig: 'c2ln', v: '1.5.97w2' };
+  const sets: { path: string }[] = [];
+
+  function stubHot(): void {
+    sets.length = 0;
+    (globalThis as unknown as Record<string, unknown>).Capacitor = {
+      getPlatform: () => 'android',
+      Plugins: {
+        HotBundle: { getState: () => Promise.resolve(stateReply), install: () => Promise.resolve({ ok: true, version: '1.5.97w2' }) },
+        WebView: { setServerBasePath: (o: { path: string }) => { sets.push(o); return Promise.resolve(); } },
+      },
+    };
+  }
+  function stubFetch2(body: unknown) {
+    (globalThis as unknown as Record<string, unknown>).fetch = () =>
+      Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(body) });
+  }
+  const hotState = () => ({
+    active: '1.5.97w1', pending: '', code: 157001, blocked: '', nativeCode: 157,
+    serving: '/data/user/0/com.novelwriter.app/files/hot/1.5.97w1',
+  });
+  afterEach(() => { delete (globalThis as unknown as { document?: { hidden?: boolean } }).document!.hidden; });
+
+  test('commitPending：有待生效的包就切目录并记账（切前先落盘）', async () => {
+    stubHot();
+    let saved = 0;
+    (globalThis as unknown as Record<string, unknown>).App = {
+      toast: (m: string) => { toasts.push(m); },
+      saveCurrentChapter: () => { saved++; },
+    };
+    stateReply = { ...hotState(), pending: '1.5.97w2' };
+    HotBundle.init();
+    await flush();
+    expect(HotBundle.commitPending('回前台')).toBe(true);
+    await flush();
+    expect(sets[0].path).toBe('/data/user/0/com.novelwriter.app/files/hot/1.5.97w2');
+    expect(saved).toBe(1);                                        // 重载前先把编辑器里的字落盘
+    expect(notes.join(' ')).toContain('自动切换（回前台）');
+  });
+
+  test('切过一版但重载后仍未生效 → 本会话不再自动切（防"每次回前台都重载"）', async () => {
+    stubHot();
+    const setN: Record<string, string> = { hotAppliedPending: '1.5.97w2' };
+    (globalThis as unknown as Record<string, unknown>).sessionStorage = {
+      getItem: (k: string) => (k in setN ? setN[k] : null),
+      setItem: (k: string, v: string) => { setN[k] = v; },
+    };
+    try {
+      stateReply = { ...hotState(), pending: '1.5.97w2' };
+      HotBundle._applyUnavailable = false;
+      HotBundle.init();
+      await flush();
+      expect(HotBundle.commitPending('回前台')).toBe(false);      // 不再切
+      expect(sets).toEqual([]);
+      expect(notes.join(' ')).toContain('切换后仍未生效');
+    } finally {
+      delete (globalThis as unknown as { sessionStorage?: unknown }).sessionStorage;
+      HotBundle._applyUnavailable = false;
+    }
+  });
+
+  test('commitPending：没有待生效的包 → 什么都不做', async () => {
+    stubHot();
+    stateReply = hotState();
+    HotBundle.init();
+    await flush();
+    expect(HotBundle.commitPending('回前台')).toBe(false);
+    expect(sets).toEqual([]);
+  });
+
+  test('切后台立刻换上；回前台没有待生效包时补一次检查（10 分钟节流）', async () => {
+    const bound: Record<string, () => void> = {};
+    const doc = (globalThis as unknown as { document: { addEventListener: unknown } }).document;
+    const origAdd = doc.addEventListener;
+    doc.addEventListener = (t: string, fn: () => void) => { bound[t] = fn; };
+    try {
+      stubHot();
+      stateReply = { ...hotState(), pending: '1.5.97w2' };
+      HotBundle._applyHooksBound = false;
+      HotBundle.init();
+      await flush();
+      expect(typeof bound['visibilitychange']).toBe('function');
+      (globalThis as unknown as { document: { hidden: boolean } }).document.hidden = true;
+      bound['visibilitychange']();
+      await flush();
+      expect(sets.length).toBe(1);                                 // 切后台：静默换上
+      delete (globalThis as unknown as { document?: { hidden?: boolean } }).document!.hidden;
+      // 回前台、且没有待生效的包 → 补一次检查；节流期内不重复
+      HotBundle._state = { ...hotState() };
+      stubFetch2({ v: '1.5.97w2', payload: 'x', sig: 'y' });
+      HotBundle._lastForegroundCheckAt = 0;
+      bound['visibilitychange']();
+      await flush();
+      const n1 = notes.filter(x => x.includes('前台补检查')).length;
+      expect(n1).toBe(1);
+      bound['visibilitychange']();
+      await flush();
+      expect(notes.filter(x => x.includes('前台补检查')).length).toBe(n1);
+    } finally {
+      doc.addEventListener = origAdd;
+      HotBundle._applyHooksBound = false;
+      HotBundle._lastForegroundCheckAt = 0;
+    }
+  });
+
+  test('慢网：安装超过启动预算，但装完时已在后台 → 当场静默换上', async () => {
+    stubHot();
+    stateReply = hotState();
+    stubFetch2(manifest);
+    HotBundle.init();
+    await flush();
+    let finishInstall: (v: unknown) => void = () => {};
+    (globalThis as unknown as Record<string, unknown>).Capacitor = {
+      getPlatform: () => 'android',
+      Plugins: {
+        HotBundle: {
+          getState: () => Promise.resolve(stateReply),
+          install: () => new Promise((res) => { finishInstall = res; }),
+        },
+        WebView: { setServerBasePath: (o: { path: string }) => { sets.push(o); return Promise.resolve(); } },
+      },
+    };
+    HotBundle._bootBudgetMs = 20;
+    (globalThis as unknown as { document: { hidden: boolean } }).document.hidden = true;   // 用户已经切走了
+    try {
+      HotBundle.check(false);
+      await new Promise((r) => setTimeout(r, 60));                 // 预算用尽，先放行启动
+      expect(notes.join(' ')).toContain('先放行启动');
+      expect(sets.length).toBe(0);                                 // 还没装完，不能切
+      finishInstall({ ok: true, version: '1.5.97w2' });             // 装完了，人还在后台
+      await flush(); await flush();
+      expect(sets[0].path).toBe('/data/user/0/com.novelwriter.app/files/hot/1.5.97w2');
+      expect(notes.join(' ')).toContain('装完时在后台');
+    } finally {
+      HotBundle._bootBudgetMs = 8000;
+      delete (globalThis as unknown as { document?: { hidden?: boolean } }).document!.hidden;
+    }
   });
 });
 
@@ -490,7 +633,7 @@ describe('立即生效的询问（offerHotApply）', () => {
     expect(msgs.length).toBe(1);
     expect(msgs[0]).toContain('1.5.97w2');
     expect(msgs[0]).toContain('未保存');
-    expect(msgs[0]).toContain('下次打开 App');
+    expect(msgs[0]).toContain('切回本应用时自动生效');
     expect(applied).toBe(1);          // 用户点确定 → 执行生效
   });
 

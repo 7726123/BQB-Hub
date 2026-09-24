@@ -8,8 +8,12 @@
 //   ③ 检查更新：取回（已签名）manifest 后连同服务器地址交给原生，本模块不解析、不信任其中任何字段；
 //   ④ 所有失败一律静默 + ClientLog.note（排查靠日志不靠猜），仅手动检查时弹提示。
 //
-// 生效时机：安装成功后**启动画面还盖着就当场换页面**（用户打开即新版）；错过启动窗口只写 pref，
-// 下次冷启动生效——绝不在用户写作中途重载（就地切换由 applyPending 负责，页面会重载）。
+// 生效时机：安装成功后**启动画面还盖着就当场换页面**（用户打开即新版）；错过启动窗口（下载超过预算、
+// 或用户在装完之前就进了 App）不再干等下次冷启动——抓下一次机会自己生效（见 _bindApplyHooks）：
+//   · 切后台/锁屏时立刻就地切换：过程用户看不见，回来就是新版；
+//   · 回到前台时仍有待生效的包，直接切（新包自己的启动画面接住这次重载）；
+//   · 回到前台顺手补一次检查（节流 10 分钟）：长时间开着 App 也能拿到新包，不必等下次冷启动。
+// 切换前一律先 saveCurrentChapter 落盘；仍然绝不在"前台 + 用户正在写"时无故重载。
 import { ClientLog } from './clientlog';
 import { BootSplash } from './bootsplash';
 import { defaultServerBase } from '../lib/server-url';
@@ -68,11 +72,11 @@ function _serverBase(): string {
 
 /** 手动检查的结果文案（纯函数，便于测试）。 */
 export function manualResultText(r: { installed?: boolean; version?: string; reason?: string }): string {
-  if (r.installed) return '新版本 ' + (r.version || '') + ' 已就绪，下次启动自动生效';
+  if (r.installed) return '新版本 ' + (r.version || '') + ' 已就绪，切回本应用时自动生效';
   return r.reason || '已是最新版本';
 }
 
-/** 启动期间的安装等待预算：超时就不再等（原生那边继续装，装好后下次启动生效）——启动画面绝不能变成"卡住"。 */
+/** 启动期间的安装等待预算：超时就不再等（原生那边继续装，装好后切后台/回前台/下次启动都能生效，见 _bindApplyHooks）——启动画面绝不能变成"卡住"。 */
 const BOOT_INSTALL_BUDGET_MS = 8000;
 
 /** 就地切换（老路径，Capacitor 内置的 WebView 插件）：只在当前已经跑着热包时可用。返回是否发出了切换。 */
@@ -121,10 +125,22 @@ export const HotBundle = {
   init(): void {
     const p = _plugin();
     if (!p || !p.getState) return;
+    // 抓机会生效的三个时机：切后台 / 回前台 / 网络恢复（错过启动窗口的包靠它自己换上，不必退出再进）
+    this._bindApplyHooks();
     try {
       Promise.resolve(p.getState()).then(function (st) {
         if (!st) return;
         HotBundle._state = st;
+        // 上一轮已经切过这一版、重载后它还是"待生效" → 说明切换没被采纳（Capacitor 没用这个目录）。
+        // 本会话别再自动切，否则每次回前台都会重载一次。冷启动的看门狗/两次未确认回退会兜底。
+        if (st.pending) {
+          try {
+            if (sessionStorage.getItem('hotAppliedPending') === st.pending) {
+              HotBundle._applyUnavailable = true;
+              ClientLog.note('热更新', '网页包 ' + st.pending + ' 切换后仍未生效，本会话不再自动切换');
+            }
+          } catch (e) { /* 忽略 */ }
+        }
         if (st.rolledBack) {
           setWebVersion('');
           ClientLog.note('热更新', '网页包 ' + st.rolledBack + ' 启动未确认，已回退到内置版本');
@@ -166,7 +182,7 @@ export const HotBundle = {
     const finish = function (r: HotBundleResult): void {
       HotBundle._lastResult = r;
       if (manual && r.installed) _toast(manualResultText(r));
-      else if (manual && r.ready) _toast('新版本 ' + (r.version || '') + ' 已就绪，重启 App 后生效');
+      else if (manual && r.ready) _toast('新版本 ' + (r.version || '') + ' 已就绪，切回本应用时自动生效');
       else if (manual && r.reason) _toast(r.reason);
       if (done) { try { done(r); } catch (e) { /* 调用方异常不影响自身 */ } }
     };
@@ -202,12 +218,14 @@ export const HotBundle = {
           // 「稍后」= 不等了，直接进 App；包在原生那边继续装，装好下次打开生效
           BootSplash.onSkip(function () { gaveUp = true; });
         }
-        // 安装本身（含"装好了记账"）与预算解耦：超时/稍后只是不再等，原生装完照样下次生效
+        // 安装本身（含"装好了记账"）与预算解耦：超时/稍后只是不再等，包装好后自己找机会生效
         const instP = Promise.resolve(p.install!({ serverBase: server, payload: j.payload, sig: j.sig }))
           .then(function (res) {
             const got = (res && res.version) || v;
-            ClientLog.note('热更新', '网页包 ' + got + ' 已就绪' + (boot ? '（启动期间就地生效）' : '，下次启动生效'));
+            ClientLog.note('热更新', '网页包 ' + got + ' 已就绪' + (boot ? '（启动期间就地生效）' : ''));
             if (st) { st.pending = got; }
+            // 装完时若已经切到后台（用户先干别的去了）：当场静默换上，下次回到前台就是新版
+            try { if (document.hidden) HotBundle.commitPending('装完时在后台'); } catch (e) { /* 忽略 */ }
             return { ok: true, version: got, msg: '' };
           }, function (err) {
             const msg = String((err && (err as Error).message) || err || '未知错误');
@@ -219,7 +237,8 @@ export const HotBundle = {
         });
         return Promise.race([instP, timeoutP]).then(function (out: any) {
           if (out === 'timeout') {
-            ClientLog.note('热更新', '安装超过 ' + Math.round(HotBundle._bootBudgetMs / 1000) + ' 秒，不再等（后台继续，下次启动生效）');
+            // 不再干等：包继续在后台装，装完那一刻若在后台就静默生效，否则回到前台时生效（见 _bindApplyHooks）
+            ClientLog.note('热更新', '安装超过 ' + Math.round(HotBundle._bootBudgetMs / 1000) + ' 秒，先放行启动（装好后自动生效）');
             finish({ installed: false, version: v });
             return;
           }
@@ -274,6 +293,69 @@ export const HotBundle = {
       return true;
     }
     return _applyViaWebView(st);
+  },
+
+  // ===== 抓机会生效（错过启动窗口的包）=====
+  // 实测日志：真机上出现「安装超过 8 秒，不再等（后台继续，下次启动生效）」——用户就得退出再进一次。
+  // 现在改成：待生效的包挂在这儿，切后台/回前台/装机完成时自己生效。
+  _applyHooksBound: false,
+  _lastForegroundCheckAt: 0,
+  /** 前台补检查的节流：太频繁会把"切回 App"变成每次都下载 */
+  FOREGROUND_CHECK_MS: 10 * 60 * 1000,
+
+  /**
+   * 把"已装好、待生效"的那一版切过去（会重载页面）。
+   * 切换前先把编辑器里的字落盘——重载会丢掉没保存的内容。
+   * 返回是否真的发出了切换（没有待生效的包 / 环境不支持时 false）。
+   */
+  commitPending(reason: string): boolean {
+    const st = HotBundle._state;
+    if (!st || !st.pending) return false;
+    // 这次状态下切不了（跑内置资源、拿不到热包目录）：别反复试、也别让提示每回一次弹一次，
+    // 等下次冷启动（Capacitor 启动时直接读 pref 里那一版）。
+    if (this._applyUnavailable) return false;
+    try {
+      const app = (globalThis as unknown as { App?: { saveCurrentChapter?: () => void } }).App;
+      app?.saveCurrentChapter?.();
+    } catch (e) { /* 没有 App（测试/非 App 环境）就跳过 */ }
+    // 记一下"这一版已经切过了"：切完会重载，重载后若 pending 还是它，说明切换没生效
+    // （Capacitor 没采纳目录）——init 里据此禁用本会话的自动切换，避免"每次回前台都重载一次"。
+    try { sessionStorage.setItem('hotAppliedPending', st.pending); } catch (e) { /* 忽略 */ }
+    const ok = this.applyPendingNow();
+    if (!ok) this._applyUnavailable = true;
+    ClientLog.note('热更新', '网页包 ' + st.pending + ' 就绪后自动切换（' + reason + '）：' + (ok ? '已发出' : '这次切不了，等下次启动'));
+    return ok;
+  },
+  _applyUnavailable: false,
+
+  /** 前台补一次检查（节流）：长时间开着 App 也能拿到新包 */
+  checkInForeground(reason: string): void {
+    const now = Date.now();
+    if (now - this._lastForegroundCheckAt < this.FOREGROUND_CHECK_MS) return;
+    this._lastForegroundCheckAt = now;
+    ClientLog.note('热更新', '前台补检查（' + reason + '）');
+    try { this.check(); } catch (e) { /* 静默 */ }
+  },
+
+  /** 绑定"切后台/回前台/网络恢复"三个时机。重复调用无副作用。 */
+  _bindApplyHooks(): void {
+    if (this._applyHooksBound) return;
+    this._applyHooksBound = true;
+    const self = this;
+    try {
+      document.addEventListener('visibilitychange', function () {
+        try {
+          const st = self._state;
+          if (st && st.pending) {
+            // 有装好没生效的包：切后台静默换上（用户看不见），回前台直接换上（新包启动画面接住重载）
+            self.commitPending(document.hidden ? '切后台' : '回前台');
+            return;
+          }
+          if (!document.hidden) self.checkInForeground('回前台');
+        } catch (e) { /* 静默 */ }
+      });
+      window.addEventListener('online', function () { self.checkInForeground('网络恢复'); });
+    } catch (e) { /* 没有 document/window 的环境 */ }
   },
 
   /** 本地已知状态（init 时读一次；check 后同步 pending） */
