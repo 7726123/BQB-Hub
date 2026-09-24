@@ -8,6 +8,7 @@ function resetPlugins() {
   SM().remove('localPlugins');
   SM().remove('pluginEnabled:db-classic-tables');
   SM().remove('pluginEnabled:biqi');
+  SM().remove('pluginEnabled:agent-setting-sync');
   SM().remove('pluginEnabled:db-legacy-third-party');
 }
 
@@ -66,5 +67,54 @@ describe('PluginManager（全部内置，无安装入口）', () => {
     expect(PluginManager.get('db-classic-tables')!.name).toBe('经典记忆数据库');
     expect(PluginManager.uninstall('db-legacy-third-party')).toBe(true);
     expect(PluginManager.get('db-legacy-third-party')).toBeNull();
+  });
+});
+
+// 老用户存储里可能还留着已下线插件的条目/开关（插件页会渲染成一张带「删除」按钮的卡片）：
+// 启动时静默清掉，用户不用自己点删除。
+describe('已下线插件的自动清理（cleanupRemoved）', () => {
+  it('清掉 agent-setting-sync 的条目与开关，保留其它第三方条目', () => {
+    SM().set('localPlugins', [
+      { id: 'agent-setting-sync', name: 'Agent 设定同步', version: '1.0.0', type: 'widget', shell: 'agent' },
+      { id: 'db-legacy-third-party', name: '旧社区模板', version: '0.9.0', type: 'database', data: {} },
+    ]);
+    SM().set('pluginEnabled:agent-setting-sync', true);
+    const removed = PluginManager.cleanupRemoved();
+    expect(removed).toContain('agent-setting-sync');
+    // 开关键彻底移除（不是写成 false 留在存储里）
+    expect(SM().get('pluginEnabled:agent-setting-sync', null)).toBeNull();
+    expect((SM().get<any[]>('localPlugins', []) || []).map(p => p.id)).toEqual(['db-legacy-third-party']);
+    // 开关值本身读出来也回到默认关闭
+    expect(PluginManager.isEnabled('agent-setting-sync')).toBe(false);
+  });
+
+  it('shell=agent 的第三方 widget 一并清掉（引擎已不认识这个壳，卡片点不开）', () => {
+    SM().set('localPlugins', [
+      { id: 'some-agent-widget', name: '某临时设定插件', version: '1.0.0', type: 'widget', shell: 'agent' },
+      { id: 'db-legacy-third-party', name: '旧社区模板', version: '0.9.0', type: 'database', data: {} },
+    ]);
+    const removed = PluginManager.cleanupRemoved();
+    expect(removed).toContain('some-agent-widget');
+    expect((SM().get<any[]>('localPlugins', []) || []).map(p => p.id)).toEqual(['db-legacy-third-party']);
+  });
+
+  it('干净时零写入、可重复跑（不凭空建 localPlugins 键、不动内置与合法第三方）', () => {
+    SM().remove('localPlugins');
+    expect(PluginManager.cleanupRemoved()).toEqual([]);
+    expect(SM().get('localPlugins', null)).toBeNull();
+    SM().set('localPlugins', [{ id: 'db-legacy-third-party', name: '旧社区模板', version: '0.9.0', type: 'database', data: {} }]);
+    expect(PluginManager.cleanupRemoved()).toEqual([]);
+    expect(PluginManager.cleanupRemoved()).toEqual([]);
+    expect((SM().get<any[]>('localPlugins', []) || []).length).toBe(1);
+    expect(PluginManager.getAll().map(p => p.id)).toEqual(['db-classic-tables', 'biqi', 'db-legacy-third-party']);
+  });
+
+  it('getAll 兜底：即便清理没跑到（存储被旧备份覆盖），也不列出已下线的卡片', () => {
+    SM().set('localPlugins', [
+      { id: 'agent-setting-sync', name: 'Agent 设定同步', version: '1.0.0', type: 'widget', shell: 'agent' },
+      { id: 'some-agent-widget', name: '某临时设定插件', version: '1.0.0', type: 'widget', shell: 'agent' },
+    ]);
+    expect(PluginManager.getAll().map(p => p.id)).toEqual(['db-classic-tables', 'biqi']);
+    expect(PluginManager.get('agent-setting-sync')).toBeNull();
   });
 });

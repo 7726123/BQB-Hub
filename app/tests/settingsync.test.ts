@@ -278,3 +278,58 @@ describe('mergeEntryContent（并入已有条目，不覆盖丢失原内容）',
     expect(mergeEntryContent('旧内容', '')).toBe('旧内容');
   });
 });
+
+// 已下线自动链路攒下的待裁决提议：用户既没法裁决也没法单条删除（只能整页重置，连临时世界书一起清），
+// 所以 App 启动时直接扫掉——见 App.init 里的 SettingSyncManager.cleanupLegacyPending()。
+describe('历史待裁决清理（cleanupLegacyPending）', () => {
+  const pendingOp = (target: string) => ({
+    id: 'sdo_old_' + target, op: 'mod' as const, target, content: '旧提案内容',
+    reason: '旧自动链路留下的', quote: '正文原句', round: 0, status: 'pending' as const,
+  });
+
+  it('老格式的待裁决（小说 + 对话 + 无书兜底键）全部清掉，返回条数', () => {
+    const wb = seedBook();
+    SM().set('settingDeltaPending_' + wb.id, [pendingOp('铁剑'), pendingOp('阿诺')]);
+    SM().set('settingDeltaPending_' + wb.id + '_chat', [pendingOp('演出设定')]);
+    SM().set('settingDeltaPending_none', [pendingOp('无书遗留')]);
+    const n = SettingSyncManager.cleanupLegacyPending();
+    expect(n).toBe(4);
+    expect(SM().get('settingDeltaPending_' + wb.id, null)).toBeNull();
+    expect(SM().get('settingDeltaPending_' + wb.id + '_chat', null)).toBeNull();
+    expect(SM().get('settingDeltaPending_none', null)).toBeNull();
+  });
+
+  it('只动待裁决：临时世界书（overlay）与快照原样保留——那是比奇的数据', () => {
+    const wb = seedBook();
+    installAgent();
+    SettingSyncManager.addPending([pendingOp('铁剑')]);
+    SettingSyncManager.applyApproved([{ id: 'sdo_old_铁剑', decision: 'accept', content: '铁剑已被震断。' }]);
+    // 手动塞一条"自动链路遗留"的待裁决，模拟老用户存储
+    const cur = SettingSyncManager.getPending();
+    SM().set('settingDeltaPending_' + wb.id, cur.concat([pendingOp('遗留条目')]));
+    const overlayBefore = JSON.stringify(SettingSyncManager.getOverlay());
+    const snapsBefore = SettingSyncManager.getSnapshots().length;
+    expect(SettingSyncManager.cleanupLegacyPending()).toBeGreaterThan(0);
+    expect(SettingSyncManager.getPending()).toHaveLength(0);
+    expect(JSON.stringify(SettingSyncManager.getOverlay())).toBe(overlayBefore);
+    expect(SettingSyncManager.getSnapshots().length).toBe(snapsBefore);
+  });
+
+  it('干净时返回 0，不写入任何键（可每次启动都跑）', () => {
+    seedBook();
+    expect(SettingSyncManager.cleanupLegacyPending()).toBe(0);
+    expect(SettingSyncManager.cleanupLegacyPending()).toBe(0);
+  });
+
+  it('比奇的即时落盘不受影响：addPending → applyApproved → removePending 之后待裁决为空', () => {
+    seedBook();
+    installAgent();
+    SettingSyncManager.cleanupLegacyPending();
+    SettingSyncManager.addPending([pendingOp('铁剑')]);
+    expect(SettingSyncManager.getPending()).toHaveLength(1);
+    const r = SettingSyncManager.applyApproved([{ id: 'sdo_old_铁剑', decision: 'accept', content: '铁剑已被震断。' }]);
+    expect(r.accepted + r.rejected).toBeGreaterThan(0);
+    SettingSyncManager.removePending('sdo_old_铁剑');
+    expect(SettingSyncManager.getPending()).toHaveLength(0);
+  });
+});

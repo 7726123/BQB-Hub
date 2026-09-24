@@ -1480,7 +1480,7 @@ const UIManager: UIManagerShape = {
     document.getElementById('pluginFullscreen')!.style.display = 'none';
   },
 
-  // ===== Agent 设定同步（widget shell=agent 全屏页：临时设定 + 待裁决 + 重置/回滚） =====
+  // ===== 临时世界书页（比奇的 widget 页：临时设定 + 重置/回滚；原「Agent 设定同步」的入口已下线） =====
   openAgentPage() {
     document.getElementById('agentFullscreen')!.style.display = 'flex';
     this.renderAgentPage();
@@ -1495,7 +1495,7 @@ const UIManager: UIManagerShape = {
     if (!badge) return;
     try {
       if (typeof SettingSyncManager === 'undefined') { badge.textContent = ''; return; }
-      var n = SettingSyncManager.overlayCount() + SettingSyncManager.getPending().length;
+      var n = SettingSyncManager.overlayCount();
       badge.textContent = n > 0 ? String(n) : '';
     } catch (e) { /* ignore */ }
   },
@@ -1545,20 +1545,18 @@ const UIManager: UIManagerShape = {
 
   renderAgentPage() {
     var listEl = document.getElementById('agentOverlayList');
-    var pendEl = document.getElementById('agentPendingList');
     var statusEl = document.getElementById('agentPageStatus');
     if (!listEl || typeof SettingSyncManager === 'undefined') return;
     var self = this;
-    // 「立即结算」按钮随 Agent 设定同步插件一起下线（比奇是即时落盘，没有攒批待裁决）
+    // 「立即结算」「待裁决提议」两块随 Agent 设定同步插件一起下线（比奇是即时落盘，没有攒批待裁决；
+    // 历史遗留的待裁决由 App 启动清理扫掉，见 SettingSyncManager.cleanupLegacyPending）
     try {
       var eff = SettingSyncManager.getEffectiveEntries();
-      var pending = SettingSyncManager.getPending();
-      var overlay = SettingSyncManager.getOverlay();
       (this as any)._agentFullText = {};
       this.refreshAgentBadge();
       if (statusEl) {
         var snaps = SettingSyncManager.getSnapshots();
-        statusEl.textContent = '临时变更 ' + SettingSyncManager.overlayCount() + ' 处 · 待裁决 ' + pending.length + ' 条 · 快照 ' + snaps.length + ' 个';
+        statusEl.textContent = '临时变更 ' + SettingSyncManager.overlayCount() + ' 处 · 快照 ' + snaps.length + ' 个';
       }
       // --- 已生效临时设定 ---
       if (eff.length === 0) {
@@ -1582,27 +1580,6 @@ const UIManager: UIManagerShape = {
           '</div>';
         });
         listEl.innerHTML = html;
-      }
-      // --- 待裁决提议（只读；可展开全文） ---
-      if (!pendEl) return;
-      if (pending.length === 0) {
-        pendEl.innerHTML = '<div style="padding:12px;text-align:center;color:var(--text-muted);font-size:12px;">暂无待裁决提议（续写时 AI 会自动产出）</div>';
-      } else {
-        var ph = '';
-        var opLabel = function (op: string) { return op === 'add' ? '新增' : op === 'mod' ? '修改' : '删除'; };
-        var opColor = function (op: string) { return op === 'add' ? '#059669' : op === 'mod' ? '#d97706' : '#dc2626'; };
-        pending.forEach(function (p: any) {
-          ph += '<div style="border:1px dashed var(--border);border-radius:8px;padding:8px 10px;margin-bottom:6px;">' +
-            '<div style="display:flex;align-items:center;gap:6px;">' +
-              '<span style="font-size:10px;color:#fff;background:' + opColor(p.op) + ';border-radius:4px;padding:1px 6px;">待裁决·' + opLabel(p.op) + '</span>' +
-              '<span style="font-weight:700;font-size:13px;flex:1;">' + htmlEscape(p.target) + '</span>' +
-            '</div>' +
-            self._agentBodyHtml(p.id, p.content, 160) +
-            (p.reason ? '<div style="font-size:11px;color:var(--text-muted);margin-top:4px;">理由：' + htmlEscape(p.reason) + '</div>' : '') +
-            (p.quote ? '<div style="font-size:11px;color:var(--text-muted);margin-top:2px;">依据：' + htmlEscape(p.quote) + '</div>' : '') +
-          '</div>';
-        });
-        pendEl.innerHTML = ph;
       }
     } catch (e) { console.warn('[Agent] render failed:', e); }
   },
@@ -1675,7 +1652,7 @@ const UIManager: UIManagerShape = {
 
   resetAgentOverlay() {
     var self = this;
-    this.showConfirm('重置临时设定？将清空：临时修改/新增/停用 + 待裁决提议 + 快照。原世界书不受影响。', function () {
+    this.showConfirm('重置临时设定？将清空：临时修改/新增/停用 + 快照。原世界书不受影响。', function () {
       if (typeof SettingSyncManager === 'undefined') return;
       SettingSyncManager.resetAll();
       self.renderAgentPage();

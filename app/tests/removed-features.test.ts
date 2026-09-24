@@ -111,11 +111,31 @@ describe('悬浮球（option-ball）整体下线', () => {
 // 「Agent 设定同步」插件整体下线（2026-09-25，用户要求：只留比奇）。
 // 删的面很广（清单 + app 的 delta 钩子 + 二审链路 + 设置页那块），编译期抓不到，用字符串钉住。
 describe('Agent 设定同步已删除（临时世界书只由比奇维护）', () => {
-  it('插件清单里没有它，只剩数据库模板与比奇', () => {
+  it('插件清单里没有它，只剩数据库模板与比奇（id 只允许出现在"已下线清理"名单里）', () => {
     const p = src('domain/plugins.ts');
-    expect(p.includes('agent-setting-sync')).toBe(false);
+    // 清单里不许再有它的条目定义（类型/壳/文案），老用户存储里的残留靠 REMOVED_PLUGIN_IDS 清理
+    expect(p.includes("shell: 'agent'")).toBe(false);
+    expect(p.includes("name: 'Agent 设定同步'")).toBe(false);
+    expect(p.includes('REMOVED_PLUGIN_IDS')).toBe(true);
     expect(p.includes("'db-classic-tables'")).toBe(true);
     expect(p.includes("'biqi'")).toBe(true);
+  });
+
+  it('老用户的残留自动清掉（不要求用户点删除）：条目/开关 + 历史待裁决', () => {
+    const a = src('domain/app.ts');
+    expect(a.includes('PluginManager.cleanupRemoved()')).toBe(true);
+    expect(a.includes('SettingSyncManager.cleanupLegacyPending()')).toBe(true);
+    // 必须在首次渲染（renderAll → renderPlugins）之前：否则卡片会先按残留渲染出来，白闪一下
+    expect(a.indexOf('PluginManager.cleanupRemoved()'))
+      .toBeLessThan(a.indexOf('this.renderAll(); this.loadEditorContent()'));
+    expect(src('domain/plugins.ts').includes('cleanupRemoved(): string[]')).toBe(true);
+    expect(src('domain/settingsync.ts').includes('cleanupLegacyPending(): number')).toBe(true);
+  });
+
+  it('「待裁决提议」那一块 UI 也不在（没有生产者，也没有裁决入口）', () => {
+    expect(html.includes('agentPendingList')).toBe(false);
+    expect(html.includes('下次二审处理')).toBe(false);
+    expect(src('domain/ui.ts').includes('agentPendingList')).toBe(false);
   });
 
   it('自动链路（delta 解析/攒批二审/提醒）不再存在', () => {

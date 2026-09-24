@@ -419,6 +419,17 @@ const App: AppShape = {
       _curRules2.forEach(function (r) { if (r.id === 'regex_debagu' && r.name === _oldName) { r.name = '去八股词'; _renamed = true; } });
       if (_renamed) { RegexEngine.saveRules(_curRules2); console.log('[Regex] 去八股词规则改名（移除第三方来源标注）'); }
     } catch (e) { /* ignore */ }
+    // 已下线内容清理（用户要求：老用户不用自己点删除）：
+    // ①「Agent 设定同步」的存储条目/开关——清单已从代码删除，留着会渲染成一张要手删的插件卡片；
+    // ②那条自动链路攒下的历史待裁决提议——没有二审入口，用户单条也删不掉。
+    try {
+      const _deadPlugins = PluginManager.cleanupRemoved();
+      if (_deadPlugins.length > 0) console.log('[migrate] 已清理下线插件:', _deadPlugins.join(','));
+    } catch (e) { console.warn('[migrate] 下线插件清理失败:', e); }
+    try {
+      const _legacyPending = SettingSyncManager.cleanupLegacyPending();
+      if (_legacyPending > 0) console.log('[migrate] 已清理历史待裁决提议:', _legacyPending, '条');
+    } catch (e) { console.warn('[migrate] 历史待裁决清理失败:', e); }
     this.renderAll(); this.loadEditorContent(); UIManager.populateAPIFields();
     this.initApiChannels(); // 多渠道供应商：迁移旧配置 + 渲染渠道下拉 + 同步当前渠道
     this.applyEditorFont(); this.applyEditorSize(); if (typeof UIManager.renderMePage === 'function') UIManager.renderMePage();

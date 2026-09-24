@@ -221,10 +221,40 @@ export const SettingSyncManager = {
     return cur.length;
   },
 
-  /** 移除单条待裁决（比奇写入失败时只清理自己那条，不动自动同步攒下的其它条目） */
+  /** 移除单条待裁决（比奇写入失败时只清理自己那条） */
   removePending(id: string): void {
     const list = this.getPending().filter(function (p) { return p && p.id !== id; });
     this._savePending(list);
+  },
+
+  /**
+   * 清理历史遗留的待裁决：那批条目是已下线的自动同步链路攒下的（比奇是即时落盘，待裁决表在
+   * 启动时必然是空的——addPending 之后同一次调用里就 applyApproved + removePending 了）。
+   * 留着只会让老用户在「临时世界书」页看到一堆既没法裁决、也没法单条删除的提议（只能整页重置，
+   * 连临时世界书一起清掉）。所以启动时直接扫掉，用户不用管。
+   * 逐书 × 两种模式（键名与 _bookId 同构）扫；返回清掉的条数。
+   */
+  cleanupLegacyPending(): number {
+    let n = 0;
+    const ids: string[] = ['none'];   // 没有书时的兜底书号（老数据可能就存在这个键上）
+    try {
+      WorldBookManager.getAll().forEach(function (wb) {
+        if (wb && wb.id && ids.indexOf(String(wb.id)) < 0) ids.push(String(wb.id));
+      });
+      const active = WorldBookManager.getActiveId();
+      if (active && ids.indexOf(String(active)) < 0) ids.push(String(active));
+    } catch (e) { /* ignore */ }
+    ids.forEach(function (id) {
+      ['', '_chat'].forEach(function (suffix) {
+        const key = 'settingDeltaPending_' + id + suffix;
+        const arr = SM().get<DeltaOp[] | null>(key, null);
+        if (Array.isArray(arr) && arr.length > 0) {
+          n += arr.length;
+          SM().remove(key);
+        }
+      });
+    });
+    return n;
   },
 
   // ---- overlay ----

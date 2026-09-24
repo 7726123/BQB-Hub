@@ -45,18 +45,53 @@ const BUILTIN_PLUGINS: PluginManifest[] = [
   },
 ];
 
+// 已下线的插件：清单从代码里删掉后，老用户存储里的条目/开关还在——插件页会把它渲染成一张
+// 带「删除」按钮的卡片，等用户自己点。启动时静默扫掉，老用户什么都不用做。
+const REMOVED_PLUGIN_IDS = ['agent-setting-sync'];
+// 已下线的 widget 壳：引擎不再认识它，卡片点不开也用不了（'agent' 随 Agent 设定同步一起下线）
+const REMOVED_WIDGET_SHELLS = ['agent'];
+
 export const PluginManager = {
   KEY: 'localPlugins',
   ENABLED_KEY: 'pluginEnabled',
 
-  // 内置项在前（id 冲突时以内置为准），其后是存储里遗留的第三方条目
+  isRemoved(p: PluginManifest | null | undefined): boolean {
+    if (!p) return true;
+    if (REMOVED_PLUGIN_IDS.indexOf(p.id) >= 0) return true;
+    return p.type === 'widget' && REMOVED_WIDGET_SHELLS.indexOf(String(p.shell || '')) >= 0;
+  },
+
+  // 清理已下线插件：删掉存储里的条目与开关。幂等，每次启动都可跑（干净时零写入）。
+  // 返回被清掉的 id（诊断日志用）。
+  cleanupRemoved(): string[] {
+    const removed: string[] = [];
+    const stored = SM().get<PluginManifest[]>(this.KEY, []) ?? [];
+    if (Array.isArray(stored) && stored.length > 0) {
+      const kept = stored.filter(p => {
+        const dead = this.isRemoved(p);
+        if (dead && p && p.id && removed.indexOf(p.id) < 0) removed.push(p.id);
+        return !dead;
+      });
+      if (kept.length !== stored.length) this.saveAll(kept);
+    }
+    REMOVED_PLUGIN_IDS.forEach(id => {
+      if (SM().get<boolean>(this.ENABLED_KEY + ':' + id, null) !== null) {
+        SM().remove(this.ENABLED_KEY + ':' + id);
+        if (removed.indexOf(id) < 0) removed.push(id);
+      }
+    });
+    return removed;
+  },
+
+  // 内置项在前（id 冲突时以内置为准），其后是存储里遗留的第三方条目（已下线的直接跳过：
+  // 即便清理没跑到——比如存储被旧备份覆盖——也不会渲染出点不开的卡片）
   getAll(): PluginManifest[] {
     const out: PluginManifest[] = BUILTIN_PLUGINS.map(p => Object.assign({}, p, { builtin: true }));
     const seen: Record<string, boolean> = {};
     out.forEach(p => { seen[p.id] = true; });
     const stored = SM().get<PluginManifest[]>(this.KEY, []) ?? [];
     stored.forEach(p => {
-      if (!p || !p.id || seen[p.id]) return;
+      if (!p || !p.id || seen[p.id] || this.isRemoved(p)) return;
       seen[p.id] = true;
       out.push(Object.assign({}, p, { builtin: false }));
     });
