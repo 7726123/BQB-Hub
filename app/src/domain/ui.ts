@@ -980,6 +980,9 @@ const UIManager: UIManagerShape = {
       this.renderWbShelf();
       if (typeof App.loadEditorContent === 'function') App.loadEditorContent();
       if (typeof App.renderAll === 'function') App.renderAll();
+      // 两种模式共用这一个选书入口：切完书要让对话模式也换到新书（演出记录按书分开存）。
+      // 对话模式自己的选书栏已下线（用户要求），这里是唯一的同步点。
+      try { if (typeof ChatMode !== 'undefined' && ChatMode.reload) { ChatMode.reload(); } } catch (e) { /* 忽略 */ }
     }
   },
 
@@ -1301,6 +1304,11 @@ const UIManager: UIManagerShape = {
     if (!file || !target) return;
     if (!file.type.startsWith('image/')) { App.toast('请选择图片文件'); return; }
     var self = this;
+    // 头像写进世界书条目后，对话模式的气泡与角色简介要立刻重画——以前只刷新世界书那页，
+    // 用户得切到别的视图再回来才看得到新头像（气泡头像是渲染时按角色名现查条目的）。
+    var refreshChat = function () {
+      try { if (typeof ChatMode !== 'undefined' && ChatMode.refreshAvatars) { ChatMode.refreshAvatars(); } } catch (e) { /* 对话模式没开也不影响 */ }
+    };
     this._compressImage(file, 512, function (dataUrl: any) {
       if (target.type === 'wb') {
         var all = WorldBookManager.getAll();
@@ -1312,6 +1320,7 @@ const UIManager: UIManagerShape = {
             WorldBookManager.saveAll(all);
             self.renderWBEntries();
             App.toast('头像已更新');
+            refreshChat();
           }
         }
       } else {
@@ -1328,6 +1337,7 @@ const UIManager: UIManagerShape = {
             matched.avatar = dataUrl;
             WorldBookManager.saveAll(all);
             App.toast('已更新世界书角色头像');
+            refreshChat();
           } else {
             rec.values['__avatar'] = dataUrl;
             DatabaseManager.saveDB(DatabaseManager.getDB());

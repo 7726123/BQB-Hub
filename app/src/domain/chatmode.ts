@@ -60,6 +60,7 @@ export const ChatMode = {
   _lastInstruction: '',
   _autoScroll: true,
   _reasoningChars: 0,
+  _profileName: '',       // 打开着的角色简介是谁（换头像后按名字重开，见 refreshAvatars）
 
   // ---------- 数据 ----------
 
@@ -215,6 +216,7 @@ export const ChatMode = {
     const body = document.getElementById('chatProfileBody');
     const title = document.getElementById('chatProfileTitle');
     if (!box || !body) return;
+    this._profileName = String(name || '');   // 换完头像要按名字重开一次（见 refreshAvatars）
     if (title) title.textContent = name + ' · 角色简介';
     const av = this.avatar(name);
     const avHtml = av.src
@@ -252,6 +254,19 @@ export const ChatMode = {
   closeProfile(): void {
     const box = document.getElementById('chatProfileModal');
     if (box) box.style.display = 'none';
+    this._profileName = '';
+  },
+
+  /**
+   * 换完头像立刻生效（由 UIManager.onAvatarPicked 调用）。
+   * 以前头像写进世界书条目后只刷新了世界书那一页，对话模式得切到别的视图再回来才看得到新头像——
+   * 因为气泡与简介都是渲染时用角色名现查条目，不重画就还是旧的。
+   */
+  refreshAvatars(): void {
+    this.render();
+    const box = document.getElementById('chatProfileModal');
+    const open = !!box && box.style.display !== 'none' && box.style.display !== '';
+    if (open && this._profileName) this.openProfile(this._profileName);   // 简介弹窗里那张大图也跟着换
   },
 
   // ---------- 渲染 ----------
@@ -285,16 +300,49 @@ export const ChatMode = {
     html += '<div id="chatBottomAnchor"></div>';
     stream.innerHTML = html;
     if (this._autoScroll) this._scrollToBottom();
+    this._syncScrollBottomBtn();
   },
 
   loadMore(): void { this._window += RENDER_WINDOW; this.render(); },
 
+  // ---------- 跳到底部（与写作页那颗 ↩ 同款；浮在气泡区右下角）----------
+
+  _scrollGap(): number {
+    const stream = document.getElementById('chatStream');
+    if (!stream) return 0;
+    return stream.scrollHeight - stream.scrollTop - stream.clientHeight;
+  },
+
+  _syncScrollBottomBtn(): void {
+    const btn = document.getElementById('chatScrollBottom');
+    if (!btn) return;
+    // 离底部超过一屏内的两行才显示：和写作页一样，只是"滚上去了"的提示
+    btn.classList.toggle('show', this._scrollGap() > 80);
+  },
+
+  // 点一下：缓动滚到底，并把"跟随新内容"恢复（否则下一轮流式还会把用户钉在原地）
+  scrollToBottomAnimated(): void {
+    const stream = document.getElementById('chatStream');
+    if (!stream) return;
+    this._autoScroll = true;
+    const from = stream.scrollTop;
+    const to = Math.max(0, stream.scrollHeight - stream.clientHeight);
+    if (to <= from + 1) { this._syncScrollBottomBtn(); return; }
+    const t0 = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+    const dur = 260;
+    const ease = function (p: number) { return p < 0.5 ? 4 * p * p * p : 1 - Math.pow(-2 * p + 2, 3) / 2; };
+    const raf = (typeof requestAnimationFrame === 'function') ? requestAnimationFrame : function (cb: any) { setTimeout(cb, 16); };
+    const self = this;
+    const step = function () {
+      const now = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+      const p = Math.min(1, (now - t0) / dur);
+      stream.scrollTop = from + (to - from) * ease(p);
+      if (p < 1) { raf(step); } else { self._syncScrollBottomBtn(); }
+    };
+    raf(step);
+  },
+
   _renderHead(): void {
-    const t = document.getElementById('chatBookTitle');
-    if (t) {
-      const wb = this.book();
-      t.textContent = (wb && (wb.title || wb.name)) || '未命名小说';
-    }
     // 生成中：发送键换成停止键（与写作页同一对：蓝色发送 / 红色停止）
     const sending = this.isSending();
     const sendBtn = document.getElementById('chatSendBtn');
@@ -391,12 +439,15 @@ export const ChatMode = {
   _scrollToBottom(): void {
     const stream = document.getElementById('chatStream');
     if (stream) stream.scrollTop = stream.scrollHeight;
+    this._syncScrollBottomBtn();
   },
 
   onScroll(): void {
     const stream = document.getElementById('chatStream');
     if (!stream) return;
-    this._autoScroll = (stream.scrollHeight - stream.scrollTop - stream.clientHeight) < 60;
+    const gap = stream.scrollHeight - stream.scrollTop - stream.clientHeight;
+    this._autoScroll = gap < 60;
+    this._syncScrollBottomBtn();
   },
 
   // 流式绘制：末尾那行可能还是"半截说话人前缀"（如「林」），先扣住不画，免得先落进上一个气泡再跳出来
@@ -741,17 +792,6 @@ export const ChatMode = {
     try { BookManager.switchBook(id); } catch (e) { console.warn('[Chat] 切书失败', e); }
     this._loadedBookId = '';
     this.reload();
-    this.renderBooks();
-  },
-
-  renderBooks(): void {
-    const sel = document.getElementById('chatBookSelect') as HTMLSelectElement | null;
-    if (!sel) return;
-    let list: any[] = [];
-    try { list = WorldBookManager.getAll(); } catch (e) { list = []; }
-    const active = this.bookId();
-    sel.innerHTML = list.map(b => '<option value="' + esc(b.id) + '"' + (b.id === active ? ' selected' : '') + '>' +
-      esc(b.title || b.name || '未命名') + '</option>').join('');
   },
 
   // 初始化（view 绑定一次）
@@ -763,7 +803,7 @@ export const ChatMode = {
     }
     // 输入框的回车发送与自动增高都在 HTML/boot 层（onkeydown 内联 + boot 里对 .chat-input-area 的委派），
     // 这里不再重复绑定：重复绑会让一次回车触发两次发送、两处自动增高互相打架。
-    this.renderBooks();
+    // 选书也不再在这里渲染：两种模式共用顶部的「书名 ▾」，切书由 UIManager.switchWorldBook 调 reload()。
     this.reload();
   },
 };

@@ -75,6 +75,9 @@ declare const ChatMode: {
   reload(): void;
   send(): void;
   undo(id: string): void;
+  undoLast(): void;
+  refreshAvatars(): void;
+  scrollToBottomAnimated(): void;
   openProfile(name: string): void;
   closeProfile(): void;
   clearAll(): void;

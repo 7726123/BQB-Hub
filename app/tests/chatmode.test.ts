@@ -19,10 +19,16 @@ const g = globalThis as unknown as Record<string, any>;
 // ---- 迷你 DOM（只实现被测代码用到的成员）----
 function makeEl(id: string): any {
   const listeners: Record<string, ((e: any) => void)[]> = {};
+  const classes = new Set<string>();
   return {
     id, style: {}, innerHTML: '', textContent: '', value: '', placeholder: '',
     scrollTop: 0, scrollHeight: 100, clientHeight: 100,
-    classList: { add: () => {}, remove: () => {}, toggle: () => false, contains: () => false },
+    classList: {
+      add: (c: string) => { classes.add(c); },
+      remove: (c: string) => { classes.delete(c); },
+      toggle: (c: string, on?: boolean) => { const want = on === undefined ? !classes.has(c) : !!on; if (want) classes.add(c); else classes.delete(c); return want; },
+      contains: (c: string) => classes.has(c),
+    },
     addEventListener: (t: string, fn: (e: any) => void) => { (listeners[t] ||= []).push(fn); },
     removeEventListener: () => {},
     _fire: (t: string, e: any = {}) => (listeners[t] || []).forEach(fn => fn(e)),
@@ -30,9 +36,9 @@ function makeEl(id: string): any {
 }
 const els: Record<string, any> = {};
 function setupDom() {
-  ['chatStream', 'chatInput', 'chatBookTitle', 'chatSendBtn', 'chatStopBtn', 'chatUndoBtn', 'chatStatus',
-    'chatBookSelect', 'chatProfileModal', 'chatProfileBody', 'chatProfileTitle']
-    .forEach(id => { els[id] = makeEl(id); if (id === 'chatBookSelect') els[id].innerHTML = ''; });
+  ['chatStream', 'chatInput', 'chatSendBtn', 'chatStopBtn', 'chatUndoBtn', 'chatStatus', 'chatScrollBottom',
+    'chatProfileModal', 'chatProfileBody', 'chatProfileTitle']
+    .forEach(id => { els[id] = makeEl(id); });
 }
 globalThis.document = {
   getElementById: (id: string) => els[id] || null,
@@ -386,6 +392,28 @@ describe('头像与角色简介（自动聚合）', () => {
     ChatMode.closeProfile();
     expect(els['chatProfileModal'].style.display).toBe('none');
   });
+
+  // 用户反馈：换完头像要切到别的页面再回来才加载。真因：气泡/简介都是渲染时按角色名现查条目，
+  // 头像写进条目后没人重画。现在 onAvatarPicked 会调 refreshAvatars()。
+  it('换完头像立刻生效：气泡流重画 + 打开着的简介按名字重开', () => {
+    seedBooks();
+    ChatMode.openProfile('林薇');                     // 弹窗开着（里面是旧头像）
+    expect(ChatMode._profileName).toBe('林薇');
+    els['chatStream'].innerHTML = '旧的渲染结果';
+    ChatMode.refreshAvatars();
+    expect(els['chatStream'].innerHTML).not.toBe('旧的渲染结果');   // 气泡流已重画
+    expect(els['chatProfileModal'].style.display).toBe('flex');     // 弹窗仍开着
+    expect(els['chatProfileBody'].innerHTML.indexOf('学生会副会长')).toBeGreaterThan(-1);
+    ChatMode.closeProfile();
+    expect(ChatMode._profileName).toBe('');
+  });
+
+  it('简介弹窗没开着时 refreshAvatars 不去重开它', () => {
+    seedBooks();
+    els['chatProfileModal'].style.display = 'none';
+    ChatMode.refreshAvatars();
+    expect(els['chatProfileModal'].style.display).toBe('none');
+  });
 });
 
 describe('渲染与流式', () => {
@@ -485,6 +513,27 @@ describe('渲染与流式', () => {
     expect(html.split('chat-row-me').length - 1).toBe(1);
     const i = html.indexOf('我把信折好');
     expect(html.slice(html.lastIndexOf('<div class="chat-row', i), i)).toContain('chat-row-me');
+  });
+
+  it('回到最下面：离底部远了才显示按钮，点一下恢复"跟随新内容"', () => {
+    seedBooks();
+    setupPreset(1000);
+    ChatMode.append('ai', '林薇：「一。」');
+    const stream = els['chatStream'];
+    stream.scrollHeight = 2000; stream.clientHeight = 400;
+    stream.scrollTop = 100;                                  // 停在上面 → 按钮出现、不再自动跟随
+    ChatMode.onScroll();
+    expect(els['chatScrollBottom'].classList.contains('show')).toBe(true);
+    expect(ChatMode._autoScroll).toBe(false);
+    stream.scrollTop = 1598;                                 // 滚到底（gap 2）→ 按钮收起、恢复跟随
+    ChatMode.onScroll();
+    expect(els['chatScrollBottom'].classList.contains('show')).toBe(false);
+    expect(ChatMode._autoScroll).toBe(true);
+    stream.scrollTop = 300;
+    ChatMode.onScroll();
+    expect(ChatMode._autoScroll).toBe(false);
+    ChatMode.scrollToBottomAnimated();                        // 点按钮：立刻恢复"跟随"，然后缓动滚到底
+    expect(ChatMode._autoScroll).toBe(true);
   });
 
   it('流式：末尾半截说话人前缀先扣住，不画进上一个气泡', () => {
@@ -588,5 +637,35 @@ describe('重演 / 删除 / 换书', () => {
     expect(calls).toHaveLength(2);
     expect(calls[1].chunks.join('\n')).toContain('我把信折好。');
     delete g.ArchiveStore;
+  });
+});
+
+// 用户要求：两种模式共用顶部的「书名 ▾」选书，对话模式不再自带标题与选书栏。
+// 这里是结构守卫（源文件级）：删掉/加回都要在这个测试里说清楚。
+describe('共用顶部选书（对话模式不再自带标题与选书栏）', () => {
+  const html = readFileSync(resolve(here, '../../web/index.html'), 'utf8');
+  const chatSrc = readFileSync(resolve(here, '../src/domain/chatmode.ts'), 'utf8');
+  const uiSrc = readFileSync(resolve(here, '../src/domain/ui.ts'), 'utf8');
+
+  it('对话页只剩比奇/清空两个动作，没有书名与选书下拉', () => {
+    const head = html.slice(html.indexOf('id="tab-chat"'), html.indexOf('id="chatBody"'));
+    expect(head.indexOf('chatBookSelect')).toBe(-1);
+    expect(head.indexOf('chatBookTitle')).toBe(-1);
+    expect(head.indexOf('chatBiqiBtn')).toBeGreaterThan(-1);
+    expect(head.indexOf('clearAll()')).toBeGreaterThan(-1);
+    expect(html.indexOf('id="wbSwitchList"')).toBeGreaterThan(-1);   // 顶部共用的选书入口还在
+  });
+
+  it('对话页有"回到最下面"按钮（与写作页同款），chatmode 也不再渲染选书', () => {
+    expect(html.indexOf('id="chatScrollBottom"')).toBeGreaterThan(-1);
+    expect(html.indexOf('ChatMode.scrollToBottomAnimated()')).toBeGreaterThan(-1);
+    expect(chatSrc.indexOf('chatBookSelect')).toBe(-1);
+    expect(chatSrc.indexOf('renderBooks')).toBe(-1);                 // 已下线（顶部选书接手）
+  });
+
+  it('切世界书时同步对话模式（共用入口的唯一同步点）', () => {
+    const i = uiSrc.indexOf('switchWorldBook(bookId: any)');
+    expect(i).toBeGreaterThan(-1);
+    expect(uiSrc.slice(i, i + 1200).indexOf('ChatMode.reload()')).toBeGreaterThan(-1);
   });
 });
