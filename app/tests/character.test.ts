@@ -68,36 +68,13 @@ describe('CharacterManager', () => {
     expect(c.state).toMatchObject({ currentLocation: '', mood: '', lastSeen: null });
   });
 
-  it('update 深合并 state；updateState 写入 lastSeen', () => {
+  it('update 深合并 state（字段保留给以后 AI 维护用）', () => {
     WBM.createBook();
     const c = CM.create({ name: 'A' });
     CM.update(c.id, { state: { mood: '开心' } });
     const after = CM.getAll().find((x) => x.id === c.id)!;
     expect(after.state?.mood).toBe('开心');
     expect(after.state?.currentLocation).toBe(''); // 原字段保留
-
-    CM.updateState(c.id, { currentLocation: '藏书塔' });
-    const st = CM.getState(c.id);
-    expect(st.currentLocation).toBe('藏书塔');
-    expect(st.lastSeen).toBeTruthy();
-  });
-
-  it('extractStateFromText 按附近情绪词与地点模式提取', () => {
-    WBM.createBook();
-    CM.create({ name: '小雪' });
-    const updates = CM.extractStateFromText('小雪很开心，在藏书塔中散步。');
-    expect(updates['小雪']?.mood).toBe('开心');
-    expect(updates['小雪']?.currentLocation).toBe('藏书塔');
-  });
-
-  it('getStatesSummary 汇总有状态的角色', () => {
-    WBM.createBook();
-    const c1 = CM.create({ name: '有状态' });
-    CM.updateState(c1.id, { mood: '开心' });
-    CM.create({ name: '无状态' });
-    const s = CM.getStatesSummary();
-    expect(s).toContain('有状态·心情开心');
-    expect(s.some((x) => x.includes('无状态'))).toBe(false);
   });
 
   it('getByWorldBook：未绑定的（旧数据）与匹配的都返回', () => {

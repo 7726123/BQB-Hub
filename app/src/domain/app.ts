@@ -1551,13 +1551,6 @@ const App: AppShape = {
     if (_factCardCtx) _userParts.push(_factCardCtx);
     if (extraCharCtx) _userParts.push(extraCharCtx);
     if (_variableCtx) _userParts.push(_variableCtx);
-    // 角色状态摘要
-    if (typeof CharacterManager !== 'undefined') {
-      var _charStates = CharacterManager.getStatesSummary();
-      if (_charStates.length > 0) {
-        _userParts.push('## 角色当前状态\n' + _charStates.join('\n'));
-      }
-    }
     // Agent 设定同步：待裁决覆盖指令进 rolling 区（本来就不命中缓存，多带一份零损失）
     if (typeof SettingSyncManager !== 'undefined' && SettingSyncManager.isEnabled()) {
       try {
@@ -1613,14 +1606,6 @@ const App: AppShape = {
                   UIManager.renderDBRecords();
                 }
               }).catch(function (e: any) { console.warn('[DB] fill failed:', e); });
-            }
-            // 角色状态提取（规则提取，不调用API）
-            if (processed && processed.length > 50 && typeof CharacterManager !== 'undefined') {
-              var _charUpdates = CharacterManager.extractStateFromText(processed);
-              if (Object.keys(_charUpdates).length > 0) {
-                CharacterManager.batchUpdateState(_charUpdates);
-                console.log('[CharState] updated:', Object.keys(_charUpdates));
-              }
             }
             // Agent 设定同步：轮数计数 + 攒批触发二审（fire-and-forget，单轮最多一次短调用）
             if (typeof SettingSyncManager !== 'undefined' && SettingSyncManager.isEnabled()) {
@@ -1724,11 +1709,6 @@ const App: AppShape = {
             });
             _ssReviewParts.push(_ac);
           }
-          // 角色当前状态摘要
-          try {
-            const _st = _cmAny.getStatesSummary();
-            if (_st && _st.length > 0) _ssReviewParts.push('## 角色当前状态\n' + _st.join('\n'));
-          } catch (e) { /* ignore */ }
         }
       } catch (e) { /* 任一上下文失败不阻塞裁决 */ }
       const _ssUserText = SettingSyncManager.buildReviewUserText(recentText);
@@ -2061,49 +2041,6 @@ const App: AppShape = {
     App.toast('已撤回上次续写及变量');
   },
 
-  async updateCharacterDescriptions() {
-    const wb = WorldBookManager.getActive();
-    const chars = CharacterManager.getByWorldBook(wb ? wb.id : null);
-    if (chars.length === 0) return;
-    const recentText = EditorManager.getCrossChapterContext(2500);
-    // Only update characters that appeared in recent text
-    const activeChars = chars.filter((c: any) => {
-      const escaped = c.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      return new RegExp(escaped).test(recentText);
-    });
-    if (activeChars.length === 0) return;
-    const charInfo = activeChars.map((c: any) =>
-      c.name + ' | ' + (c.gender || '未知') + ' | ' + (c.age || '未知') + '岁 | 关系:' + (c.relation || '无') + ' | ' + (c.description || '无介绍')
-    ).join('\n');
-    const messages = [
-      { role: 'system', content: '你是一位专业的小说角色设定更新专家。根据最新小说内容，更新在最新内容中有新表现的角色详细介绍。输出格式（每个角色一行）：\n角色名 | 更新后的详细介绍\n\n规则：\n1. 保留角色基本信息，融入最新内容中的新表现、性格展现、关系变化\n2. 详细介绍要连贯完整，包含外貌特征、性格特点、与主角的关系、近期重要变化\n3. 如果角色在最新内容中没有值得补充的新信息，不要输出该角色\n4. 只输出确实需要更新的角色\n5. 每个角色的详细介绍严格控制在150字以内，超出部分不会被采纳' },
-      { role: 'user', content: '【角色当前信息】\n' + charInfo + '\n\n【最新小说内容】\n' + (recentText || '(无)') + '\n\n请输出需要更新详细介绍的角色（格式：角色名 | 新介绍）。没有需要更新的角色则输出"（无需更新）"。' }
-    ];
-    await APIHandler.fetchCompletions(messages,
-      () => {},
-      (fullContent) => {
-        if (fullContent && !fullContent.includes('无需更新')) {
-          const lines = fullContent.trim().split('\n').filter(l => l.includes('|') && !l.startsWith('#') && !l.startsWith('（'));
-          let updated = 0;
-          lines.forEach(line => {
-            const parts = line.split('|').map(p => p.trim());
-            if (parts.length >= 2) {
-              const name = parts[0];
-              const newDesc = parts.slice(1).join('|').trim();
-              const existing = chars.find((c: any) => c.name === name);
-              if (existing && newDesc && newDesc.length > 10 && newDesc !== existing.description) {
-                CharacterManager.update(existing.id, { description: newDesc });
-                updated++;
-              }
-            }
-          });
-          if (updated > 0) { App.toast('已更新 ' + updated + ' 名角色介绍'); }
-        }
-      },
-      (error) => { console.log('updateCharacterDescriptions error:', error); },
-      { temperature: 0.5, apiConfig: App.getBackendAPIConfig(), callLabel: 'updateCharacterDescriptions', timeout: 20000 }
-    );
-  },
 
   // 场景状态更新：每次生成后用轻量 API 调用更新
   // ===== 记忆数据库填表（移植 yuzuki-Memory 完整提示词体系）=====
@@ -2577,168 +2514,6 @@ const App: AppShape = {
     });
     this._dbFillSkipped = skipped;
     return n;
-  },
-
-  async extractCharacters() {
-    const statusEl = document.getElementById('generationStatus');
-    const prevText = statusEl ? statusEl.textContent : '';
-    try {
-    if (statusEl) statusEl.textContent = 'AI 正在分析登场角色...';
-    const recentText = EditorManager.getCrossChapterContext(5000);
-    const wb = WorldBookManager.getActive();
-    const existingChars = CharacterManager.getByWorldBook(wb ? wb.id : null);
-    // Split existing characters into complete and incomplete
-    const isIncomplete = (c: any) => !c.description || c.description.startsWith('（') || !c.gender || c.gender === '其他' || !c.age || !c.relation;
-    const incompleteChars = existingChars.filter((c: any) => isIncomplete(c));
-    const completeChars = existingChars.filter((c: any) => !isIncomplete(c));
-    let existingStr = completeChars.length > 0 ? completeChars.map((c: any) => c.name).join('、') : '';
-    let incompleteStr = '';
-    if (incompleteChars.length > 0) {
-      incompleteStr = incompleteChars.map((c: any) => '- ' + c.name + '（待完善：' + [c.gender || '性别未知', c.age ? c.age + '岁' : '年龄未知', c.relation || '关系未知', c.description || '无介绍'].filter(Boolean).join('，') + '）').join('\n');
-    }
-    const protag = App.getProtagonist();
-    const protagName = (protag && protag.name) ? protag.name : '主角';
-    const protagGender = (protag && protag.gender) ? protag.gender : '';
-    const messages = [
-      { role: 'system', content: '你是一位专业的小说角色提取专家。从小说中提取已登场的有名角色（排除主角' + protagName + '），每个角色一行：\n角色名 | 性别 | 年龄 | 关系 | 详细介绍\n\n- 性别：男/女/其他 | 年龄：从文+世界观推断 | 关系：与主角的关系，逗号分隔最多3个\n- 详细介绍（150字内）：综合文中表现（外貌、性格、与主角关系）\n- 所有出现名字的角色都应提取，已有角色名单中的不要重复\n- 待完善角色务必输出完整信息（性别/年龄/关系/介绍）\n\n【重要】每个角色的详细介绍严格控制在150汉字以内，超出部分视为无效且不会被保存。' },
-      { role: 'user', content: '【主角】' + protagName + ' (' + protagGender + ')\n\n' + (completeChars.length > 0 ? '【已有角色（勿重复）】' + existingStr + '\n\n' : '') + (incompleteChars.length > 0 ? '【待完善】\n' + incompleteStr + '\n\n' : '') + '【小说内容】\n' + (recentText || '(无)') + '\n\n请提取新登场角色并补充待完善角色信息。' }
-    ];
-    await APIHandler.fetchCompletions(messages,
-      () => {},
-      (fullContent) => {
-        if (fullContent) {
-          const text = fullContent.trim();
-
-          let added = 0, updated = 0;
-
-          // Parse character lines — any line with | that isn't a SENTIMENT line
-          const lines = text.split('\n').filter(l => l.trim() && !l.startsWith('#') && !l.startsWith('（') && !l.trim().startsWith('[SENTIMENT]') && !l.trim().startsWith('===') && l.includes('|'));
-          const isValidName = (n: any) => n && n.length >= 2 && !['角色名','姓名','名称','未知','无','角色'].includes(n) && !/^[a-z]+$/.test(n) && n !== '女性' && n !== '男性';
-          const _sanitizeName = (n: any) => { const s = n.replace(/[\u200B-\u200D\uFEFF\u00AD\u034F\u061C\u115F\u1160\u17B4\u17B5\u180E\u2028\u2029\u202A-\u202F\u2060-\u2064\u2066-\u206F\u3000]/g,'').trim(); return s.length >= 2 ? s : null; };
-          const _createdNames = new Set();
-          lines.forEach(line => {
-            const parts = line.split('|').map(p => p.trim());
-            if (parts.length >= 3 && isValidName(parts[0])) {
-              const name = _sanitizeName(parts[0]);
-              if (!name) return;
-              if (name === protagName || name === 'user' || name === 'User' || name === '{user}' || name === '{User}' || name === '{{user}}' || name === '{{User}}') return;
-              if (_createdNames.has(name)) return;
-              _createdNames.add(name);
-              // Skip if user previously deleted this sync character
-              var _dKey2 = '_deletedSyncChars_' + wb!.id;
-              var _dList2 = SM().get<any>(_dKey2, []);
-              if (_dList2.indexOf(name) >= 0) return;
-              const gender = parts[1] || '其他';
-              const age = parts[2] || '';
-              const relation = (parts[3] && parts[3] !== '-1' && parts[3] !== '无') ? parts[3] : '';
-              const descStart = 4;
-              let description = parts.length > descStart ? parts.slice(descStart).join('|').trim() : '';
-              const existing = existingChars.find((c: any) => c.name === name);
-              if (existing) {
-                const updates = {} as Record<string, any>;
-                const needsCompletion = !existing.description || existing.description.startsWith('（') || !existing.gender || existing.gender === '其他' || !existing.age || !existing.relation;
-                if (needsCompletion) {
-                  // Fill in all missing or placeholder fields
-                  if (gender && gender !== '其他' && (!existing.gender || existing.gender === '其他')) updates.gender = gender;
-                  if (age && !existing.age) updates.age = age;
-                  if (relation && !existing.relation) updates.relation = relation;
-                  if (description && !description.startsWith('（') && (!existing.description || existing.description.startsWith('（'))) updates.description = description;
-                } else {
-                  if (description && description.length > (existing.description || '').length) updates.description = description;
-                  if (relation && relation !== existing.relation) updates.relation = relation;
-                }
-                if (Object.keys(updates).length > 0) {
-                  CharacterManager.update(existing.id, updates);
-                  updated++;
-                }
-              } else {
-                CharacterManager.create({ name, gender, age, relation, description });
-                added++;
-              }
-            }
-          });
-
-          const msgs: any[] = [];
-          if (added > 0) msgs.push('新增 ' + added + ' 名角色');
-          if (updated > 0) msgs.push('更新 ' + updated + ' 名角色');
-          statusEl!.textContent = prevText || (msgs.length > 0 ? msgs.join('，') : '未发现新角色');
-        }
-      },
-      (error) => { statusEl!.textContent = '角色提取失败: ' + error; },
-      { temperature: 0.3, apiConfig: App.getBackendAPIConfig(), callLabel: 'extractCharacters', timeout: 20000 }
-    );
-    } catch(e) { statusEl!.textContent = '角色提取出错: ' + (e as any).message; console.error('extractCharacters:', e); }
-  },
-
-  async syncCharactersFromWorldBook() {
-    const wb = WorldBookManager.getActive();
-    if (!wb) { App.toast('请先选择一个世界书'); return; }
-    const apiConfig = PresetManager.getActiveAPIConfig();
-    if (!apiConfig.apiKey) { App.toast('请先在 API 配置中配置 API Key'); return; }
-    const charEntries = wb.entries.filter(e => e.type === '角色');
-    if (charEntries.length === 0) { App.toast('世界书中没有找到角色条目'); return; }
-    const statusEl = document.getElementById('generationStatus');
-    const prevText = statusEl!.textContent;
-    statusEl!.textContent = '正在同步世界书角色...';
-    // Dedup: same name entries get merged content
-    const _nameGroups = {} as Record<string, string[]>;
-    charEntries.forEach(function (e) {
-      if (!_nameGroups[String(e.name)]) _nameGroups[String(e.name)] = [] as string[];
-      (_nameGroups[String(e.name)] as string[]).push((e.content || '').slice(0, 200));
-    });
-    const charList = Object.entries(_nameGroups).map(function (kv) {
-      return kv[0] + ' | ' + kv[1].join('；').slice(0, 500);
-    }).join('\n');
-    const messages = [
-      { role: 'system', content: '提取以下世界书条目中的角色信息，每行输出一个角色：\n角色名 | 性别(男/女/其他) | 年龄 | 与主角关系 | 简介\n\n规则：\n- 同名条目自动合并\n- 简介控制在50字以内\n- 只输出纯文本格式，不要任何额外说明' },
-      { role: 'user', content: '【角色条目】\n' + charList + '\n\n请提取以上角色信息。' }
-    ];
-    await APIHandler.fetchCompletions(messages,
-      () => {},
-      (fullContent) => {
-        if (fullContent) {
-          const text = fullContent.trim();
-          const lines = text.split('\n').filter(l => l.trim() && l.includes('|') && !l.startsWith('#'));
-          let added = 0, updated = 0;
-          const _syncProtag = App.getProtagonist();
-          const _syncProtagName = (_syncProtag && _syncProtag.name) || '';
-          const _syncProtagGender = (_syncProtag && _syncProtag.gender) || '';
-          const createdNames = new Set();
-          lines.forEach(line => {
-            const parts = line.split('|').map(p => p.trim());
-            if (parts.length < 3) return;
-            const name = parts[0];
-            if (!name || name.length < 1 || name === _syncProtagName || ['user','User','{user}','{User}','{{user}}','{{User}}'].includes(name) || createdNames.has(name)) return;
-            createdNames.add(name);
-            const gender = parts[1] || '其他';
-            const age = parts[2] || '';
-            const relation = (parts[3] && parts[3] !== '-1' && parts[3] !== '无') ? parts[3] : '';
-            const descStart = 4;
-            let description = parts.length > descStart ? parts.slice(descStart).join('|').trim() : '';
-            if (!description) description = (charEntries.find(e => e.name === name) || {}).content || '';
-            const existing = CharacterManager.getByWorldBook(wb.id).find((c: any) => c.name === name);
-            if (existing) {
-              const updates = {} as Record<string, any>;
-              if (description && description.length > (existing.description || '').length) updates.description = description;
-              if (gender && gender !== '其他' && existing.gender !== gender) updates.gender = gender;
-              if (age && !existing.age) updates.age = age;
-              if (relation && !existing.relation) updates.relation = relation;
-              if (Object.keys(updates).length > 0) { CharacterManager.update(existing.id, updates); updated++; }
-            } else {
-              CharacterManager.create({ name, gender, age, relation, description });
-              added++;
-            }
-          });
-          const msgs: any[] = [];
-          if (added > 0) msgs.push('新增 ' + added + ' 名角色');
-          if (updated > 0) msgs.push('更新 ' + updated + ' 名角色');
-          statusEl!.textContent = msgs.length > 0 ? msgs.join('，') : '角色已是最新';
-          if (msgs.length > 0) App.toast(msgs.join('，'));
-        }
-      },
-      (error) => { statusEl!.textContent = '同步失败: ' + error; App.toast('角色同步失败'); },
-      { temperature: 0.3, apiConfig: PresetManager.getActiveAPIConfig(), callLabel: 'syncCharacters' }
-    );
   },
 
   // 参数表单保存：endpoint/key/model/价格 由【供应商渠道】管理（selectChannel/saveChannelField 同步），

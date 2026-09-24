@@ -1052,7 +1052,7 @@ export const APIHandler = {
       // 仅前台交互（主写作 generate / 比奇 / 助手等）提示——后台任务（记忆填表/摘要/
       // 场景分析/角色提取/上传元数据等）label 一律静默，避免用户以为正文被截断。
       // 输出上限已不再由用户设置（一律按端点能接受的最大值发送），所以措辞是"重试/换端点"而非"调大设置"。
-      const _bgLabel = /^(archiveHead|sceneAnalysis|updateCharacterDescriptions|fillMemoryTable|extractCharacters|syncCharacters|optionRetry|cardwriter|wbUploadMeta|settingDeltaReview)$/.test(overrides.callLabel || '');
+      const _bgLabel = /^(archiveHead|sceneAnalysis|fillMemoryTable|optionRetry|cardwriter|wbUploadMeta|settingDeltaReview)$/.test(overrides.callLabel || '');
       if (_finishReason === 'length' && !_bgLabel) {
         try { (globalThis as any).App?.toast?.('本次输出达到该模型的输出上限被截断，可直接重试'); } catch (e) { /* ignore */ }
       }
