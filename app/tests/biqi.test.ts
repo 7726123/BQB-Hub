@@ -1,4 +1,4 @@
-// 比奇插件：写入走临时世界书 overlay（原书零触碰）、立即生效、与 Agent 设定同步同源注入。
+// 比奇插件：写入走临时世界书 overlay（原书零触碰）、立即生效（临时世界书现在只由比奇维护）。
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import '../src/infra/storage';
 import { PluginManager } from '../src/domain/plugins';
@@ -83,15 +83,13 @@ describe('比奇：临时世界书写入', () => {
     expect(SettingSyncManager.getEffectiveEntries().map(e => e.name)).toEqual(['苏黎']);
   });
 
-  it('比奇开启时临时世界书参与注入（isActive），只开设定同步时同样生效', () => {
+  it('比奇开启时临时世界书参与注入（isActive / isEnabled 现在同一个门：比奇开关）', () => {
     expect(SettingSyncManager.isActive()).toBe(false);
     PluginManager.setEnabled('biqi', true);
     expect(SettingSyncManager.isActive()).toBe(true);
-    expect(SettingSyncManager.isEnabled()).toBe(false); // 自动同步本身关着
-    PluginManager.setEnabled('agent-setting-sync', true); // 互斥：顶掉比奇
-    expect(SettingSyncManager.isActive()).toBe(true);
     expect(SettingSyncManager.isEnabled()).toBe(true);
-    expect(PluginManager.isEnabled('biqi')).toBe(false);
+    PluginManager.setEnabled('biqi', false);
+    expect(SettingSyncManager.isActive()).toBe(false);
   });
 });
 

@@ -1400,7 +1400,7 @@ const UIManager: UIManagerShape = {
     all.forEach(function (p: any) {
       var enabled = PluginManager.isEnabled(p.id);
       var danger = 'var(--danger)';
-      var canOpen = p.type === 'database' || (p.type === 'widget' && (p.shell === 'agent' || p.shell === 'biqi'));
+      var canOpen = p.type === 'database' || (p.type === 'widget' && p.shell === 'biqi');
       html += '<section class="set-group" style="margin-bottom:6px;">' +
         '<div class="set-row" ' + (canOpen ? 'onclick="UIManager.openPlugin(\'' + p.id + '\')"' : '') + ' style="cursor:' + (canOpen ? 'pointer' : 'default') + ';">' +
           '<div class="set-main">' +
@@ -1437,16 +1437,11 @@ const UIManager: UIManagerShape = {
     });
   },
 
-  // 打开插件（database 类型 → 全屏页；widget+agent → Agent 设定页）
+  // 打开插件（database 类型 → 全屏页；widget+biqi → 写作页的比奇面板）
   openPlugin(id: string) {
     if (typeof PluginManager === 'undefined') return;
     var p = PluginManager.get(id);
     if (!p) return;
-    if (p.type === 'widget' && p.shell === 'agent') {
-      if (!PluginManager.isEnabled(id)) { App.toast('请先开启插件「' + p.name + '」'); return; }
-      this.openAgentPage();
-      return;
-    }
     if (p.type === 'widget' && p.shell === 'biqi') {
       if (!PluginManager.isEnabled(id)) { App.toast('请先开启插件「' + p.name + '」'); return; }
       if (typeof MobileUI !== 'undefined' && MobileUI.switchView) MobileUI.switchView('writing');
@@ -1459,9 +1454,26 @@ const UIManager: UIManagerShape = {
   },
 
   openDatabase() {
+    // 数据库页默认跟着**当前视图**：从对话模式进来就看对话那一份（同一本书两个模式各存一份表）
+    var chatActive = false;
+    try { var tab = document.getElementById('tab-chat'); chatActive = !!(tab && tab.classList.contains('active')); } catch (e) { /* ignore */ }
+    this._dbViewMode = chatActive ? 'chat' : 'novel';
+    try { DatabaseManager.setMode(this._dbViewMode); } catch (e) { /* ignore */ }
     document.getElementById('pluginFullscreen')!.style.display = 'flex';
     this._dbSettingsOpen = false;
     this.renderDatabase();
+  },
+
+  // 数据库页当前看的是哪个模式（小说 / 对话）。页面里所有读写都先把这个作用域声明一遍——
+  // 后台填表（另一种模式）也会改 DatabaseManager 的作用域，不重申就可能看串/写串。
+  _dbViewMode: 'novel' as 'novel' | 'chat',
+
+  switchDBMode(m: any) {
+    this._dbViewMode = (m === 'chat') ? 'chat' : 'novel';
+    try { DatabaseManager.setMode(this._dbViewMode); } catch (e) { /* ignore */ }
+    document.getElementById('dbSearch')!.value = '';
+    this.renderDatabase();
+    App.toast(this._dbViewMode === 'chat' ? '这是对话模式的记忆表' : '这是小说模式的记忆表');
   },
 
   closeDatabase() {
@@ -1537,9 +1549,7 @@ const UIManager: UIManagerShape = {
     var statusEl = document.getElementById('agentPageStatus');
     if (!listEl || typeof SettingSyncManager === 'undefined') return;
     var self = this;
-    // 「立即结算」只在自动同步开着时有意义：那时才有人攒待裁决提议
-    var settleBtn = document.getElementById('agentSettleBtn');
-    if (settleBtn) settleBtn.style.display = SettingSyncManager.isEnabled() ? '' : 'none';
+    // 「立即结算」按钮随 Agent 设定同步插件一起下线（比奇是即时落盘，没有攒批待裁决）
     try {
       var eff = SettingSyncManager.getEffectiveEntries();
       var pending = SettingSyncManager.getPending();
@@ -1727,8 +1737,18 @@ const UIManager: UIManagerShape = {
   },
 
   renderDatabase() {
+    // 先申明这份页面看的是哪个模式（后台填表可能把作用域切到另一份）
+    try { DatabaseManager.setMode(this._dbViewMode); } catch (e) { /* ignore */ }
     var book = BookManager.getActive();
     document.getElementById('dbBookName')!.textContent = book ? (book.title || '未命名') : '';
+    var sw = document.getElementById('dbModeSwitch');
+    if (sw) {
+      var btns = sw.querySelectorAll('button');
+      for (var bi = 0; bi < btns.length; bi++) {
+        if (btns[bi].getAttribute('data-mode') === this._dbViewMode) btns[bi].classList.add('active');
+        else btns[bi].classList.remove('active');
+      }
+    }
     document.getElementById('dbSearch')!.value = '';
     var activeTableId = DatabaseManager.getActiveTableId();
     // 顶部表名 chips（含各表记录数）
@@ -1758,6 +1778,8 @@ const UIManager: UIManagerShape = {
   },
 
   renderDBRecords() {
+    // 读之前重申作用域：这一页始终只看它自己那份（小说 / 对话各一份表）
+    try { DatabaseManager.setMode(this._dbViewMode); } catch (e) { /* ignore */ }
     var container = document.getElementById('dbRecords');
     var tableId = DatabaseManager.getActiveTableId();
     const table = DatabaseManager.getTable(tableId);

@@ -875,10 +875,6 @@ const App: AppShape = {
     const d = this.getNovelData();
     d.currentChapterId = chId;
     this.saveNovelData(d);
-    // Agent 设定同步：切章强制结算一批（新章开头用新设定最干净）
-    if (typeof SettingSyncManager !== 'undefined' && SettingSyncManager.isEnabled()) {
-      try { SettingSyncManager.requestChapterReview(); } catch (e) { /* ignore */ }
-    }
     this.loadEditorContent();
     UIManager.renderChapters();
     if (MobileUI.isMobile) MobileUI.switchView('writing');
@@ -899,7 +895,7 @@ const App: AppShape = {
       // 1. Clear data via managers (each syncs to book)
       if (typeof DatabaseManager !== 'undefined') DatabaseManager.clear();
       SM().set('writingGuide', '');
-      // Agent 设定同步临时层随书重置：清 overlay（临时修改/新增/停用）+ 待裁决 + 快照 + meta，原书条目保留
+      // 比奇的临时世界书随书重置：清 overlay（临时修改/新增/停用）+ 待裁决 + 快照，原书条目保留
       if (typeof SettingSyncManager !== 'undefined') {
         try { SettingSyncManager.resetAll(); } catch (e) { /* ignore */ }
       }
@@ -1107,12 +1103,6 @@ const App: AppShape = {
       }
     }
 
-    // Agent 设定同步插件（widget shell=agent）：续写同调用附带 SETTING_DELTA 提议块。
-    // best-effort：模型写错格式就静默丢弃，不重试。必须早于 _probe，否则检索门控看不到新指令。
-    if (typeof SettingSyncManager !== 'undefined' && SettingSyncManager.isEnabled()) {
-      try { userInstruction += SettingSyncManager.buildTailInstruction(); } catch (e) { /* 旁路失败忽略 */ }
-    }
-
     userInstruction = RegexEngine.applyRules(userInstruction, 'before');
 
     // Build protagonist context
@@ -1199,12 +1189,12 @@ const App: AppShape = {
     // 直接从世界书读取注入条目，不依赖 filterRelevantEntries（避免 recentText 变化导致缓存失效）
     let _stableCtx = '';
     var _wb = WorldBookManager.getActive();
-    // Agent 设定同步 / 比奇：启用任一方时读合并视图（原书 + 临时 overlay），原书零触碰
+    // 比奇：开启时读合并视图（原书 + 临时 overlay），原书零触碰
     var _wbEntries: any[] = (_wb && _wb.entries) || [];
     if (typeof SettingSyncManager !== 'undefined' && SettingSyncManager.isActive()) {
       try { _wbEntries = SettingSyncManager.getEffectiveEntries(); } catch (e) { /* 回落原书 */ }
     }
-    // 按「临时世界书（比奇 / Agent 设定同步）碰没碰过」分流（2026-09-25 缓存整改）：
+    // 按「临时世界书（比奇）碰没碰过」分流（2026-09-25 缓存整改）：
     // overlay 改过的条目约每 5~10 次续写就会变一次，而它原本排在 prompt 第 2 位 —— 一变，
     // 后面全部（含 5 万字正文窗口）都按 miss 计费。现在：原书条目留在稳定前缀（只有手改才变），
     // 被改过/新增的条目带着**最终内容**挪到 user 区尾部 —— 变了只赔自己那几 KB，还顺带获得近端强调。
@@ -1575,19 +1565,6 @@ const App: AppShape = {
     if (extraCharCtx) _userParts.push(extraCharCtx);
     if (_factCardCtx) _userParts.push(_factCardCtx);
     if (_recallFresh) _userParts.push(_recallFresh);
-    // Agent 设定同步：待裁决覆盖指令（本来就不命中缓存，多带一份零损失）
-    if (typeof SettingSyncManager !== 'undefined' && SettingSyncManager.isEnabled()) {
-      try {
-        var _ssDeltaCtx = SettingSyncManager.buildCoverageText();
-        if (_ssDeltaCtx) {
-          _userParts.push(_ssDeltaCtx);
-        } else {
-          // 无待裁决时附补交提醒：防上轮引入新设定但漏报（下轮提示补交）
-          var _ssReminder = SettingSyncManager.buildReminderText();
-          if (_ssReminder) _userParts.push(_ssReminder);
-        }
-      } catch (e) { /* 旁路失败忽略 */ }
-    }
     _userParts.push('【指令】' + '\n' + userInstruction);
     messages.push({ role: 'user', content: _userParts.join('\n\n') });
     // 展开预设里的酒馆模板语法（setvar/getvar/{{//}}/${...}），让豆包等模型看到完整指令
@@ -1599,7 +1576,6 @@ const App: AppShape = {
     const _flushPartial = (reasoningText: any) => {
       var _escAb = function (t: any) { return String(t).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); };
       var _genAb = String(generated || '');
-      if (typeof SettingSyncManager !== 'undefined' && SettingSyncManager.isEnabled() && SettingSyncManager.hasDeltaMarker(_genAb)) { try { var _ssOpsAb = SettingSyncManager.parseDeltaBlock(_genAb); if (_ssOpsAb && _ssOpsAb.length > 0) SettingSyncManager.addPending(_ssOpsAb); } catch (e) {} _genAb = SettingSyncManager.stripDeltaBlock(_genAb); }
       var _spAb = _splitThinkingBlocks(RegexEngine.applyRules(_genAb, 'after'));
       var _thAb = (reasoningText && String(reasoningText).trim()) ? [reasoningText].concat(_spAb.thoughts) : _spAb.thoughts;
       var _pa = _buildThinkingHtml(_thAb, _escAb) + _spAb.body.replace(/\n{3,}/g,'\n\n').replace(/(?<!\n)\n(?!\n)/g,'\n\n');
@@ -1613,8 +1589,8 @@ const App: AppShape = {
         if (aborted) { App._endGenerating(); statusEl!.textContent = '已停止生成'; if (generated) _flushPartial(reasoning); else if (_streaming) EditorManager.cancelStreaming(); UsageStats.endSession(generated ? generated.replace(/\s/g, '').length : 0); return; }
         if (fullContent || (reasoning && reasoning.trim())) {
           let _preProcessed = String(fullContent || '');
-          const _parsedVars = VariableManager.parseVarBlock(_preProcessed); if (_parsedVars && Object.keys(_parsedVars).length > 0) { VariableManager.setBatch(_parsedVars); _preProcessed = _preProcessed.replace(/\[VAR\][\s\S]*?\[\/VAR\]/g, '').trim(); } // Agent 设定同步：剥离 SETTING_DELTA 块 → 解析入库待裁决（best-effort，失败静默丢弃）；必须在 finishStreaming/saveCurrentChapter 之前，防止污染正文/归档
-          if (typeof SettingSyncManager !== 'undefined' && SettingSyncManager.isEnabled() && SettingSyncManager.hasDeltaMarker(_preProcessed)) { try { var _ssOps = SettingSyncManager.parseDeltaBlock(_preProcessed); if (_ssOps && _ssOps.length > 0) { SettingSyncManager.addPending(_ssOps); try { App.toast('发现 ' + _ssOps.length + ' 条设定提议（待二审）'); } catch (e2) {} } } catch (e) {} _preProcessed = SettingSyncManager.stripDeltaBlock(_preProcessed); try { SettingSyncManager.noteDeltaResult(1); } catch (e3) {} } else if (typeof SettingSyncManager !== 'undefined' && SettingSyncManager.isEnabled()) { try { SettingSyncManager.noteDeltaResult(0); } catch (e4) {} } const stripped = _preProcessed.replace(/^#{1,3}\s+.*(\n|$)/gm, '').trim(); var _esc2 = function (s: any) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }; var _split = _splitThinkingBlocks(RegexEngine.applyRules(stripped, 'after')); var _streamSplit = _splitThinkingBlocks(generated || ''); // 诊断留档：原始输出 + 各阶段长度（正文丢失时可一键定位）
+          const _parsedVars = VariableManager.parseVarBlock(_preProcessed); if (_parsedVars && Object.keys(_parsedVars).length > 0) { VariableManager.setBatch(_parsedVars); _preProcessed = _preProcessed.replace(/\[VAR\][\s\S]*?\[\/VAR\]/g, '').trim(); }
+const stripped = _preProcessed.replace(/^#{1,3}\s+.*(\n|$)/gm, '').trim(); var _esc2 = function (s: any) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }; var _split = _splitThinkingBlocks(RegexEngine.applyRules(stripped, 'after')); var _streamSplit = _splitThinkingBlocks(generated || ''); // 诊断留档：原始输出 + 各阶段长度（正文丢失时可一键定位）
           App._lastRawGenerate = String(fullContent || '');
           console.log('[Split] raw=' + String(fullContent || '').length + ' stripped=' + stripped.length + ' body=' + _split.body.length + ' thoughts=' + _split.thoughts.length + '[Split] unclosed?', !!_split.unclosed); var _allThoughts: any[] = []; var _seenThoughts = {} as Record<string, any>; var _addThoughts = function (arr: any) { (arr || []).forEach(function (v: any) { var clean = String(v || '').trim(); if (!clean) return; var key = clean.replace(/\s+/g, ' ').slice(0, 80); if (!_seenThoughts[key]) { _seenThoughts[key] = true; _allThoughts.push(clean); } }); }; _addThoughts(reasoning && reasoning.trim() ? [reasoning] : []); _addThoughts(_streamSplit.thoughts); _addThoughts(_split.thoughts); var _body = (function (t) {var n=0;return normalizeQuotes(t.replace(/——/g,function () {return++n<=3?'——':'—'}));})(_split.body).replace(/<details\b([^>]*)>[\s\S]*?<\/details>/gi, function (m, attrs: any) { return /class\s*=\s*["'][^"']*cot-thinking/i.test(attrs) ? m : ''; }).replace(/<Anti-Omniscience>[\s\S]*?<\/Anti-Omniscience>/gi,'').replace(/<\/?(bginfor|catsay|CEstuff|CE[A-Za-z]*|subtext|radio|url|end)[^>]*>/gi,'').replace(/\n{3,}/g,'\n\n').replace(/(?<!\n)\n(?!\n)/g,'\n\n').trim(); const _deepThinkOn = App.thinkingLevel() !== 'off'; // 思考强度：仅 off 时结束端不渲染思维链（流式思考框已由 editor 隐藏，替换后纯正文）
                   const processed = (_deepThinkOn ? _buildThinkingHtml(_allThoughts, _esc2) : '') + _body; if (_streaming) EditorManager.finishStreaming(processed); else EditorManager.insertAtCursor(processed); _notifyUnclosedThink(_split); App.saveCurrentChapter(); App._uploadAdminTrace(_body); console.log('[Generate] Content saved. Editor length:', EditorManager.getContent().replace(/<[^>]*>/g, '').length, 'chars'); statusEl!.textContent = '生成完成！'; const _rawLen = String(fullContent || '').replace(/\s/g, '').length; const _wordCount = processed.replace(/\s/g, '').length; console.log('[Token] 原始输出:', _rawLen, '字符 | 处理后:', _wordCount, '字符 | API tokens:', (APIHandler._apiCalls.filter(c=>c.label==='generate').slice(-1)[0]?.completionTokens || '?')); UsageStats.endSession(_wordCount); (async () => {
@@ -1625,14 +1601,6 @@ const App: AppShape = {
                   UIManager.renderDBRecords();
                 }
               }).catch(function (e: any) { console.warn('[DB] fill failed:', e); });
-            }
-            // Agent 设定同步：轮数计数 + 攒批触发二审（fire-and-forget，单轮最多一次短调用）
-            if (typeof SettingSyncManager !== 'undefined' && SettingSyncManager.isEnabled()) {
-              try {
-                var _ssTrigger = SettingSyncManager.bumpRound();
-                if (_ssTrigger) App.reviewSettingDelta(_ssTrigger, (recentText || '') + '\n\n' + processed);
-                else if (typeof UIManager !== 'undefined' && UIManager.refreshAgentBadge) { try { UIManager.refreshAgentBadge(); } catch (e2) {} }
-              } catch (e) { console.warn('[SettingSync] trigger failed:', e); }
             }
             App._bumpContinuationCount(); App._endGenerating(); })().catch(function (e) { console.warn('[Generate] 续写后置处理异常:', e); App._endGenerating(); }); } else { statusEl!.textContent = '未收到有效回复'; UsageStats.endSession(0); App._endGenerating(); }
       },
@@ -1670,116 +1638,10 @@ const App: AppShape = {
     if (btnStop) btnStop.style.display = 'none';
   },
 
-  // ===== Agent 设定同步：攒批二审（fire-and-forget，低温短调用，默认拒绝的苛刻法官） =====
-  async reviewSettingDelta(trigger: string, recentText: string) {
-    try {
-      if (typeof SettingSyncManager === 'undefined' || !SettingSyncManager.isEnabled()) return;
-      const cfg = SettingSyncManager.getConfig();
-      const pending = SettingSyncManager.getPending();
-      if (pending.length === 0) return;
-      SettingSyncManager.recordReviewAttempt();
-      const apiConfig = PresetManager.getActiveAPIConfig();
-      if (!apiConfig || !apiConfig.apiKey) { console.warn('[SettingSync] 无 API 配置，二审跳过'); return; }
-      // 二审是结构化裁决，不需要创作思考——强制思考 off（避免 muse/deepseek 等长思考模型
-      // 吃光输出额度导致 length 截断、裁决 JSON 出不来；也省 token）。
-      // 输出额度不写死：走 api.ts 的默认最大值，端点上限由降级阶梯学习。
-      const reviewApiConfig = { ...apiConfig, deepseekThinking: 'off' as const };
-      // 二审上下文与正文续写对齐（裁决需要同等信息判断重复/矛盾/归属）：
-      // 法官规则 + 世界书全量（合并视图）+ 主角 + 常驻角色 + 角色状态 + 待裁决明细 + 最近正文
-      const _ssReviewParts: any[] = [];
-      try {
-        // 世界书全量条目（含临时 overlay 生效结果）——判断「新增是否重复/与哪条冲突」的完整底稿
-        if (typeof SettingSyncManager !== 'undefined') {
-          const _eff = SettingSyncManager.getEffectiveEntries();
-          const _inj = (_eff || []).filter(function (e: any) { return e.inject !== false && e.type !== '变量' && e.type !== '前端' && e.type !== '初始'; });
-          if (_inj.length > 0) {
-            let _wbTxt = '## 当前世界书条目全量（裁决时逐条比对：重复/矛盾/归属）\n';
-            _inj.forEach(function (e: any) { _wbTxt += '### [' + e.type + '] ' + e.name + '\n' + (e.content || '') + '\n\n'; });
-            _ssReviewParts.push(_wbTxt);
-          }
-        }
-        // 主角
-        const _prota = this.getProtagonist();
-        if (_prota && _prota.name) {
-          let _pc = '## 主角设定\n- 姓名：' + _prota.name;
-          if (_prota.gender) _pc += '\n- 性别：' + _prota.gender;
-          if (_prota.age) _pc += '\n- 年龄：' + _prota.age;
-          if (_prota.occupation) _pc += '\n- 职业：' + _prota.occupation;
-          if (_prota.personality) _pc += '\n- 性格：' + _prota.personality;
-          if (_prota.appearance) _pc += '\n- 外貌：' + _prota.appearance;
-          if (_prota.abilities) _pc += '\n- 能力：' + _prota.abilities;
-          _ssReviewParts.push(_pc);
-        }
-        // 常驻角色（世界书角色条目对应的角色卡）简述
-        if (typeof CharacterManager !== 'undefined' && typeof CharacterManager.getAll === 'function') {
-          const _wbId = WorldBookManager.getActiveId();
-          const _cmAny = CharacterManager as any;
-          const _wbChars = _cmAny.getByWorldBook ? _cmAny.getByWorldBook(_wbId) : [];
-          const _always = (_wbChars || []).filter(function (c: any) { return c && c.name; }).slice(0, 12);
-          if (_always.length > 0) {
-            let _ac = '## 登场角色\n';
-            _always.forEach(function (c: any) {
-              const _parts = [c.name];
-              if (c.gender) _parts.push(c.gender);
-              if (c.age) _parts.push(c.age + '岁');
-              if (c.relation) _parts.push(c.relation);
-              if (c.description) _parts.push(String(c.description).slice(0, 150));
-              _ac += '- ' + _parts.join(' | ') + '\n';
-            });
-            _ssReviewParts.push(_ac);
-          }
-        }
-      } catch (e) { /* 任一上下文失败不阻塞裁决 */ }
-      const _ssUserText = SettingSyncManager.buildReviewUserText(recentText);
-      const _ssCtxJoined = _ssReviewParts.length > 0 ? _ssReviewParts.join('\n\n') + '\n\n' : '';
-      const reviewMsgs = [
-        { role: 'system', content: cfg.reviewSystem },
-      ];
-      if (_ssCtxJoined) reviewMsgs.push({ role: 'system', content: _ssCtxJoined });
-      reviewMsgs.push({ role: 'user', content: _ssUserText });
-      const result: any = await new Promise(function (resolve) {
-        APIHandler.fetchCompletions(reviewMsgs,
-          function () {},
-          function (full) { resolve(full); },
-          function (err) { console.warn('[SettingSync] review failed:', err); resolve(null); },
-          { temperature: 0.2, apiConfig: reviewApiConfig, callLabel: 'settingDeltaReview', timeout: 60000 }
-        );
-      });
-      if (!result) { console.warn('[SettingSync] 二审无返回，本轮放弃（待裁决保留）'); return; }
-      const decisions = SettingSyncManager.parseReviewResult(result);
-      if (!decisions) {
-        // 解析失败（模型输出带解释/fence/被截断）：保留待裁决不清空，避免整批提议被误丢，
-        // 下轮自动触发或手动结算会再试一次
-        console.warn('[SettingSync] 二审输出非 JSON，本轮放弃（待裁决保留，下次再试）');
-        return;
-      }
-      const r = SettingSyncManager.applyApproved(decisions);
-      console.log('[SettingSync] 二审落盘(' + trigger + ')：采纳 ' + r.accepted + ' / 拒绝 ' + r.rejected);
-      // 每批仅一次索引失效（窗口期内零打扰，保 prompt caching）
-      try { if (typeof ArchiveIndex !== 'undefined' && ArchiveIndex.invalidate) ArchiveIndex.invalidate(); } catch (e) {}
-      try { App.toast('设定同步：采纳 ' + r.accepted + ' 条' + (r.rejected > 0 ? '、拒绝 ' + r.rejected + ' 条' : '')); } catch (e) {}
-      try { if (typeof UIManager !== 'undefined' && UIManager.renderAgentPage) UIManager.renderAgentPage(); } catch (e) {}
-      try { if (typeof UIManager !== 'undefined' && UIManager.refreshAgentBadge) UIManager.refreshAgentBadge(); } catch (e) {}
-    } catch (e) { console.warn('[SettingSync] review error:', e); }
-  },
-
-  // 手动"立即结算"（Agent 页按钮）—— 防抖：二审进行中不重复触发
-  reviewSettingDeltaNow() {
-    if ((this as any)._ssReviewing) { App.toast('正在二审中，请稍候'); return; }
-    if (typeof SettingSyncManager === 'undefined' || !SettingSyncManager.isEnabled()) { App.toast('请先安装并开启 Agent 设定同步插件'); return; }
-    if (SettingSyncManager.getPending().length === 0) { App.toast('暂无待裁决提议'); return; }
-    (this as any)._ssReviewing = true;
-    const self = this;
-    // 手动结算同样带正文上下文（与续写后自动触发一致）——二审法官需要看到正文依据
-    // 才能判断 quote 是否成立；空正文会让模型因「证据不足」倾向拒绝。
-    let _ctx = '';
-    try {
-      if (typeof EditorManager !== 'undefined' && EditorManager.getRecentStoryText) {
-        _ctx = EditorManager.getRecentStoryText() || '';
-      }
-    } catch (e) { /* 取不到正文就空着 */ }
-    this.reviewSettingDelta('manual', _ctx).finally(function () { (self as any)._ssReviewing = false; });
-  },
+  // ===== Agent 设定同步已删除（用户要求：只留比奇）=====
+  // 原本这里是 reviewSettingDelta（攒批二审：把待裁决提案交给模型逐条裁决再落盘）与
+  // reviewSettingDeltaNow（手动结算）。比奇走的是 SettingSyncManager.applyApproved 的直接落盘，
+  // 不再需要这条链路；「临时世界书」视图里的「立即结算」按钮一并下线。
 
   // 变量自动更新（App._checkAndUpdateVars）与场景状态分析（App.updateSceneState）已于
   // v1.5.97.13 删除，原因见交接文档 §13.17：
@@ -2263,7 +2125,15 @@ const App: AppShape = {
     return lines.join('\n');
   },
 
-  async fillMemoryTable(newText: any) {
+  /**
+   * 填表（回溯填表与生成后自动填表共用）。
+   * @param mode 'novel'（默认，正文轮）| 'chat'（演出轮）——决定**写进哪一份**数据库：
+   *   同一本书的两种模式各存一份（用户要求数据库页能分别查看两个模式）。
+   *   表格结构/提示词一致，只是作用域不同；写入前会再确认一次作用域（异步过程中用户可能切视图）。
+   */
+  async fillMemoryTable(newText: any, mode?: 'novel' | 'chat') {
+    const _scope: 'novel' | 'chat' = mode === 'chat' ? 'chat' : 'novel';
+    try { if (typeof DatabaseManager !== 'undefined' && DatabaseManager.setMode) DatabaseManager.setMode(_scope); } catch (e) { /* ignore */ }
     // 只认「撤回代际」：撤回会回滚数据库快照，飞行中的结果必须作废；新生成不作废（见 _dbEpoch 注释）
     var _undoEpoch = App._dbEpoch || 0;
     var _t0 = Date.now();
@@ -2355,6 +2225,8 @@ const App: AppShape = {
         ClientLog.note('数据库填表', '结果因撤回作废：解析 ' + parsed.length + ' 行，耗时 ' + _elapsed());
         return 0;
       }
+      // 落盘前再确认一次作用域：这中间用户可能切了视图/换书，写错一份等于把两个模式的记忆搅在一起
+      try { DatabaseManager.setMode(_scope); } catch (e) { /* ignore */ }
       var n = App._applyDBFillResult(parsed);
       App._dbFillTruncated = _lastTruncated;
       console.log('[DB] fill applied:', n, 'updates | skipped:', App._dbFillSkipped, '| truncated:', _lastTruncated);
@@ -2382,9 +2254,18 @@ const App: AppShape = {
     }
     this._dbFilling = true;
     try {
-      App.toast('正在回溯填表...');
-      var recentText = EditorManager.getCrossChapterContext(3000);
-      var n = await this.fillMemoryTable(recentText);
+      // 回溯填表的输入跟着**数据库页当前看的那份**走：小说模式读正文，对话模式读演出记录
+      // （用户要求数据库适配对话模式；两个模式各存一份表，填表也只填自己那份）
+      var _mode = (typeof DatabaseManager !== 'undefined' && DatabaseManager.mode) ? DatabaseManager.mode() : 'novel';
+      App.toast(_mode === 'chat' ? '正在回溯填表（对话模式）...' : '正在回溯填表...');
+      var recentText = '';
+      if (_mode === 'chat') {
+        recentText = String(((globalThis as any).ChatMode && ChatMode.toProseText) ? ChatMode.toProseText() : '').slice(-3000);
+        if (recentText.trim().length < 50) { App.toast('回溯填表已跳过：演出记录还太少'); this._dbFilling = false; return; }
+      } else {
+        recentText = EditorManager.getCrossChapterContext(3000);
+      }
+      var n = await this.fillMemoryTable(recentText, _mode);
       // 失败与"无更新"必须分开说：失败时模型连一个更新块都没吐出来（此前一律显示"无更新"，
       // 看起来像"点了没用"）。另外三种情况此前都伪装成"无更新"，现在逐一说明真实原因。
       var st = App._dbFillStatus;

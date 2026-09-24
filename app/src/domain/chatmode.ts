@@ -730,6 +730,13 @@ export const ChatMode = {
     });
     // 本轮用量记账收尾（字数就是这次演出的净字数；token 由 APIHandler 内记）
     try { UsageStats.endSession(words); } catch (e) { /* 记账失败不影响落库 */ }
+    // 演出的记忆：进数据库**对话模式那一份**（与小说模式各存一份；没开数据库插件时自动跳过）
+    try {
+      const _DB = (globalThis as any).DatabaseManager;
+      if (_DB && typeof _DB.isEnabled === 'function' && _DB.isEnabled()) {
+        void App.fillMemoryTable(this.recentContext().slice(-3000), 'chat');
+      }
+    } catch (e) { /* 填表失败静默：与小说模式一致 */ }
     // 演出进归档（回读/检索用）：必须在这条落库之后，否则本轮内容要等到下一轮才归档
     if (bookIdAtStart === this.bookId()) { void this.syncArchive(); this.render(); }
   },

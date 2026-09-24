@@ -102,8 +102,9 @@ describe('UsageAssistant 纯逻辑', () => {
     // 社区上传审核门（v1.5.86）：待审 / 我的 / 已驳回 都要讲清楚，否则用户会以为上传丢了
     expect(ASSISTANT_SYSTEM).toContain('待审核');
     expect(ASSISTANT_SYSTEM).toContain('已驳回');
-    // 比奇与 Agent 设定同步的互斥关系也要写明，避免用户以为两个能同时开
-    expect(ASSISTANT_SYSTEM).toContain('只能开一个');
+    // 「Agent 设定同步」已下线（只留比奇）：手册里不能再提它，但要讲清比奇的临时世界书
+    expect(ASSISTANT_SYSTEM).not.toContain('Agent 设定同步');
+    expect(ASSISTANT_SYSTEM).toContain('临时世界书');
     // 酒馆卡玩法（导入 → 写卡改造）是用户最常问的一条，手册必须覆盖
     expect(ASSISTANT_SYSTEM).toContain('导入角色卡');
     expect(ASSISTANT_SYSTEM).toContain('改造成适配卡');

@@ -107,3 +107,42 @@ describe('悬浮球（option-ball）整体下线', () => {
     expect(fs.existsSync(path.join(ROOT, 'app', 'src', 'domain', 'optionball.ts'))).toBe(false);
   });
 });
+
+// 「Agent 设定同步」插件整体下线（2026-09-25，用户要求：只留比奇）。
+// 删的面很广（清单 + app 的 delta 钩子 + 二审链路 + 设置页那块），编译期抓不到，用字符串钉住。
+describe('Agent 设定同步已删除（临时世界书只由比奇维护）', () => {
+  it('插件清单里没有它，只剩数据库模板与比奇', () => {
+    const p = src('domain/plugins.ts');
+    expect(p.includes('agent-setting-sync')).toBe(false);
+    expect(p.includes("'db-classic-tables'")).toBe(true);
+    expect(p.includes("'biqi'")).toBe(true);
+  });
+
+  it('自动链路（delta 解析/攒批二审/提醒）不再存在', () => {
+    const s = src('domain/settingsync.ts');
+    for (const gone of ['parseDeltaBlock', 'stripDeltaBlock', 'hasDeltaMarker', 'buildTailInstruction',
+      'buildCoverageText', 'buildReminderText', 'noteDeltaResult', 'bumpRound', 'requestChapterReview',
+      'shouldTriggerReview', 'buildReviewUserText', 'parseReviewResult', 'getConfig(', 'DEFAULT_REVIEW_SYSTEM',
+      'ENGINE_HARD_RULES', 'DEFAULT_TAIL_INSTRUCTION']) {
+      expect(s.includes(gone), gone + ' 已删除，不应回归').toBe(false);
+    }
+    const a = src('domain/app.ts');
+    expect(a.includes('reviewSettingDelta(')).toBe(false);   // 注：注释里提到名字不算（防止把说明当代码）
+    expect(a.includes('SettingSyncManager.buildTailInstruction')).toBe(false);
+  });
+
+  it('保留下来的部分仍在：overlay 存储 / applyApproved / 落盘策略（比奇要用）', () => {
+    const s = src('domain/settingsync.ts');
+    for (const kept of ['getEffectiveEntries', 'entryStatus', 'applyApproved', 'addPending', 'removePending',
+      'findOriginalByTarget', 'mergeEntryContent', 'DEFAULT_TOGGLES', 'isEnabled', 'setMode']) {
+      expect(s.includes(kept), kept + ' 应保留（比奇依赖）').toBe(true);
+    }
+    // 编辑器流式仍要丢弃历史预设/世界书里可能残留的 SETTING_DELTA 块（防御性保留）
+    expect(src('domain/editor.ts').includes('SETTING_DELTA')).toBe(true);
+  });
+
+  it('临时世界书页不再有「立即结算」按钮', () => {
+    expect(html.includes('agentSettleBtn')).toBe(false);
+    expect(src('domain/ui.ts').includes('reviewSettingDeltaNow')).toBe(false);
+  });
+});

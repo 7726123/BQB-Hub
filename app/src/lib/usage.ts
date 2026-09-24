@@ -129,6 +129,27 @@ export const UsageStats = {
     return (v >= 100 ? v.toFixed(0) : v.toFixed(1)) + ' tokens/s';
   },
 
+  /**
+   * 一轮记录属于哪个模式：按调用标签判（小说模式 label='generate'，对话模式 label='chat'）。
+   * 混着出现（一轮里两种都有，比如后台填表/二审搭在正文轮上）就标"混合"，不要瞎归类。
+   */
+  modeOfRecord(r: UsageRecord): 'novel' | 'chat' | 'mixed' | 'bg' {
+    const labels = Object.keys(r.byLabel || {});
+    const hasNovel = labels.indexOf('generate') >= 0;
+    const hasChat = labels.indexOf('chat') >= 0;
+    if (hasNovel && hasChat) return 'mixed';
+    if (hasChat) return 'chat';
+    if (hasNovel) return 'novel';
+    return 'bg';
+  },
+
+  modeLabel(mode: string): { text: string; cls: string } {
+    if (mode === 'chat') return { text: '对话', cls: 'chip-primary' };
+    if (mode === 'novel') return { text: '小说', cls: 'chip-default' };
+    if (mode === 'mixed') return { text: '混合', cls: 'chip-default' };
+    return { text: '后台', cls: 'chip-default' };
+  },
+
   render(): void {
     const history = this.getHistory();
     const sessionEl = document.getElementById('usageSessionStats');
@@ -152,12 +173,23 @@ export const UsageStats = {
     }, { promptTokens: 0, cachedTokens: 0, completionTokens: 0, cost: 0, apiCalls: 0, wordCount: 0 });
 
     const overallHitRate = totalAll.promptTokens > 0 ? (totalAll.cachedTokens / totalAll.promptTokens * 100).toFixed(1) : '0.0';
+    // 两种模式都记在这份历史里：汇总里给出各自的轮数，一眼看出对话模式的用量有没有进来
+    const _modeCount = history.reduce((acc, r) => {
+      const m = this.modeOfRecord(r);
+      acc[m] = (acc[m] || 0) + 1;
+      return acc;
+    }, {} as Record<string, number>);
+    const _modeBits: string[] = [];
+    if (_modeCount.novel) _modeBits.push('小说 ' + _modeCount.novel + ' 轮');
+    if (_modeCount.chat) _modeBits.push('对话 ' + _modeCount.chat + ' 轮');
+    if (_modeCount.mixed) _modeBits.push('混合 ' + _modeCount.mixed + ' 轮');
+    if (_modeCount.bg) _modeBits.push('仅后台调用 ' + _modeCount.bg + ' 轮');
 
     if (sessionEl) {
       const totalSpeed = this.outputSpeed(totalAll.completionTokens, history.reduce((acc, r) => acc + (r.duration || 0), 0));
       sessionEl.innerHTML = `
         <section class="set-group">
-          <div class="set-group-head"><span class="set-badge">汇</span><span class="set-group-name">累计统计</span><i class="set-rule"></i><span class="set-group-count">${history.length} 次续写</span></div>
+          <div class="set-group-head"><span class="set-badge">汇</span><span class="set-group-name">累计统计</span><i class="set-rule"></i><span class="set-group-count">${history.length} 轮生成${_modeBits.length ? '（' + _modeBits.join(' · ') + '）' : ''}</span></div>
           <div class="stat-grid" style="margin-top:10px;">
             <div class="stat-cell"><div class="st-label">API 调用</div><div class="st-value">${totalAll.apiCalls}<span class="st-unit">次</span></div></div>
             <div class="stat-cell"><div class="st-label">总字数</div><div class="st-value">${totalAll.wordCount.toLocaleString()}</div></div>
@@ -182,6 +214,7 @@ export const UsageStats = {
         <div class="uh-card">
           <div class="uh-head">
             <span class="chip chip-primary">#${history.length - i}</span>
+            <span class="chip ${this.modeLabel(this.modeOfRecord(r)).cls}">${this.modeLabel(this.modeOfRecord(r)).text}</span>
             <span class="chip chip-default">${this.formatDuration(r.duration)}</span>
             <span class="uh-time">${timeStr}</span>
           </div>

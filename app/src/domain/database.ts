@@ -43,10 +43,25 @@ export const DatabaseManager = {
     return null;
   },
 
-  // 每本书独立数据库：KEY 存 { bookId: db } 嵌套对象，切书自动切换
+  // 每本书独立数据库：KEY 存 { scopeId: db } 嵌套对象，切书/切模式自动切换。
+  //
+  // 模式后缀（2026-09-25，对话模式适配）：对话模式与小说模式**各存一份**——同一本书能分别查看
+  // 两个模式的记忆表（用户在数据库页顶部切换）。小说模式沿用不带后缀的旧键（零迁移），
+  // 对话模式用 `<bookId>_chat`，与临时世界书 overlay 的后缀规则一致。
+  _mode: 'novel' as 'novel' | 'chat',
+  mode(): 'novel' | 'chat' { return this._mode === 'chat' ? 'chat' : 'novel'; },
+  /** 存储作用域：写的人（小说轮 / 演出轮 / 数据库页当前视图）在动手前设置它 */
+  setMode(m: 'novel' | 'chat'): void { this._mode = (m === 'chat') ? 'chat' : 'novel'; },
+
   _bookId(): string {
-    const book = (typeof BookManager !== 'undefined') ? BookManager.getActive() : null;
-    return book ? book.id : 'none';
+    let id = 'none';
+    try {
+      if (typeof BookManager !== 'undefined') {
+        const book = BookManager.getActive();
+        id = (book && book.id) || 'none';
+      }
+    } catch (e) { /* ignore */ }
+    return this.mode() === 'chat' ? id + '_chat' : id;
   },
 
   getDB(): MemDB {

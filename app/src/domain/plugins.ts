@@ -36,26 +36,14 @@ const BUILTIN_PLUGINS: PluginManifest[] = [
     },
   },
   {
-    id: 'agent-setting-sync',
-    name: 'Agent 设定同步',
-    version: '1.0.0',
-    type: 'widget',
-    shell: 'agent',
-    description: '续写时自动发现剧情里的设定变化并整理成提案，写进本书的临时世界书；原书设定不会被自动改动，可随时回滚。',
-  },
-  {
     id: 'biqi',
     name: '比奇',
     version: '1.0.0',
     type: 'widget',
     shell: 'biqi',
-    description: '在正文页开一个半屏窗口，和比奇讨论剧情该怎么改，它会直接修订本书的临时世界书（原书不动）；它能看到当前设定与最近正文。与「Agent 设定同步」只能开一个。',
+    description: '在正文页开一个半屏窗口，和比奇讨论剧情该怎么改，它会直接修订本书的临时世界书（原书不动）；它能看到当前设定与最近正文。',
   },
 ];
-
-// 互斥组：同组插件维护同一份数据（临时世界书 overlay），同时开启会互相覆盖，
-// 开启一方时自动关闭另一方。放在这里统一约束——任何入口（插件页/后续快捷开关）都受同一规则。
-const EXCLUSIVE_GROUPS: string[][] = [['agent-setting-sync', 'biqi']];
 
 export const PluginManager = {
   KEY: 'localPlugins',
@@ -101,21 +89,11 @@ export const PluginManager = {
     return !!SM().get<boolean>(this.ENABLED_KEY + ':' + id, false);
   },
 
-  // 开启/关闭。开启互斥组内的插件时，自动关闭同组其它插件（返回值 = 被顶掉的名字，无则 null）
+  // 开启/关闭。返回值保留（旧契约：被顶掉的互斥插件名）——现在只有比奇一个临时世界书插件，
+  // 互斥组已随「Agent 设定同步」一起下线，恒为 null。
   setEnabled(id: string, on: boolean): string | null {
     SM().set(this.ENABLED_KEY + ':' + id, !!on);
-    if (!on) return null;
-    let bumped: string | null = null;
-    for (const group of EXCLUSIVE_GROUPS) {
-      if (group.indexOf(id) < 0) continue;
-      for (const other of group) {
-        if (other === id || !this.isEnabled(other)) continue;
-        SM().set(this.ENABLED_KEY + ':' + other, false);
-        const p = this.get(other);
-        bumped = (p && p.name) || other;
-      }
-    }
-    return bumped;
+    return null;
   },
 
   // 当前启用的、指定类型的插件列表
