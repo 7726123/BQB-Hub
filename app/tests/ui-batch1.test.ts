@@ -1,4 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import '../src/infra/storage';
 import { shouldUpdate } from '../src/domain/update';
 import { stripMissMarker, buildMissConversation, recentContext, UsageAssistant, ASSISTANT_SYSTEM } from '../src/domain/assistant';
@@ -91,10 +93,10 @@ describe('UsageAssistant 纯逻辑', () => {
   });
 
   it('使用手册覆盖全部侧栏页面与审核门（功能上线后手册不能漏）', () => {
-    // 侧栏：写作 / 插件 / 记忆 / 世界书 / 主角 / 使用助手 / 写卡 / 用量统计 / 社区 / 高级设置
+    // 侧栏：写作 / 对话模式 / 插件 / 记忆 / 世界书 / 主角 / 使用助手 / 写卡 / 用量统计 / 社区 / 反馈 / 高级设置
     for (const s of ['一、开始写作', '二、章节与开局', '三、世界书', '四、主角', '五、记忆',
       '六、数据库', '七、写卡', '八、插件', '九、使用助手', '十、用量统计',
-      '十一、高级设置', '十二、社区', '十三、更新']) {
+      '十一、高级设置', '十二、社区', '十三、更新', '十四、对话模式', '十五、意见反馈']) {
       expect(ASSISTANT_SYSTEM, s).toContain(s);
     }
     // 社区上传审核门（v1.5.86）：待审 / 我的 / 已驳回 都要讲清楚，否则用户会以为上传丢了
@@ -105,6 +107,26 @@ describe('UsageAssistant 纯逻辑', () => {
     // 酒馆卡玩法（导入 → 写卡改造）是用户最常问的一条，手册必须覆盖
     expect(ASSISTANT_SYSTEM).toContain('导入角色卡');
     expect(ASSISTANT_SYSTEM).toContain('改造成适配卡');
+  });
+
+  // 用户要求：高级设置底部那块「想让长文生成更稳」撤掉，改由助手回答。
+  // 这里守住两件事：① 设置页不再有那块；② 手册里必须有对应的答案（省电策略 + 生成中断怎么办）。
+  it('长文生成更稳那块的答案在手册里（设置页已撤掉，助手负责回答）', () => {
+    expect(ASSISTANT_SYSTEM).toContain('省电策略');
+    expect(ASSISTANT_SYSTEM).toContain('允许后台运行');
+    expect(ASSISTANT_SYSTEM).toContain('续写已经生成的部分会留在正文里');
+    const html = readFileSync(resolve(__dirname, '..', '..', 'web', 'index.html'), 'utf8');
+    expect(html.indexOf('想让长文生成更稳')).toBe(-1);
+  });
+
+  // 用户要求：助手要能回答现在的新功能（对话模式 / 热更新与启动画面 / 思考强度 / 缓存命中）
+  it('手册覆盖新功能：对话模式、热更新与启动画面、思考强度、缓存命中', () => {
+    for (const s of ['对话模式（演出视图）', '同一本书的两个视图', '回到最下面',
+      '网页包热更新', '启动画面', '打开就是新版', '稍后',
+      '思考与正文共用同一份输出额度', '额度被思考吃满',
+      '缓存命中', '各存各的']) {
+      expect(ASSISTANT_SYSTEM, s).toContain(s);
+    }
   });
 });
 

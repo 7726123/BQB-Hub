@@ -155,7 +155,7 @@ export const UsageStats = {
             <div class="stat-cell hl-primary"><div class="st-label">缓存命中</div><div class="st-value">${overallHitRate}<span class="st-unit">%</span></div></div>
             <div class="stat-cell"><div class="st-label">输出速度</div><div class="st-value">${totalSpeed > 0 ? (totalSpeed >= 100 ? totalSpeed.toFixed(0) : totalSpeed.toFixed(1)) : '—'}<span class="st-unit">tok/s</span></div></div>
           </div>
-          <div class="stat-foot">费用估算：输入 ¥${cfg.priceInput ?? 1}/1M · 缓存 ¥${cfg.priceCached ?? 0.1}/1M · 输出 ¥${cfg.priceOutput ?? 2}/1M（可在「我的 · 模型与密钥」中修改）</div>
+          <div class="stat-foot">费用估算：输入 ¥${cfg.priceInput ?? 1}/1M · 缓存 ¥${cfg.priceCached ?? 0.1}/1M · 输出 ¥${cfg.priceOutput ?? 2}/1M（可在「高级设置 · 模型与密钥」中修改）</div>
         </section>`;
     }
 
