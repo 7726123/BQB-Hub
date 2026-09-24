@@ -17,6 +17,7 @@ import { ProtagonistManager } from './protagonist';
 import { CharacterManager } from './character';
 import { DatabaseManager } from './database';
 import { VariableManager } from '../lib/variables';
+import { autoGrow } from '../lib/inputgrow';
 import { UpdateManager } from './update';
 // 酒馆适配器：必须走模块导入。此前这里读的是 globalThis.TavernAdapter，而 tavern-adapter.ts
 // 从不挂全局（单 bundle 改造后成了纯 ES 模块）→ 拿到的永远是 undefined，
@@ -3763,15 +3764,11 @@ function _bootApp(): void {
     }
   })();
   // QQ 式输入框自动增高（.chat-input-area 内的 textarea：初高 1 行，最多 5 行，超出滚动且始终显示最后一行）
+  // 用 lib/inputgrow 的同一套实现：空值回落 CSS 高度——**空值不能看 scrollHeight**，它含 placeholder
+  // 的折行高度（窄屏实测：空值 94px > 两行正文 70px），否则删光内容后框子还是好几行高。
   document.addEventListener('input', function (e) {
     var ta = e.target;
-    if (ta!.tagName === 'TEXTAREA' && ta!.closest('.chat-input-area')) {
-      ta!.style.height = 'auto';
-      var max = parseInt(getComputedStyle(ta as HTMLElement).maxHeight) || 100;
-      ta!.style.height = Math.min(ta!.scrollHeight, max) + 'px';
-      // 超出上限滚动时，输入过程始终显示最后一行
-      if (ta!.scrollHeight > ta!.clientHeight + 1) ta!.scrollTop = ta!.scrollHeight;
-    }
+    if (ta!.tagName === 'TEXTAREA' && ta!.closest('.chat-input-area')) autoGrow(ta as HTMLTextAreaElement);
   });
   // v1.5.75 起移除：启动时自动导入第三方酒馆预设 TGbreak.json（开源合规，文件已下架）。
   // 存量用户设备里已导入的那份仍在其本地 storage，功能不受影响。

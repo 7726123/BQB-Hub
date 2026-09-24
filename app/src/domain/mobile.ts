@@ -1,5 +1,6 @@
 // MobileUI：侧边栏导航 / 移动端抽屉 / 下拉开合 / 输入框行为（从 www/modules/mobile.js 深度类型化）。
 // 可测纯逻辑：导航视图名 → 面板 tab 名映射。
+import { bindAutoGrow } from '../lib/inputgrow';
 
 // 视图名 → 面板 tab 名（写作视图不进面板）
 export function tabForView(viewName: string): string {
@@ -82,17 +83,9 @@ export const MobileUI: {
           App.sendFromWritingInput?.();
         }
       });
-      input.addEventListener('input', () => {
-        // 自动增高（上限 maxHeight）；超高时滚动策略见下
-        input.style.height = 'auto';
-        const max = parseInt(getComputedStyle(input).maxHeight) || 120;
-        input.style.height = Math.min(input.scrollHeight, max) + 'px';
-        // 只在「光标原本就在末尾」（用户在最后一行追加输入）时才保持滚到最后一行；
-        // 光标在中间（用户上移修改/插入前面内容）时不干预——浏览器默认让光标所在行
-        // 保持可见，强制 scrollTop=scrollHeight 会把光标处顶出视口（滚到最后一排）。
-        const isCursorAtEnd = input.selectionStart != null && input.selectionStart >= (input.value || '').length;
-        if (isCursorAtEnd && input.scrollHeight > input.clientHeight + 1) input.scrollTop = input.scrollHeight;
-      });
+      // 自动增高：与对话模式的输入框共用同一套实现（lib/inputgrow）。以前是两份各自写的代码，
+      // 行为会漂移——对话那边就因为"空值仍看 scrollHeight"在窄屏上删光后还挂着好几行高。
+      bindAutoGrow(input);
     }
     // 发送按钮的点击绑定只有 index.html 里的 onclick 一处。
     // 这里曾再 addEventListener 一次 → 一次点击触发两次 sendFromWritingInput()：

@@ -267,9 +267,10 @@ describe('提示词组装（同一份世界书 + 指定字数）', () => {
     expect(hit).toBeTruthy();
     expect(hit![1].indexOf('「我」')).toBeGreaterThan(-1);
     expect(hit![1].indexOf('主角')).toBe(-1);
-    // chatmode 不再碰 placeholder：以前它把主角名塞进提示语，切到别的书还留着上一本的名字
+    // chatmode 不再**改写**占位符：以前它把主角名塞进提示语，切到别的书还留着上一本的名字
+    // （注释里提到 placeholder 不算，看的是有没有 `placeholder =` 赋值）
     const src = readFileSync(resolve(here, '../src/domain/chatmode.ts'), 'utf8');
-    expect(src.indexOf('placeholder')).toBe(-1);
+    expect(src.indexOf('.placeholder =')).toBe(-1);
   });
 
   it('生成请求：system 带格式块，user 带本轮目标；请求参数用大 max_tokens（推理模型思考会吃额度）', async () => {

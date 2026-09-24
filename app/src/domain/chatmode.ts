@@ -19,6 +19,7 @@ import { SettingSyncManager } from './settingsync';
 import { PluginManager } from './plugins';
 import { parseBubbles, analyzeParse, stripSpeakerPrefixes, NARRATOR } from '../lib/bubble';
 import type { Bubble } from '../lib/bubble';
+import { bindAutoGrow } from '../lib/inputgrow';
 import { chatFormatBlock, chatRoster } from './chatprompt';
 
 export interface ChatMsg {
@@ -801,8 +802,10 @@ export const ChatMode = {
       (stream as any).__bound = true;
       stream.addEventListener('scroll', () => this.onScroll());
     }
-    // 输入框的回车发送与自动增高都在 HTML/boot 层（onkeydown 内联 + boot 里对 .chat-input-area 的委派），
-    // 这里不再重复绑定：重复绑会让一次回车触发两次发送、两处自动增高互相打架。
+    // 输入框自动增高：和写作页共用同一套实现（lib/inputgrow —— 空值不吃 placeholder 的折行高度，
+    // 这是"删光了输入框还是好几行高"的真因）。回车发送仍在 HTML 内联 onkeydown 上，不在这里绑。
+    const ta = document.getElementById('chatInput') as HTMLTextAreaElement | null;
+    if (ta && !(ta as any).__growBound) { (ta as any).__growBound = true; bindAutoGrow(ta); }
     // 选书也不再在这里渲染：两种模式共用顶部的「书名 ▾」，切书由 UIManager.switchWorldBook 调 reload()。
     this.reload();
   },
