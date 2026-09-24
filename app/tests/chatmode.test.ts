@@ -1,7 +1,7 @@
 // 对话模式（domain/chatmode.ts）：按书隔离、提示词组装、流式缓冲、落库与诊断。
 // 覆盖用户明确要求的三件事：① 记录按书分开（切书自动切换、生成途中切书不串台）；
 // ② 两种模式共用同一份世界书（不读小说模式的临时 overlay）；③ 提示词里指定字数（不让 AI 自己分配）。
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
@@ -216,7 +216,12 @@ describe('提示词组装（同一份世界书 + 指定字数）', () => {
   // 二轮整改（2026-09-25）：演出记录改成 append-only 水位线。旧实现取"最后 6000 字"，
   // 块首每轮往后滑一点 → 整个 user 消息（含演出记录）永远 miss（实测真机就是这种情况）。
   describe('演出记录：append-only 水位线（缓存）', () => {
-    const CTX = 6000;
+    // 目标长度在生产里由「模型可用上下文」算出（chatmode._ctxChars）；这里钉死一个小值，
+    // 水位线推进才可断言（否则默认 20 万字上限，攒十几轮根本推不动）。
+    const TARGET = 6000;
+    const origCtxChars = (ChatMode as any)._ctxChars;
+    beforeEach(() => { (ChatMode as any)._ctxChars = () => TARGET; });
+    afterEach(() => { (ChatMode as any)._ctxChars = origCtxChars; });
     it('只追加：上一轮的演出记录是本轮的纯前缀', () => {
       seedBooks();
       setupPreset(null);
@@ -243,7 +248,7 @@ describe('提示词组装（同一份世界书 + 指定字数）', () => {
       const from2 = Number(g.StorageManager.get('chatCtxFrom_' + a, 0));
       expect(from2).toBeGreaterThan(from1);
       expect(ctx1.startsWith(ctx2)).toBe(false);      // 推进那一轮本来就重写（前缀断在这里）
-      expect(ctx2.length).toBeLessThanOrEqual(CTX);
+      expect(ctx2.length).toBeLessThanOrEqual(TARGET);
       // 推进之后又恢复纯追加
       ChatMode.append('ai', '推进之后的新一轮。');
       expect(ChatMode.recentContext().startsWith(ctx2)).toBe(true);
@@ -270,11 +275,38 @@ describe('提示词组装（同一份世界书 + 指定字数）', () => {
       g.StorageManager.set('chatCtxFrom_' + a, 999);   // 比日志还长（模拟撤回后日志变短）→ 夹回 0 再按阈值重算
       const ctx = ChatMode.recentContext();
       expect(ctx.length).toBeGreaterThan(0);
-      expect(ctx.length).toBeLessThanOrEqual(6000);              // 仍受目标长度约束
+      expect(ctx.length).toBeLessThanOrEqual(TARGET);             // 仍受目标长度约束
       const w = Number(g.StorageManager.get('chatCtxFrom_' + a, 0));
       expect(w).toBeGreaterThanOrEqual(0);
       expect(w).toBeLessThanOrEqual(ChatMode.log().length);      // 水位线永远落在日志范围内
       expect(ChatMode.recentContext()).toBe(ctx);                // 稳定：同一水位线 → 字节不变
+    });
+  });
+
+  // 演出记录目标长度：原来写死 6000 字（"上下文只有 20 万 token"时代的遗留），
+  // 2026-09-26 起按「模型可用上下文」算（命中价便宜 50 倍 → 常驻历史几乎免费），
+  // 但留 20 万字上限：大前缀每轮都要重读一遍，实测 35 万 token 的首字延迟 3.8s、1.1 万只要 1.5s。
+  describe('演出记录目标长度：按模型可用上下文算', () => {
+    let prevTokens: any;
+    beforeEach(() => { prevTokens = g.App && g.App._modelContextTokens; });
+    afterEach(() => { if (g.App) g.App._modelContextTokens = prevTokens; });
+
+    it('随上下文放大：小上下文给中等长度，大上下文封顶 20 万字', () => {
+      seedBooks(); setupPreset(null);
+      g.App._modelContextTokens = () => 64000;
+      const small = ChatMode._ctxChars();
+      expect(small).toBeGreaterThanOrEqual(6000);   // 不低于优化前的口径
+      expect(small).toBeLessThan(200000);
+      g.App._modelContextTokens = () => 800000;     // 1M 模型的建议值
+      expect(ChatMode._ctxChars()).toBe(200000);    // 上限（保护首字延迟）
+    });
+
+    it('拿不到预算（老桩/异常）时退回兜底值，不影响出演出', () => {
+      seedBooks(); setupPreset(null);
+      g.App._modelContextTokens = () => { throw new Error('boom'); };
+      expect(ChatMode._ctxChars()).toBe(60000);
+      delete g.App._modelContextTokens;
+      expect(ChatMode._ctxChars()).toBe(60000);
     });
   });
 

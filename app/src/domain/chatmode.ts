@@ -23,6 +23,7 @@ import { bindAutoGrow } from '../lib/inputgrow';
 import { avatarUrl } from '../lib/avatarurl';
 import { UsageStats } from '../lib/usage';
 import { chatFormatBlock, chatRoster } from './chatprompt';
+import { windowFromContext } from '../lib/contextbudget';
 
 export interface ChatMsg {
   id: string;
@@ -36,7 +37,13 @@ export interface ChatMsg {
 }
 
 const RENDER_WINDOW = 120;      // 一次渲染最近多少条（更早的用「载入更早」展开）
-const CTX_CHARS = 6000;         // 上下文里带多少字的最近演出
+// 上下文里带多少字的最近演出：按「模型可用上下文」算（2026-09-26 改，原先写死 6000 字）。
+// 命中价比新输入便宜 50 倍（实测同一 prompt 重发命中 99.9%），常驻历史几乎免费；但大前缀每轮
+// 都要重读一遍——实测 1.1 万 token 的首字延迟 1.5s、35 万 token 涨到 3.8s，所以这里留保守上限
+// 20 万字（≈14 万 token，约 +1 秒），不跟着窗口一路顶到预算。
+const CTX_CHARS_FALLBACK = 60000;
+const CTX_CHARS_HARD_CAP = 200000;
+const CTX_CHARS_MIN = 6000;
 const MAX_LOG = 1200;           // 存储上限（防 localStorage 无限涨）
 const REASONING_HINT = '正在思考…';
 
@@ -630,7 +637,21 @@ export const ChatMode = {
   _msgPiece(m: ChatMsg): string {
     return m.kind === 'ai' ? m.raw : (m.kind === 'author' ? '【作者】' + m.raw : '【作者的指令】' + m.raw);
   },
+  // 演出记录的目标长度（字）：按模型预算算（预算 = 可用上下文 − 系统块 − 世界书 − 尾部）。
+  // 系统块要现算一次（预设 + 原书世界书 + 格式块），失败就退回兜底值。
+  _ctxChars(): number {
+    try {
+      const sys = this.buildSystem().length;
+      const budget = windowFromContext({
+        contextTokens: App._modelContextTokens(),
+        worldBookChars: sys + 4000,   // 系统块 + user 尾部（临时修订/作者/目标）
+      });
+      if (!(budget > 0)) return CTX_CHARS_FALLBACK;
+      return Math.max(CTX_CHARS_MIN, Math.min(budget, CTX_CHARS_HARD_CAP));
+    } catch (e) { return CTX_CHARS_FALLBACK; }
+  },
   recentContext(): string {
+    const target = this._ctxChars();
     const all = this.log();
     let from = Number(smGet(this._ctxFromKey(), 0)) || 0;
     if (!(from >= 0) || from > all.length) from = 0;
@@ -640,10 +661,10 @@ export const ChatMode = {
       return parts.join('\n\n').trim();
     };
     let out = build(from);
-    if (out.length > CTX_CHARS * 1.5) {
+    if (out.length > target * 1.5) {
       // 超阈值：把起点推到"剩下的正好 ≤ 目标长度"，落盘（下一轮从这里开始，又是一次纯追加）
       let f = from;
-      while (f < all.length && build(f).length > CTX_CHARS) f++;
+      while (f < all.length && build(f).length > target) f++;
       if (f > from) { from = f; smSet(this._ctxFromKey(), f); out = build(from); }
     }
     return out;

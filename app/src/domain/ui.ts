@@ -5,7 +5,7 @@ import { SettingSyncManager } from './settingsync';
 import { RegexEngine } from '../lib/regex';
 import { PluginManager } from './plugins';
 import { WorldBookManager, selectInjectableEntries, WB_INJECT_MAX_CHARS } from './worldbook';
-import { normalizeStoryWindow, storyWindowTrigger, estimateTokens, wanChars, STORY_WINDOW_DEFAULT } from '../lib/contextbudget';
+import { normalizeStoryWindow, storyWindowTrigger, estimateTokens, wanChars, windowFromContext } from '../lib/contextbudget';
 import { BookManager } from './book';
 import { ProtagonistManager } from './protagonist';
 import { DatabaseManager } from './database';
@@ -1006,7 +1006,7 @@ const UIManager: UIManagerShape = {
     const el = document.getElementById('ctxBudgetHint');
     if (!el) return;
     try {
-      const win = normalizeStoryWindow(SM().get<any>('storyWindowChars', STORY_WINDOW_DEFAULT));
+      const manual = App._storyWindowChars();
       let wbChars = 0;
       try {
         let entries: any[] = (WorldBookManager.getActive() || {}).entries || [];
@@ -1015,11 +1015,25 @@ const UIManager: UIManagerShape = {
         }
         wbChars = selectInjectableEntries(entries, WB_INJECT_MAX_CHARS).chars;
       } catch (e) { /* 世界书不可读按 0 记 */ }
-      const recall = Number(SM().get<any>('archiveRecallBudget', 30000)) || 0;
+      // 自动窗口：和生成时同一套算法（含本书世界书字号）
+      const win = manual > 0 ? manual : windowFromContext({ contextTokens: App._modelContextTokens(), worldBookChars: wbChars });
+      // 回读只在正文滚过归档后才注入；没滚过时不该算进本轮注入量（否则提示虚高、还会误导用户调小窗口）
+      let rolled = 0;
+      try { rolled = Number((SM().get<any>('wline_' + (WorldBookManager.getActiveId() || 'none'), {}) || {}).x) || 0; }
+      catch (e) { rolled = 0; }
+      const recall = rolled > 0 ? (Number(SM().get<any>('archiveRecallBudget', 10000)) || 0) : 0;
       const total = win + wbChars + recall;
-      el.textContent = '本轮最多注入：正文窗口 ' + wanChars(win) + ' 万 + 世界书 ' + wanChars(wbChars) + ' 万 + 回读 ' + wanChars(recall) +
-        ' 万 ≈ ' + wanChars(total) + ' 万字（≈ ' + wanChars(estimateTokens(total)) + ' 万 token）；正文超过 ' + wanChars(storyWindowTrigger(win)) +
-        ' 万字开始滚入归档（原文保留，可被回读检索）。';
+      // 预算余量：自动窗口永远在预算内；手动填太大时这里明确报警（否则只有请求 400 才暴露）
+      const ctxTokens = App._modelContextTokens();
+      const totalTokens = estimateTokens(total);
+      const over = totalTokens > ctxTokens;
+      el.textContent = '本轮最多注入：正文窗口 ' + wanChars(win) + ' 万' + (manual > 0 ? '（手动）' : '（自动）') +
+        ' + 世界书 ' + wanChars(wbChars) + ' 万' + (recall > 0 ? ' + 回读 ' + wanChars(recall) + ' 万' : '') +
+        ' ≈ ' + wanChars(total) + ' 万字（≈ ' + wanChars(totalTokens) + ' 万 token / 可用 ' + wanChars(ctxTokens) + ' 万）；' +
+        (over
+          ? '⚠️ 已超出可用上下文，请调小窗口或调大上面的「模型可用上下文」。'
+          : '正文超过 ' + wanChars(storyWindowTrigger(win)) + ' 万字开始滚入归档（原文保留，可被回读检索）。');
+      el.style.color = over ? 'var(--accent)' : '';
     } catch (e) { el.textContent = ''; }
   },
 

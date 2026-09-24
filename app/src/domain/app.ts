@@ -11,7 +11,7 @@ import { BODY_MARKER, stripLeadingBodyMarker } from '../lib/think-protocol';
 import { PluginManager } from './plugins';
 import { hasNativeReasoning } from './modelcompat';
 import { WorldBookManager, selectInjectableEntries, WB_INJECT_MAX_CHARS } from './worldbook';
-import { normalizeStoryWindow, storyWindowTrigger, STORY_WINDOW_DEFAULT } from '../lib/contextbudget';
+import { normalizeStoryWindow, storyWindowTrigger, STORY_WINDOW_DEFAULT, STORY_WINDOW_AUTO, MODEL_CONTEXT_DEFAULT, normalizeModelContext, windowFromContext, recallNeeded } from '../lib/contextbudget';
 import { BookManager, parseSampler, normalizeQuotes } from './book';
 import { ProtagonistManager } from './protagonist';
 import { CharacterManager } from './character';
@@ -25,6 +25,13 @@ import { UpdateManager } from './update';
 import * as TavernAdapter from './tavern-adapter';
 import { ClientLog } from './clientlog';
 import { sanitizeEndpointUrl, chatCompletionsUrl } from '../lib/endpoint';
+
+// 价格表默认值（人民币/百万 token）：DeepSeek V4.1 峰时价。
+// 2026-09-26 之前默认是 1 / 0.1 / 2 —— 缓存价按"输入的 10%"填，而真实是 2%（命中便宜 50 倍），
+// 会把用量页里的"常驻大正文"显示得比实际贵得多，进而误导窗口决策。存量里**没被改过**的那份
+// 由下面的一次性迁移换成新默认；用户自己填过的一律不动。
+const PRICE_DEFAULT = { input: 2, cached: 0.04, output: 8 };
+const PRICE_LEGACY = { input: 1, cached: 0.1, output: 2 };
 export interface AppShape {
   [k: string]: any;
   ROLLING?: any;
@@ -454,12 +461,14 @@ const App: AppShape = {
     try { SM().set('smartCheck', false); SM().remove('useSaveAs'); } catch (e) {}
     const _bm25El = document.getElementById('archiveBm25Enabled');
     if (_bm25El) { _bm25El.checked = SM().get<any>('archiveBm25Enabled', true); }
-    // 回读预算（BM25 旧正文注入上限）：默认 30000 字；历史用户无存档值时给默认框值 30000
+    // 回读预算（BM25 旧正文注入上限）：默认 10000 字，且只在正文滚动过后才注入
     const _budgetEl = document.getElementById('archiveRecallBudget');
-    if (_budgetEl) { (_budgetEl as HTMLInputElement).value = String(SM().get<any>('archiveRecallBudget', 30000)); }
-    // 正文窗口（字）：新设置项，默认 5 万字
+    if (_budgetEl) { (_budgetEl as HTMLInputElement).value = String(SM().get<any>('archiveRecallBudget', 10000)); }
+    // 正文窗口（字）：空 = 自动（按模型可用上下文算）
     const _winEl = document.getElementById('storyWindowChars') as HTMLInputElement | null;
-    if (_winEl) _winEl.value = String(App._storyWindowChars());
+    if (_winEl) { const _w = App._storyWindowChars(); _winEl.value = _w > 0 ? String(_w) : ''; }
+    const _ctxEl = document.getElementById('modelContextTokens') as HTMLInputElement | null;
+    if (_ctxEl) _ctxEl.value = String(App._modelContextTokens());
     try { if (typeof UIManager !== 'undefined' && UIManager.renderCtxBudgetHint) UIManager.renderCtxBudgetHint(); } catch (e) { /* ignore */ }
 
     // Max Tokens 设置项已移除（输出上限不再由用户设置，一律按端点能接受的最大值发送）：
@@ -476,6 +485,25 @@ const App: AppShape = {
       if (_ccfg && (_ccfg.maxContextTokens !== undefined || _ccfg.charsPerToken !== undefined)) {
         delete _ccfg.maxContextTokens; delete _ccfg.charsPerToken;
         SM().set('apiConfig', _ccfg);
+      }
+    } catch (e) { /* ignore */ }
+    // 价格表一次性迁移：旧默认 1 / 0.1 / 2（缓存按输入的 10% 估）→ 新默认 2 / 0.04 / 8（DeepSeek 峰时，
+    // 缓存 = 输入的 2%）。只改**恰好等于旧默认**的那份（= 用户从没改过价格）；自己填过的原样保留。
+    try {
+      const _fixed = App.migrateLegacyPrices();
+      if (_fixed > 0) {
+        ClientLog.note('价格表', '默认价格更新为 ' + PRICE_DEFAULT.input + '/' + PRICE_DEFAULT.cached + '/' + PRICE_DEFAULT.output + '（' + _fixed + ' 处）');
+        try { App.applyActiveChannel(); } catch (e) { /* 表单不在时忽略 */ }
+      }
+    } catch (e) { /* 迁移失败不影响启动 */ }
+    // 旧默认窗口（50000，HTML 默认值）→ 自动：留着它就走不到"按模型上下文算"的大窗口。
+    // 用户手填过的其它值不动（见 migrateLegacyStoryWindow 的说明）。
+    try {
+      if (App.migrateLegacyStoryWindow()) {
+        ClientLog.note('记忆', '窗口从旧默认 5 万字切到「自动」（按模型可用上下文算）');
+        const _wEl = document.getElementById('storyWindowChars') as HTMLInputElement | null;
+        if (_wEl) _wEl.value = '';
+        try { if (typeof UIManager !== 'undefined' && UIManager.renderCtxBudgetHint) UIManager.renderCtxBudgetHint(); } catch (e) { /* ignore */ }
       }
     } catch (e) { /* ignore */ }
     // 同步所有开关的状态指示器（.sw-badge 优先；旧行是「标签 span + 尾随徽标 span」，两种都认）
@@ -640,7 +668,7 @@ const App: AppShape = {
         chs = [{
           id: 'ch_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6),
           name: host, endpoint: cfg.endpoint || '', apiKey: cfg.apiKey || '', model: cfg.model || '',
-          priceInput: cfg.priceInput ?? 1, priceCached: cfg.priceCached ?? 0.1, priceOutput: cfg.priceOutput ?? 2,
+          priceInput: cfg.priceInput ?? PRICE_DEFAULT.input, priceCached: cfg.priceCached ?? PRICE_DEFAULT.cached, priceOutput: cfg.priceOutput ?? PRICE_DEFAULT.output,
           recentModels: cfg.model ? [cfg.model] : []
         }];
         this.saveApiChannels(chs);
@@ -683,7 +711,7 @@ const App: AppShape = {
     const ch: any = {
       id: 'ch_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6),
       name: '新供应商', endpoint: '', apiKey: '', model: '',
-      priceInput: 1, priceCached: 0.1, priceOutput: 2, recentModels: []
+      priceInput: PRICE_DEFAULT.input, priceCached: PRICE_DEFAULT.cached, priceOutput: PRICE_DEFAULT.output, recentModels: []
     };
     chs.push(ch);
     this.saveApiChannels(chs);
@@ -758,7 +786,7 @@ const App: AppShape = {
     SM().set('apiConfig', {
       ...cfg,
       endpoint: ch.endpoint || '', apiKey: ch.apiKey || '', model: ch.model || '',
-      priceInput: ch.priceInput ?? 1, priceCached: ch.priceCached ?? 0.1, priceOutput: ch.priceOutput ?? 2
+      priceInput: ch.priceInput ?? PRICE_DEFAULT.input, priceCached: ch.priceCached ?? PRICE_DEFAULT.cached, priceOutput: ch.priceOutput ?? PRICE_DEFAULT.output
     });
   },
 
@@ -771,9 +799,9 @@ const App: AppShape = {
     setV('apiChannelName', ch.name || '');
     setV('apiEndpoint', ch.endpoint || '');
     setV('apiKey', ch.apiKey || '');
-    setV('priceInput', ch.priceInput ?? 1);
-    setV('priceCached', ch.priceCached ?? 0.1);
-    setV('priceOutput', ch.priceOutput ?? 2);
+    setV('priceInput', ch.priceInput ?? PRICE_DEFAULT.input);
+    setV('priceCached', ch.priceCached ?? PRICE_DEFAULT.cached);
+    setV('priceOutput', ch.priceOutput ?? PRICE_DEFAULT.output);
     this.renderChannelSelect();
     this.renderModelSelect(ch.model || '');
     UIManager.populateAPIFields(); // 温度/上下文等参数表单
@@ -1033,8 +1061,10 @@ const App: AppShape = {
     const d = this.getNovelData();
     const protagonist = this.getProtagonist();
     const _charDescChars = 300;
-    // ==== 统一水位线模式（全文模式已移除）：窗口 = 设定值，1.5 倍触发滚动 ====
-    const _storyWin = App._storyWindowChars();
+    // ==== 统一水位线模式（全文模式已移除）：窗口 = 设定值（默认「自动」），1.5 倍触发滚动 ====
+    // 自动窗口由「模型可用上下文」反推，并把本书世界书注入字号算进预算——世界书大的书窗口自然收窄，
+    // 保证「正文 + 世界书 + 其他」始终落在预算内（详见 lib/contextbudget.ts 的实测与成本账）。
+    const _storyWin = App._effectiveStoryWindow(App._injectedWbChars());
     const _wWater = _storyWin;
     const _wTrig = storyWindowTrigger(_storyWin);
 
@@ -1313,7 +1343,9 @@ const App: AppShape = {
     var _recallFresh = '';      // 本轮补充回读（user 尾部，每轮变）
     var _genTrace: any = null;   // 管理员模式留档：本轮召回内容（上报见 _uploadAdminTrace）
     if (typeof ArchiveStore !== 'undefined' && ArchiveStore.initStorage) await ArchiveStore.initStorage();
-    if (ArchiveStore.count() > 0) {
+    // 只有「有正文真的滚进过归档」（窗口左缘 x > 0）才需要回读：没滚过 = 全文都在 prompt 里，
+    // 再注入回读是重复内容，而且回读每轮都按 miss 计费（命中价的 50 倍）——纯亏。
+    if (recallNeeded(ArchiveStore.count(), _win.x)) {
       try {
         var _recallTail = (_rollingText || recentText || '').slice(-2000);
         // 检索信号源：窗口尾部 + 用户指令（意图）+ 稀有实体键 + 窗口分带（新→旧优先级递减）
@@ -1426,7 +1458,9 @@ const App: AppShape = {
         var _usedChars = 0;
         // 回读预算（三条通道共用）：点名锚/直收也必须过闸门——它们的片段可能远大于预算
         // （整块正文时单条可达 8k 字），无条件塞入会挤掉「按分数填充」通道（见 lib/recallgate.ts）
-        var _budget = Number(SM().get('archiveRecallBudget', 30000)) || 30000;
+        // 默认 1 万字（2026-09-26 从 3 万下调）：回读走的是 miss 价，1 万字/轮 ≈ 9.5 元/百万字；
+        // 常驻正文里有全文时它只是质量冗余，只在超出窗口后才注入（见上面的 x > 0 门控）。
+        var _budget = Number(SM().get('archiveRecallBudget', 10000)) || 10000;
         // ① 点名锚（最高优先）：点名词条单独检索，结果前置注入（最多 6 条，且不得超预算，
         //    剩下的预算留给"与当前剧情相关"的窗口回读）
         if (_namedTerms.length > 0 && typeof ArchiveIndex !== 'undefined' && ArchiveIndex.search) {
@@ -2011,11 +2045,10 @@ const stripped = _preProcessed.replace(/^#{1,3}\s+.*(\n|$)/gm, '').trim(); var _
     '主线摘要：[日期] 涉及主角的核心行动与关键剧情归入主线；客观概括（谁、何时、何地、做了什么），严禁心理分析、抽象定性，只记录客观行为与对话核心，禁止主观评论。时间轴对齐：必须从正文中提取具体的日期和时间段；若无明确时间，需根据上下文推断合理的相对时间，保持时间线连贯。\n' +
     '支线摘要：[日期] 仅涉及配角行动、背景事件的归入支线；同样只记录客观行为，谁在场必须记录，防止幽灵角色。',
 
-  // ===== 正文窗口（字）：单一设置，取代旧的「上下文 tokens × 字/token × 50%」 =====
+  // ===== 正文窗口（字）：默认「自动」（按模型可用上下文反推），也可手动固定 =====
   _storyWindowChars() {
     try {
       const v = normalizeStoryWindow(SM().get<any>('storyWindowChars', STORY_WINDOW_DEFAULT));
-      console.log('[Waterline] 正文窗口', v, '字（', storyWindowTrigger(v), '字触发归档）');
       return v;
     } catch (e) { return STORY_WINDOW_DEFAULT; }
   },
@@ -2024,9 +2057,38 @@ const stripped = _preProcessed.replace(/^#{1,3}\s+.*(\n|$)/gm, '').trim(); var _
     const n = normalizeStoryWindow(v);
     try { SM().set('storyWindowChars', n); } catch (e) { /* ignore */ }
     const el = document.getElementById('storyWindowChars') as HTMLInputElement | null;
+    if (el) el.value = n > 0 ? String(n) : '';
+    try { if (typeof UIManager !== 'undefined' && UIManager.renderCtxBudgetHint) UIManager.renderCtxBudgetHint(); } catch (e) { /* ignore */ }
+    return n;
+  },
+  // 模型可用上下文（token）：只用于算窗口，不参与请求。默认 80 万（1M 上下文留边界）
+  _modelContextTokens() {
+    try { return normalizeModelContext(SM().get<any>('modelContextTokens', MODEL_CONTEXT_DEFAULT)); }
+    catch (e) { return MODEL_CONTEXT_DEFAULT; }
+  },
+  setModelContextTokens(v: any) {
+    const n = normalizeModelContext(v);
+    try { SM().set('modelContextTokens', n); } catch (e) { /* ignore */ }
+    const el = document.getElementById('modelContextTokens') as HTMLInputElement | null;
     if (el) el.value = String(n);
     try { if (typeof UIManager !== 'undefined' && UIManager.renderCtxBudgetHint) UIManager.renderCtxBudgetHint(); } catch (e) { /* ignore */ }
     return n;
+  },
+  // 世界书注入字号（与稳定前缀同口径：原书条目里可注入的那些，上限 10 万字）
+  _injectedWbChars(): number {
+    try {
+      const wb = WorldBookManager.getActive();
+      const orig = (wb && wb.entries) || [];
+      return selectInjectableEntries(orig, WB_INJECT_MAX_CHARS).chars;
+    } catch (e) { return 0; }
+  },
+  // 有效窗口：手动值优先；「自动」时按 模型上下文 × 字/token − 世界书 − 杂项（再除以触发倍率）
+  _effectiveStoryWindow(wbChars: any): number {
+    const manual = this._storyWindowChars();
+    const win = manual > 0 ? manual : windowFromContext({ contextTokens: this._modelContextTokens(), worldBookChars: wbChars });
+    console.log('[Waterline] 正文窗口', win, '字' + (manual > 0 ? '（手动）' : '（自动）'),
+      '（', storyWindowTrigger(win), '字触发归档；世界书', Math.round(Number(wbChars) || 0), '字）');
+    return win;
   },
 
   // 事实卡拉取：窗口命中实体 → 数据库对应记录（按主键/别名含任一实体），截断后成行
@@ -2510,17 +2572,68 @@ const stripped = _preProcessed.replace(/^#{1,3}\s+.*(\n|$)/gm, '').trim(); var _
     return cfg;
   },
 
+  // 价格表一次性迁移（返回值 = 改了几处，0 = 无需迁移或已经迁过）。
+  // 只认「恰好等于旧默认」的：用户自己填过价格的渠道一律不动。
+  migrateLegacyPrices(): number {
+    try {
+      if (SM().get<boolean>('_pricesV2', false)) return 0;
+      const _isLegacy = function (o: any): boolean {
+        if (!o) return false;
+        // 一个价格字段都没有 = 还没填过（不是"用旧默认"），交给界面默认值，不动它
+        if (o.priceInput === undefined && o.priceCached === undefined && o.priceOutput === undefined) return false;
+        return Number(o.priceInput ?? PRICE_LEGACY.input) === PRICE_LEGACY.input
+          && Number(o.priceCached ?? PRICE_LEGACY.cached) === PRICE_LEGACY.cached
+          && Number(o.priceOutput ?? PRICE_LEGACY.output) === PRICE_LEGACY.output;
+      };
+      let fixed = 0;
+      const chs = SM().get<any[]>('apiChannels', []);
+      if (Array.isArray(chs)) {
+        chs.forEach(function (c: any) {
+          if (!_isLegacy(c)) return;
+          c.priceInput = PRICE_DEFAULT.input; c.priceCached = PRICE_DEFAULT.cached; c.priceOutput = PRICE_DEFAULT.output;
+          fixed++;
+        });
+        if (fixed > 0) SM().set('apiChannels', chs);
+      }
+      const cfg = SM().get<any>('apiConfig', {});
+      if (_isLegacy(cfg)) {
+        cfg.priceInput = PRICE_DEFAULT.input; cfg.priceCached = PRICE_DEFAULT.cached; cfg.priceOutput = PRICE_DEFAULT.output;
+        SM().set('apiConfig', cfg);
+        fixed++;
+      }
+      SM().set('_pricesV2', true);
+      return fixed;
+    } catch (e) { return 0; }
+  },
+
+  // 旧默认窗口（恰好 5 万字）→ 自动。存量里存着 50000 的几乎都是"从没改过、只是被带上了旧默认"
+  // （HTML 默认 value=50000），留着它就永远走不到按模型上下文自动算的大窗口。
+  // 用户手填过别的值（哪怕是 8 万）一律不动 —— 那是明确选择。
+  migrateLegacyStoryWindow(): boolean {
+    try {
+      if (SM().get<boolean>('_storyWindowAutoV2', false)) return false;
+      const raw = SM().get<any>('storyWindowChars', undefined);
+      SM().set('_storyWindowAutoV2', true);
+      if (Number(raw) !== 50000) return false;
+      SM().remove('storyWindowChars');
+      return true;
+    } catch (e) { return false; }
+  },
+
   getPricingConfig() {
     const cfg = SM().get<any>('apiConfig', {});
     return {
-      input: (cfg.priceInput ?? 1) / 1000000,    // 每百万tokens → 每token
-      cached: (cfg.priceCached ?? 0.1) / 1000000,
-      output: (cfg.priceOutput ?? 2) / 1000000
+      input: (cfg.priceInput ?? 2) / 1000000,    // 每百万tokens → 每token（默认取 DeepSeek 峰时价）
+      cached: (cfg.priceCached ?? 0.04) / 1000000,
+      output: (cfg.priceOutput ?? 8) / 1000000
     };
   },
 
   MODEL_PRICING: {
     // DeepSeek (2026最新，人民币/百万tokens)
+    // V4.1 为峰时价：命中价 = 输入的 2%（命中便宜 50 倍 → 常驻正文远比"回读注入"划算）
+    'deepseek/deepseek-v4.1-flash': { input: 2, cached: 0.04, output: 8 },
+    'deepseek-v4.1-flash':     { input: 2, cached: 0.04, output: 8 },
     'deepseek-chat':           { input: 1, cached: 0.02, output: 2 },
     'deepseek-v4-flash':       { input: 1, cached: 0.02, output: 2 },
     'deepseek-v4-pro':         { input: 3, cached: 0.025, output: 6 },
