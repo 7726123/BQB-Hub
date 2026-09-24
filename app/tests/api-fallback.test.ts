@@ -43,6 +43,35 @@ describe('APIHandler 原生 CORS 降级（_nativeHttpFallback）', () => {
     expect(chunks).toContain('正文一'); // 节流后 onChunk 也被喂
   });
 
+  // 2026-09-26：原生兜底拿到上游 4xx 时，必须报上游真实状态码 + 可读解释，
+  // 不能再用"（端点跨域受限或网络不可达）"盖住——方舟 coding 套餐选到不含的模型会 404
+  // UnsupportedModel，旧提示会让人一直去查网络。
+  it('原生兜底拿到上游 404（模型不在套餐里）→ 报真实状态码 + 中文解释，不再甩锅 CORS', async () => {
+    const body = JSON.stringify({ error: { code: 'UnsupportedModel', message: 'The requested model does not support the coding plan...' } });
+    (anyG as any).Capacitor.Plugins.CapacitorHttp = { request: async () => ({ status: 404, data: body }) };
+    let errMsg = '';
+    await APIHandler.fetchCompletions(
+      [{ role: 'user', content: 'x' }], () => {}, () => {},
+      (e: any) => { errMsg = String(e); },
+      { apiConfig: CFG, timeout: 0, idleTimeout: 0 }
+    );
+    expect(errMsg).toContain('404');
+    expect(errMsg).toContain('UnsupportedModel');
+    expect(errMsg).toContain('不在该端点/套餐里');
+    expect(errMsg).not.toContain('端点跨域受限');
+  });
+
+  it('原生兜底也失败（网络层）→ 仍报原来的跨域提示', async () => {
+    (anyG as any).Capacitor.Plugins.CapacitorHttp = { request: async () => { throw new Error('boom'); } };
+    let errMsg = '';
+    await APIHandler.fetchCompletions(
+      [{ role: 'user', content: 'x' }], () => {}, () => {},
+      (e: any) => { errMsg = String(e); },
+      { apiConfig: CFG, timeout: 0, idleTimeout: 0 }
+    );
+    expect(errMsg).toContain('端点跨域受限或网络不可达');
+  });
+
   it('reasoning 收集进 onDone 第三参', async () => {
     let reasoningOut = '';
     await APIHandler.fetchCompletions(

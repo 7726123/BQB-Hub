@@ -120,20 +120,50 @@ export function createVisibleBudget(start: number, visible: boolean) {
 import { sanitizeEndpointUrl, chatCompletionsUrl, modelsUrl } from '../lib/endpoint';
 export { sanitizeEndpointUrl, chatCompletionsUrl, modelsUrl };
 
-// 代理端口统一解析（原三处复制的三元组收编于此）：window.__PROXY_PORT__（Java 注入）
+// 代理端口统一解析：window.__PROXY_PORT__（Java 注入，每次 Activity 创建时刷新）
+// → localStorage __proxyPort（**原生侧为"页面内重载"持久化的那一份**，见下）
 // → URL ?proxy=（桌面浏览器调试）→ localStorage devProxyPort（旧调试约定）。
+//
+// 为什么要读 __proxyPort（2026-09-26 修）：热更新是"换资源目录 + 页面内重载"，不会重建 Activity，
+// MainActivity 注入的 window.__PROXY_PORT__ 随之丢失；原生侧早就把端口写进 localStorage('__proxyPort')
+// 作为兜底，但这里此前读的键名是 devProxyPort（不一致）→ 兜底永远不生效 → 重载后所有请求绕过本地代理
+// 直连，遇到不放行 Authorization 的 CORS 端点（火山方舟 coding）就报「端点跨域受限」。
 export function resolveProxyPort(): number {
   let _urlProxy = 0;
   try { _urlProxy = parseInt(new URLSearchParams((typeof location !== 'undefined' && location.search) || '').get('proxy') || '0', 10) || 0; } catch (e) { /* ignore */ }
   try {
-    const _dev = (typeof localStorage !== 'undefined' && parseInt(localStorage.getItem('devProxyPort') || '0', 10)) || 0;
-    return pickProxyPort() || _urlProxy || _dev;
+    const _ls = (typeof localStorage !== 'undefined') ? localStorage : null;
+    const _persisted = _ls ? (parseInt(_ls.getItem('__proxyPort') || '0', 10) || 0) : 0;
+    const _dev = _ls ? (parseInt(_ls.getItem('devProxyPort') || '0', 10) || 0) : 0;
+    return pickProxyPort() || _persisted || _urlProxy || _dev;
   } catch (e) { return pickProxyPort() || _urlProxy; }
 }
 
+// 接口失败链路留档（走服务端 client_logs）：记"端点主机 + 模型 + 代理端口 + 是否被改写成代理地址 +
+// 上游状态 + 报错头"，**不含 API Key**（Bearer 一律打码）。为什么要有：方舟 coding 这类端点的失败原因
+// 常常只在客户端可见（CORS / 本地代理没生效 / 套餐不含该模型），用户描述成"端点受限"，靠猜要来回好几轮。
+function _apiFailLog(label: string, status: number, body: string): void {
+  try {
+    const g = globalThis as any;
+    if (!g.ClientLog || !g.ClientLog.note) return;
+    let ep = '', model = '';
+    try {
+      const cfg = (g.PresetManager && g.PresetManager.getActiveAPIConfig && g.PresetManager.getActiveAPIConfig()) || {};
+      ep = String(cfg.endpoint || ''); model = String(cfg.model || '');
+    } catch (e) { /* 拿不到配置就留空 */ }
+    let host = ep;
+    try { host = new URL(ep).host || ep; } catch (e) { /* 非法地址保留原文 */ }
+    const pp = resolveProxyPort();
+    const willProxy = !!(pp && /^https:\/\//i.test(ep));
+    const detail = String(body || '').replace(/Bearer\s+\S+/gi, 'Bearer ***').replace(/\s+/g, ' ').slice(0, 180);
+    g.ClientLog.note('接口', label + ' 失败 | 端点 ' + (host || '(空)') + ' | 模型 ' + (model || '(空)') +
+      ' | 代理端口 ' + (pp || 0) + (willProxy ? '(改写)' : '(直连)') +
+      ' | 状态 ' + (status || '网络层') + ' | ' + detail);
+  } catch (e) { /* 留档失败绝不影响报错 */ }
+}
+
 // ---- 模型兼容判定（modelcompat 纯函数模块，直接 import，见文件头） ----
-function _mc(): any {
-  return ModelCompatAgg;
+function _mc(): any {  return ModelCompatAgg;
 }
 // 运行时安全获取：探测/兼容函数可能未加载（测试环境等）时返回合理默认
 function _resolveMessageCompat(ep: string, model: string): any {
@@ -461,6 +491,8 @@ export const APIHandler = {
 
 
   _toolsSupport: null as boolean | null,  // 线路工具能力探测结果（按 endpoint+model 缓存）
+  // 原生兜底（CapacitorHttp）拿到的上游错误：有它时报真实状态码，而不是把失败一律说成"CORS 受限"
+  _lastFallbackError: null as { status: number; body: string } | null,
   _toolsSupportKey: '',
 
   // 工具能力探测：发一条带 tools 的最小请求，是否返回结构化 tool_calls。
@@ -843,13 +875,19 @@ export const APIHandler = {
         break;
       }
     }
+    const _label = overrides.callLabel || 'generate';
     _clearTimeoutTimer();
     if (_requestError) {
       if (_requestError.name === 'AbortError') {
         if (_timedOut) { _err(_idleTimedOut ? '网络超时（长时间无响应，连接已断开）' : '请求超时 (' + _timeout + 'ms)'); return; }
         else { _done(null, true); return; }
       }
-      if (_requestError.status) { _err('API 请求失败 (' + _requestError.status + '): ' + (_requestError.body || '')); return; }
+      if (_requestError.status) {
+        const _b = String(_requestError.body || '');
+        _apiFailLog('生成(' + _label + ')', _requestError.status, _b);
+        _err('API 请求失败 (' + _requestError.status + '): ' + _b + _mc().explainUpstreamError(_requestError.status, _b));
+        return;
+      }
       // 原生端 CORS 降级：endpoint 无 CORS 头时 WebView fetch 被浏览器拦截（TypeError: Failed to fetch），
       // 改用 CapacitorHttp 原生请求（不受 CORS 限制）。整段 SSE 文本返回后本地分帧、节流喂给同一解析逻辑。
       if (typeof (globalThis as any).Capacitor !== 'undefined' && (globalThis as any).Capacitor.isNativePlatform && (globalThis as any).Capacitor.isNativePlatform()) {
@@ -857,12 +895,21 @@ export const APIHandler = {
           const ok = await this._nativeHttpFallback(url, apiKey, body, onChunk, _done, _resetIdle, overrides, chatCompletionsUrl(apiConfig.endpoint || 'https://api.deepseek.com/v1'));
           if (ok) { this.abortController = null; return; }
         } catch (e) { /* fallback 也失败 → 继续报原网络错误 */ }
+        // 原生兜底拿到的是上游的真实状态码时，报它而不是"CORS 受限"——否则 400/404（模型不在套餐里
+        // 这类参数/权限问题）会被误报成网络问题，用户反复去查网络。
+        const _fb = this._lastFallbackError;
+        if (_fb && _fb.status) {
+          _apiFailLog('生成(' + _label + '，原生兜底)', _fb.status, _fb.body);
+          _err('API 请求失败 (' + _fb.status + '): ' + _fb.body + _mc().explainUpstreamError(_fb.status, _fb.body));
+          return;
+        }
       }
       const _errMsg = String(_requestError.message || _requestError || '');
       // 提示细分：Failed to parse URL 多为地址里混入了空格/全角字符；Failed to fetch 多为端点
       // 跨域策略拦截（如火山方舟 coding 端点的 CORS 不允许 Authorization 头）或网络不可达。
       const _hint = /failed to parse|invalid url/i.test(_errMsg) ? '（API 地址格式有误：请检查是否混入了空格或全角字符）'
         : (/failed to fetch|load failed|networkerror/i.test(_errMsg) ? '（端点跨域受限或网络不可达）' : '');
+      _apiFailLog('生成(' + _label + '，直连失败)', 0, _errMsg);
       _err('网络错误: ' + (_errMsg || _requestError) + _hint);
       return;
     }
@@ -1090,6 +1137,7 @@ export const APIHandler = {
     const Cap = (g.Capacitor && g.Capacitor.Plugins && g.Capacitor.Plugins.CapacitorHttp) || g.CapacitorHttp;
     if (!Cap || !Cap.request) return false;
     console.log('[NativeFallback] 触发原生请求（无 CORS 端点）', url);
+    this._lastFallbackError = null;
     resetIdle();
     let resp: any;
     try {
@@ -1134,6 +1182,7 @@ export const APIHandler = {
     }
     if (!resp || resp.status < 200 || resp.status >= 300) {
       console.warn('[NativeFallback] 非 2xx:', resp && resp.status);
+      this._lastFallbackError = { status: Number(resp && resp.status) || 0, body: String((resp && resp.data) || '').slice(0, 400) };
       return false;
     }
     const text = String(resp.data || '');

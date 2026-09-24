@@ -133,4 +133,21 @@ export function resolveMessageCompat(endpoint: string, modelId: string): Message
 
 // 工具调用后追加的占位 assistant 消息（模型要求 user 不能紧跟 tool 结果）
 export const TOOL_BRIDGE_ASSISTANT_TEXT = 'I have processed the tool results.';
+
+// ---- 上游 4xx 的可读解释 ----
+// 起因（2026-09-26）：火山方舟 coding 套餐（/api/coding/v3）只放行部分模型，
+// 选到不在套餐里的模型时上游回 404 {"code":"UnsupportedModel","message":"The requested model
+// does not support the coding plan..."}，App 只把英文原文抛出来，用户看到的是「端点受限」这种
+// 猜不透的提示，反复以为是网络/CORS 问题。这里按上游错误码补一句中文，原文照旧保留在后面。
+export function explainUpstreamError(status: number, bodyText: string): string {
+  const t = String(bodyText || '');
+  if (/UnsupportedModel/i.test(t)) return '（这个模型不在该端点/套餐里：请在渠道里换一个模型，或换回该端点支持的入口地址）';
+  if (/InvalidEndpointOrModel/i.test(t)) return '（这个模型或入口地址该 key 没权限：核对端点地址与模型名是否搭配）';
+  if (/model[^"]{0,24}(not found|does not exist|not exist)/i.test(t)) return '（模型名不被识别：检查模型 ID 拼写，或从端点支持的模型里选）';
+  if (/InvalidParameter\.Model/i.test(t)) return '（模型参数不被接受：检查模型名与端点搭配）';
+  if (status === 401) return '（API Key 无效或已过期）';
+  if (status === 403) return '（该 key 无权访问这个模型/端点）';
+  if (status === 429) return '（请求过于频繁或额度已用尽）';
+  return '';
+}
 // 挂载已移除（单 bundle 改造 P3-A）：api.ts 直接 import 本模块；modelcompat.js 产物停发
