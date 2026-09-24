@@ -145,9 +145,20 @@ export const ChatMode = {
   protagonistName(): string {
     try { const p = App.getProtagonist(); return (p && p.name) ? String(p.name) : ''; } catch (e) { return ''; }
   },
+  // 别名 → 规范名：不只「我」，还包括主角名的姓/名简写。模型经常用姓或名单独称呼主角
+  // （「温水：」「和彦：」），不认的话这些行会被当成"名单外的新人物"另起一个头像气泡——
+  // 用户报的「对话模式里多出一个角色」就是这么来的。只取前缀/后缀（姓、名），不取中间片段；
+  // 单字太容易误伤，最少两个字；名单里真有同名角色时以名单为准（resolveKnown 先查名单）。
   aliases(): Record<string, string> {
     const p = this.protagonistName();
-    return p ? { '我': p } : {};
+    if (!p) return {};
+    const map: Record<string, string> = { '我': p, '主角': p };
+    const chars = Array.from(p);
+    for (let len = 2; len < chars.length; len++) {
+      map[chars.slice(0, len).join('')] = p;
+      map[chars.slice(chars.length - len).join('')] = p;
+    }
+    return map;
   },
   parseOpts(): { roster: string[]; aliases: Record<string, string> } {
     return { roster: this.roster(), aliases: this.aliases() };
@@ -283,8 +294,12 @@ export const ChatMode = {
       const wb = this.book();
       t.textContent = (wb && (wb.title || wb.name)) || '未命名小说';
     }
-    const btn = document.getElementById('chatSendBtn');
-    if (btn) btn.textContent = this.isSending() ? '停止' : '发送';
+    // 生成中：发送键换成停止键（与写作页同一对：蓝色发送 / 红色停止）
+    const sending = this.isSending();
+    const sendBtn = document.getElementById('chatSendBtn');
+    const stopBtn = document.getElementById('chatStopBtn');
+    if (sendBtn) sendBtn.style.display = sending ? 'none' : 'flex';
+    if (stopBtn) stopBtn.style.display = sending ? 'flex' : 'none';
     const bb = document.getElementById('chatBiqiBtn');
     if (bb) {
       let on = false;
@@ -351,13 +366,12 @@ export const ChatMode = {
         '<div class="chat-bubble">' + blocks + '</div>' +
         '</div></div>';
     });
-    // 尾部状态：截断 / 漂移 / 撤回
+    // 尾部状态：截断 / 漂移。撤回不再挂在气泡上——挪到输入行左侧的 ↩（与写作页一致）
     const flags: string[] = [];
     if (m.truncated) flags.push('这一轮被截断了（模型额度用完）——点「发送」接着往下演');
     if (m.drift) flags.push('这一轮的格式没走对，已按旁白显示');
-    if (m.kind === 'ai' && m.id !== '_streaming') {
-      out += '<div class="chat-actions"><span class="chat-meta">' + esc(m.words ? m.words + ' 字' : '') + '</span>' +
-        '<button class="ghost-btn" onclick="ChatMode.undo(\'' + esc(m.id) + '\')" title="撤回这一轮（输入框里会留下这轮写的要求）">撤回</button></div>';
+    if (m.kind === 'ai' && m.id !== '_streaming' && m.words) {
+      out += '<div class="chat-actions"><span class="chat-meta">' + esc(m.words + ' 字') + '</span></div>';
     }
     if (flags.length) out += '<div class="chat-warn">' + esc(flags.join('　')) + '</div>';
     return out;
@@ -416,9 +430,9 @@ export const ChatMode = {
   isSending(): boolean { return this._sending; },
 
   send(): void {
+    if (this._sending) return;   // 生成中：停止走输入行旁边那颗红色停止键（与写作页一致）
     const ta = document.getElementById('chatInput') as HTMLTextAreaElement | null;
     const text = ta ? String(ta.value || '').trim() : '';
-    if (this._sending) { this.stop(); return; }
     if (ta) { ta.value = ''; ta.style.height = ''; }
     void this.generate(text);
   },
@@ -622,7 +636,16 @@ export const ChatMode = {
     if (bookIdAtStart === this.bookId()) { void this.syncArchive(); this.render(); }
   },
 
-  // 撤回这一轮（和写作页的撤回一致）：本轮的演出记录整条去掉，作者当轮写的要求放回输入框。
+  // 输入行左侧那颗 ↩：撤回最近一轮演出（与写作页的撤回同一个位置、同一套语义）
+  undoLast(): void {
+    const all = this.log();
+    for (let i = all.length - 1; i >= 0; i--) {
+      if (all[i].kind === 'ai') { this.undo(all[i].id); return; }
+    }
+    try { App.toast('还没有可以撤回的演出'); } catch (e) { /* ignore */ }
+  },
+
+  // 撤回指定的一轮（由 undoLast 调用）：本轮的演出记录整条去掉，作者当轮写的要求放回输入框。
   // 输入框里的旧内容会被覆盖前先确认——避免把用户正在打的东西弄丢。
   undo(id: string): void {
     if (this._sending) { try { App.toast('正在生成中，先等这一轮结束'); } catch (e) { /* ignore */ } return; }
@@ -718,22 +741,10 @@ export const ChatMode = {
       (stream as any).__bound = true;
       stream.addEventListener('scroll', () => this.onScroll());
     }
-    const ta = document.getElementById('chatInput') as HTMLTextAreaElement | null;
-    if (ta && !(ta as any).__bound) {
-      (ta as any).__bound = true;
-      ta.addEventListener('keydown', (e: any) => {
-        if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); this.send(); }
-      });
-      ta.addEventListener('input', () => { ta.style.height = 'auto'; ta.style.height = Math.min(140, ta.scrollHeight) + 'px'; });
-    }
-    this._setInputHint();
+    // 输入框的回车发送与自动增高都在 HTML/boot 层（onkeydown 内联 + boot 里对 .chat-input-area 的委派），
+    // 这里不再重复绑定：重复绑会让一次回车触发两次发送、两处自动增高互相打架。
     this.renderBooks();
     this.reload();
-  },
-
-  _setInputHint(): void {
-    const ta = document.getElementById('chatInput') as HTMLTextAreaElement | null;
-    if (ta) ta.placeholder = '写点要求，或直接发一句「' + (this.protagonistName() || '我') + '」的话（留空 = 接着往下演）';
   },
 };
 

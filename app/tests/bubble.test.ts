@@ -149,6 +149,37 @@ describe('真实输出 fixture 回归（格式稳定性）', () => {
   });
 });
 
+// 用户报告：对话模式里"多出一个角色"——主角被当成名单里的第三方角色另开气泡
+// （模型会把主角名的姓/名拆开写，甚至并成「温水与和彦」）。这组用例守住解析层的兜底。
+describe('主角名的简写与并列写法（不再多出一个角色）', () => {
+  const P = {
+    roster: ['八奈见杏菜', '温水和彦'],
+    aliases: { '我': '温水和彦', '温水': '温水和彦', '和彦': '温水和彦' },
+  };
+
+  it('姓/名简写与尊称都归到主角（别名），不是名单外的说话人', () => {
+    for (const label of ['温水', '和彦', '温水君']) {
+      const b = parseBubbles(label + '：我把门推开。', P);
+      expect(b[0].speaker, label).toBe('温水和彦');
+      expect(b[0].known, label).toBe(true);
+    }
+  });
+
+  it('并列写法（温水与和彦）：去掉连接词后能对上名单里的名字 → 同一个人', () => {
+    const b = parseBubbles('温水与和彦：「你也在啊。」', { roster: ['八奈见杏菜', '温水和彦'] });
+    expect(b[0].speaker).toBe('温水和彦');
+    expect(b[0].known).toBe(true);
+    // 名单里没有这个名字时不乱认：仍按名单外说话人渲染（宽容优先，绝不丢字）
+    const c = parseBubbles('小野与千鹤：「一。」', { roster: ['八奈见杏菜'] });
+    expect(c[0].speaker).toBe('小野与千鹤');
+    expect(c[0].known).toBe(false);
+  });
+
+  it('名单里真有同名角色时以名单为准（别名只是兜底，不抢名单）', () => {
+    expect(parseBubbles('温水：我在。', { roster: ['温水', '温水和彦'] })[0].speaker).toBe('温水');
+  });
+});
+
 describe('格式块：名单/主角/字数渲染', () => {
   it('名单来自世界书角色条目 + 主角，去重保序', () => {
     const roster = chatRoster([{ type: '角色', name: '林薇' }, { type: '世界观', name: '学校' }, { type: '角色', name: '林薇' }, { type: '角色', name: '陈亦' }], '林叶');
@@ -160,5 +191,16 @@ describe('格式块：名单/主角/字数渲染', () => {
     expect(blk).toContain('本次输出约 2500 字');
     expect(blk).toContain('个气泡');
     expect(blk).toContain('林叶');
+  });
+  it('主角在名单里带「作者本人·主角」标记，且写明主角=作者、不许分身', () => {
+    const blk = chatFormatBlock({ roster: ROSTER, protagonist: '林叶', lengthWords: 2500 });
+    expect(blk).toContain('林叶（作者本人·主角）');
+    expect(blk).toContain('主角就是作者本人');
+    expect(blk).toContain('主角只有一个人，不许分身');
+    // 没设主角：同一条规则换措辞，且不出现半截标记
+    const blk2 = chatFormatBlock({ roster: ROSTER });
+    expect(blk2).toContain('主角就是作者本人');
+    expect(blk2).not.toContain('作者本人·主角）');
+    expect(blk2).toContain('不要给主角另起名字');
   });
 });

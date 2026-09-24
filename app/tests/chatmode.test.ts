@@ -2,6 +2,9 @@
 // 覆盖用户明确要求的三件事：① 记录按书分开（切书自动切换、生成途中切书不串台）；
 // ② 两种模式共用同一份世界书（不读小说模式的临时 overlay）；③ 提示词里指定字数（不让 AI 自己分配）。
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, resolve } from 'node:path';
 import '../src/infra/storage';
 import { WorldBookManager as WBM } from '../src/domain/worldbook';
 import { PresetManager } from '../src/domain/preset';
@@ -10,6 +13,7 @@ import { SettingSyncManager } from '../src/domain/settingsync';
 import { parseBubbles } from '../src/lib/bubble';
 import { ChatMode } from '../src/domain/chatmode';
 
+const here = dirname(fileURLToPath(import.meta.url));
 const g = globalThis as unknown as Record<string, any>;
 
 // ---- 迷你 DOM（只实现被测代码用到的成员）----
@@ -26,7 +30,7 @@ function makeEl(id: string): any {
 }
 const els: Record<string, any> = {};
 function setupDom() {
-  ['chatStream', 'chatInput', 'chatBookTitle', 'chatSendBtn', 'chatStatus',
+  ['chatStream', 'chatInput', 'chatBookTitle', 'chatSendBtn', 'chatStopBtn', 'chatUndoBtn', 'chatStatus',
     'chatBookSelect', 'chatProfileModal', 'chatProfileBody', 'chatProfileTitle']
     .forEach(id => { els[id] = makeEl(id); if (id === 'chatBookSelect') els[id].innerHTML = ''; });
 }
@@ -211,8 +215,55 @@ describe('提示词组装（同一份世界书 + 指定字数）', () => {
     // 设了主角：名单带主角名，「我」通过别名映射到主角身上
     g.App.getProtagonist = () => ({ name: '林叶' });
     expect(ChatMode.roster()).toEqual(['林薇', '陈亦', '林薇（副）', '林叶']);
-    expect(ChatMode.aliases()).toEqual({ '我': '林叶' });
+    expect(ChatMode.aliases()).toEqual({ '我': '林叶', '主角': '林叶' });
     expect(parseBubbles('我：「谁的。」', ChatMode.parseOpts())[0].speaker).toBe('林叶');
+  });
+
+  // 用户报告：扮演温水和彦时对话里"多出一个角色"——模型用姓/名单独称呼主角（甚至并成
+  // 「温水与和彦」），解析不认 → 当成名单外的新人物另起一个头像气泡。别名把简写收回主角名下。
+  it('主角名的姓/名简写与并列写法都归到主角本人（不再多出一个角色）', () => {
+    seedBooks();
+    setupPreset(1000);
+    g.App.getProtagonist = () => ({ name: '温水和彦' });
+    const opts = ChatMode.parseOpts();
+    expect(ChatMode.aliases()['温水']).toBe('温水和彦');       // 姓
+    expect(ChatMode.aliases()['和彦']).toBe('温水和彦');       // 名
+    for (const label of ['温水', '和彦', '温水君', '温水与和彦', '温水和彦']) {
+      const b = parseBubbles(label + '：我把门推开。', opts);
+      expect(b[0].speaker, label).toBe('温水和彦');
+      expect(b[0].known, label).toBe(true);
+    }
+    // 世界书里真有同名角色时以名单为准（别名只是兜底，不抢名单）
+    const wb = WBM.getAll().find(w => w.id === ChatMode.bookId())!;
+    wb.entries = wb.entries.concat([{ id: 'e9', type: '角色', name: '温水', content: '别的角色。' }]);
+    WBM.saveAll(WBM.getAll());
+    expect(parseBubbles('温水：我在。', ChatMode.parseOpts())[0].speaker).toBe('温水');
+  });
+
+  it('格式块：主角标注「作者本人·主角」，并写明主角=作者、不许分身', () => {
+    seedBooks();
+    setupPreset(1000);
+    g.App.getProtagonist = () => ({ name: '温水和彦' });
+    const sys = ChatMode.buildSystem();
+    expect(sys.indexOf('温水和彦（作者本人·主角）')).toBeGreaterThan(-1);
+    expect(sys.indexOf('主角就是作者本人')).toBeGreaterThan(-1);
+    expect(sys.indexOf('主角只有一个人，不许分身')).toBeGreaterThan(-1);
+    // 没设主角：同样写死「主角=作者的第一人称」，且不给半个名字
+    g.App.getProtagonist = () => null;
+    const sys2 = ChatMode.buildSystem();
+    expect(sys2.indexOf('主角就是作者本人')).toBeGreaterThan(-1);
+    expect(sys2.indexOf('作者本人·主角）')).toBe(-1);
+  });
+
+  it('占位符里不再写具体人名（换书/换世界书后不会误导），也不再由 JS 改写', () => {
+    const html = readFileSync(resolve(here, '../../web/index.html'), 'utf8');
+    const hit = /id="chatInput"[^>]*placeholder="([^"]*)"/.exec(html);
+    expect(hit).toBeTruthy();
+    expect(hit![1].indexOf('「我」')).toBeGreaterThan(-1);
+    expect(hit![1].indexOf('主角')).toBe(-1);
+    // chatmode 不再碰 placeholder：以前它把主角名塞进提示语，切到别的书还留着上一本的名字
+    const src = readFileSync(resolve(here, '../src/domain/chatmode.ts'), 'utf8');
+    expect(src.indexOf('placeholder')).toBe(-1);
   });
 
   it('生成请求：system 带格式块，user 带本轮目标；请求参数用大 max_tokens（推理模型思考会吃额度）', async () => {
@@ -319,12 +370,12 @@ describe('头像与角色简介（自动聚合）', () => {
 });
 
 describe('渲染与流式', () => {
-  it('空记录 → 空状态；有记录 → 气泡 + 撤回按钮；作者戏里的一句靠右', () => {
+  it('空记录 → 空状态；有记录 → 气泡；作者戏里的一句靠右（撤回已不在气泡上）', () => {
     seedBooks();
     setupPreset(1000);
     ChatMode.render();
     expect(els['chatStream'].innerHTML.indexOf('还没有演出记录')).toBeGreaterThan(-1);
-    ChatMode.append('ai', '林薇：「你怎么才来。」\n林叶：我把笔帽扣上。');
+    ChatMode.append('ai', '林薇：「你怎么才来。」\n林叶：我把笔帽扣上。', { words: 21 });
     ChatMode.append('author', '我：「谁的。」');
     ChatMode.append('author', '演到她说出理由');
     ChatMode.render();
@@ -332,14 +383,15 @@ describe('渲染与流式', () => {
     expect(html.indexOf('chat-bubble')).toBeGreaterThan(-1);
     expect(html.indexOf('chat-say')).toBeGreaterThan(-1);
     expect(html.indexOf('chat-act')).toBeGreaterThan(-1);
-    expect(html.indexOf('撤回')).toBeGreaterThan(-1);
-    // 只留撤回：正文 / 重演 / 删除 三个按钮都不再出现
+    // 撤回挪到输入行左侧的 ↩（与写作页一致）：气泡上不再挂按钮
+    expect(html.indexOf('ChatMode.undo(')).toBe(-1);
     expect(html.indexOf('→正文')).toBe(-1);
     expect(html.indexOf('重演')).toBe(-1);
     expect(html.indexOf('删除')).toBe(-1);
     expect(html.indexOf('chat-row-me')).toBeGreaterThan(-1);           // 「我：…」→ 主角气泡靠右
     expect(html.indexOf('演到她说出理由')).toBeGreaterThan(-1);         // 长句要求仍在
     expect(html.indexOf('chat-note')).toBeGreaterThan(-1);             // …但渲染成淡色一行，不是气泡
+    expect(html.indexOf('21 字')).toBeGreaterThan(-1);                  // 字数标签还在
   });
 
   it('旁白不带「白」头像与名字，直接一行淡色文字', () => {
@@ -427,6 +479,35 @@ describe('重演 / 删除 / 换书', () => {
     ChatMode.undo(ChatMode.log()[0].id);
     expect(ChatMode.log()).toHaveLength(0);
     expect(ta.value).toBe('');
+  });
+
+  it('输入行左侧的 ↩（undoLast）：撤回最近一轮，当轮要求回到输入框；没演出时只提示', async () => {
+    seedBooks();
+    setupPreset(1000);
+    ChatMode.undoLast();
+    expect(g.App.toast).toHaveBeenCalled();                 // 没有可撤回的轮次 → 提示，不动记录
+    await ChatMode.generate('第一轮要求');
+    await ChatMode.generate('第二轮要求');
+    expect(ChatMode.log().map(m => m.kind)).toEqual(['author', 'ai', 'author', 'ai']);
+    els['chatInput'].value = '';
+    ChatMode.undoLast();
+    expect(ChatMode.log().map(m => m.raw)).toEqual(['第一轮要求', '林薇：「你怎么才来。」\n林叶：我把笔帽扣上。\n白：天暗了下来。']);
+    expect(els['chatInput'].value).toBe('第二轮要求');
+  });
+
+  it('生成中：发送换成红色停止键（与写作页同一对按钮、同一个位置）', async () => {
+    seedBooks();
+    setupPreset(1000);
+    // 异步返回，抢在回调前看按钮状态
+    (APIHandler as any).fetchCompletions = (msgs: any[], onDelta: any, onOk: any) => {
+      setTimeout(() => { onDelta('林薇：「一。」'); onOk('林薇：「一。」', false, ''); }, 0);
+    };
+    const p = ChatMode.generate('演一段');
+    expect(els['chatSendBtn'].style.display).toBe('none');
+    expect(els['chatStopBtn'].style.display).toBe('flex');
+    await p;
+    expect(els['chatSendBtn'].style.display).toBe('flex');
+    expect(els['chatStopBtn'].style.display).toBe('none');
   });
 
   it('换书改当前书并重载（用真实的 BookManager）', () => {

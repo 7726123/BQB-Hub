@@ -62,6 +62,9 @@ export function normalizeSpeakerName(raw: string): string {
 
 interface SpeakerHit { name: string; known: boolean; rest: string }
 
+// 名字里可能出现的并列连接词（「温水与和彦」= 同一个人拆成姓与名两截）
+const SPEAKER_CONJ = ['与', '和', '＆', '&'];
+
 // 名字能对上名单（或别名/旁白）才算已知——空格/方括号写法用它把关
 function resolveKnown(cand: string, roster: string[], norm: Map<string, string>, aliases: Record<string, string>): string | null {
   const norm0 = normalizeSpeakerName(cand);
@@ -70,6 +73,18 @@ function resolveKnown(cand: string, roster: string[], norm: Map<string, string>,
   if (exact) return exact;
   const alias = aliases[cand] || aliases[norm0];
   if (alias) return alias;
+  // 并列写法（「温水与和彦」这类）：删掉其中**一个**连接词后正好是名单里的名字/别名 → 算同一个人。
+  // 不认这一条的话，名字会被当成"名单外的新人物"另起一个头像气泡——实测用户就是这么看到
+  // 「另一个角色」的（模型把主角名的姓和名用「与」并起来写）。只删一个：名字本身常含「和」
+  // （温水和彦），全删就认不出来了。
+  for (let i = 0; i < norm0.length; i++) {
+    if (SPEAKER_CONJ.indexOf(norm0[i]) < 0) continue;
+    const stripped = norm0.slice(0, i) + norm0.slice(i + 1);
+    const jn = norm.get(stripped);
+    if (jn) return jn;
+    const ja = aliases[stripped];
+    if (ja) return ja;
+  }
   for (const rname of roster) {
     if (cand.length > rname.length && cand.startsWith(rname)) return rname;
   }

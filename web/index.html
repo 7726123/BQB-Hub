@@ -116,13 +116,13 @@ if (window.__PROXY_PORT__ == null) {
   linear-gradient(160deg,#fdeef6 0%,#f7f0fa 48%,#ecf3fb 100%)}
 [data-theme="dream"] #chDropdownBtn{background:linear-gradient(135deg,#fce7f1,#e8f0fa);border:1px solid #f1d9e7}
 [data-theme="dream"] #editor-status{background:rgba(255,251,253,.85)}
-[data-theme="dream"] #writing-input-bar{background:linear-gradient(180deg,rgba(255,251,253,.4),rgba(236,243,251,.75))}
-[data-theme="dream"] #writingInput{background:linear-gradient(180deg,#fffdfe,#fdf5fa)}
-[data-theme="dream"] #btnUndo{background:linear-gradient(135deg,#fdf0f7,#edf3fb)}
-[data-theme="dream"] #writingSendBtn{background:linear-gradient(135deg,#f08cb8 0%,#a9c6e8 100%);border:none;box-shadow:0 4px 16px rgba(214,116,163,.38)}
-[data-theme="dream"] #writingSendBtn:hover{filter:brightness(1.06)}
+[data-theme="dream"] #writing-input-bar,[data-theme="dream"] #chat-input-bar{background:linear-gradient(180deg,rgba(255,251,253,.4),rgba(236,243,251,.75))}
+[data-theme="dream"] #writingInput,[data-theme="dream"] #chatInput{background:linear-gradient(180deg,#fffdfe,#fdf5fa)}
+[data-theme="dream"] #btnUndo,[data-theme="dream"] #chatUndoBtn{background:linear-gradient(135deg,#fdf0f7,#edf3fb)}
+[data-theme="dream"] #writingSendBtn,[data-theme="dream"] #chatSendBtn{background:linear-gradient(135deg,#f08cb8 0%,#a9c6e8 100%);border:none;box-shadow:0 4px 16px rgba(214,116,163,.38)}
+[data-theme="dream"] #writingSendBtn:hover,[data-theme="dream"] #chatSendBtn:hover{filter:brightness(1.06)}
 [data-theme="dream"] button.accent{background:linear-gradient(135deg,#f08cb8,#a9c6e8);border:none}
-[data-theme="dream"] #writingInput:focus,[data-theme="dream"] #titleInput:focus,[data-theme="dream"] textarea:focus{border-color:#a9c6e8;box-shadow:0 0 0 3px rgba(169,198,232,.28)}
+[data-theme="dream"] #writingInput:focus,[data-theme="dream"] #chatInput:focus,[data-theme="dream"] #titleInput:focus,[data-theme="dream"] textarea:focus{border-color:#a9c6e8;box-shadow:0 0 0 3px rgba(169,198,232,.28)}
 [data-theme="dream"] #panel-tabs button.active{background:linear-gradient(135deg,#fce7f1,#e8f0fa)}
 [data-theme="dream"] ::-webkit-scrollbar-thumb{background:#eec3d8}
 [data-theme="dream"] ::-webkit-scrollbar-thumb:hover{background:#e5a9c8}
@@ -241,19 +241,21 @@ label{font-size:13px;color:var(--text-secondary);display:block;margin-bottom:4px
 #editor:focus{outline:none}
 #editor-status{padding:4px 16px;font-size:12px;color:var(--text-muted);background:var(--bg-secondary);border-top:1px solid var(--border);flex-shrink:0}
 
-/* 写作底部输入框（RP-Hub 风格） */
-#writing-input-bar{padding:12px 16px 14px;background:var(--bg-secondary);border-top:1px solid var(--border);flex-shrink:0;box-shadow:0 -1px 0 rgba(0,0,0,0.02)}
-#writing-input-row{display:flex;align-items:flex-end;gap:8px}
-#writingInput{flex:1;background:var(--bg-tertiary);color:var(--text);border:1px solid var(--border);border-radius:14px;padding:11px 14px;font-size:16px;font-family:inherit;line-height:1.5;resize:none;min-height:44px;max-height:calc(5 * 1.5em + 22px);outline:none;box-shadow:inset 0 1px 2px rgba(0,0,0,0.03);transition:all .2s;overflow-y:auto}
-#writingInput:focus{background:var(--bg-secondary);border-color:var(--primary);box-shadow:0 0 0 3px var(--primary-light)}
-#writingInput::placeholder{color:var(--text-muted)}
-#writingSendBtn,#writing-input-bar #btnStop,#writing-input-bar #btnUndo{width:44px;height:44px;border-radius:12px;border:none;cursor:pointer;flex-shrink:0;display:flex;align-items:center;justify-content:center;transition:all .2s}
-#writingSendBtn{background:var(--primary);color:#fff;box-shadow:0 2px 6px rgba(59,111,224,0.3)}
-#writingSendBtn:hover{background:var(--primary-hover);transform:translateY(-1px);box-shadow:0 4px 10px rgba(59,111,224,0.35)}
-#writingSendBtn:active{transform:translateY(0) scale(0.97)}
-#writing-input-bar #btnStop{background:#ef4444;color:#fff}
-#writing-input-bar #btnUndo{background:var(--bg-tertiary);color:var(--text-secondary)}
-#writing-input-bar #btnUndo:hover{background:var(--primary-light);color:var(--primary)}
+/* 写作底部输入框（RP-Hub 风格）；对话模式底部输入条与它同款（同一批选择器，改一处两边同步） */
+#writing-input-bar,#chat-input-bar{padding:12px 16px 14px;background:var(--bg-secondary);border-top:1px solid var(--border);flex-shrink:0;box-shadow:0 -1px 0 rgba(0,0,0,0.02)}
+/* 对话模式的输入条本身还带着 .chat-input-area（boot 里的自动增高委派认这个类），这里覆盖成上下两段式 */
+#chat-input-bar{display:flex;flex-direction:column;gap:0;align-items:stretch}
+#writing-input-row,#chatInputRow{display:flex;align-items:flex-end;gap:8px}
+#writingInput,#chatInput{flex:1;background:var(--bg-tertiary);color:var(--text);border:1px solid var(--border);border-radius:14px;padding:11px 14px;font-size:16px;font-family:inherit;line-height:1.5;resize:none;min-height:44px;max-height:calc(5 * 1.5em + 22px);outline:none;box-shadow:inset 0 1px 2px rgba(0,0,0,0.03);transition:all .2s;overflow-y:auto}
+#writingInput:focus,#chatInput:focus{background:var(--bg-secondary);border-color:var(--primary);box-shadow:0 0 0 3px var(--primary-light)}
+#writingInput::placeholder,#chatInput::placeholder{color:var(--text-muted)}
+#writingSendBtn,#writing-input-bar #btnStop,#writing-input-bar #btnUndo,#chatSendBtn,#chat-input-bar #chatStopBtn,#chat-input-bar #chatUndoBtn{width:44px;height:44px;border-radius:12px;border:none;cursor:pointer;flex-shrink:0;display:flex;align-items:center;justify-content:center;transition:all .2s}
+#writingSendBtn,#chatSendBtn{background:var(--primary);color:#fff;box-shadow:0 2px 6px rgba(59,111,224,0.3)}
+#writingSendBtn:hover,#chatSendBtn:hover{background:var(--primary-hover);transform:translateY(-1px);box-shadow:0 4px 10px rgba(59,111,224,0.35)}
+#writingSendBtn:active,#chatSendBtn:active{transform:translateY(0) scale(0.97)}
+#writing-input-bar #btnStop,#chat-input-bar #chatStopBtn{background:#ef4444;color:#fff}
+#writing-input-bar #btnUndo,#chat-input-bar #chatUndoBtn{background:var(--bg-tertiary);color:var(--text-secondary)}
+#writing-input-bar #btnUndo:hover,#chat-input-bar #chatUndoBtn:hover{background:var(--primary-light);color:var(--primary)}
 
 /* ===== 面板（非写作视图）===== */
 #panel{flex:1;background:var(--bg-secondary);display:flex;flex-direction:column;overflow:hidden}
@@ -1343,13 +1345,18 @@ label{font-size:13px;color:var(--text-secondary);display:block;margin-bottom:4px
           <!-- 比奇面板在对话模式下会挪进 #chatBody（绝对定位，靠父容器定位；顶边锚定=只压住上半屏） -->
           <div id="chatBody">
             <div id="chatStream"></div>
-            <div class="chat-input-area" style="flex-direction:column;align-items:stretch;gap:6px;">
-              <div style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text-muted);">
-                <span id="chatStatus" style="flex:1;min-height:16px;"></span>
-              </div>
-              <div style="display:flex;gap:6px;align-items:flex-end;">
+            <!-- 底部输入条：与写作页同款（↩ 撤回在输入行左侧 / 输入框 / 红色停止 / 蓝色发送图标） -->
+            <div class="chat-input-area" id="chat-input-bar">
+              <div id="chatStatus" style="font-size:13px;color:var(--text-secondary);min-height:18px;margin-bottom:4px;"></div>
+              <div id="chatInputRow">
+                <button id="chatUndoBtn" onclick="ChatMode.undoLast()" title="撤回上一轮演出（输入框里会留下这轮写的要求）" style="font-size:22px;">↩</button>
                 <textarea id="chatInput" rows="1" placeholder="写点要求，或直接发一句「我」的话（留空 = 接着往下演）" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();ChatMode.send()}"></textarea>
-                <button class="primary small" id="chatSendBtn" onclick="ChatMode.send()">发送</button>
+                <button id="chatStopBtn" style="display:none;" onclick="ChatMode.stop()" title="停止生成">
+                  <svg class="ic-20" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                </button>
+                <button id="chatSendBtn" onclick="ChatMode.send()" title="发送">
+                  <svg class="ic-20 rot-90" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"></path></svg>
+                </button>
               </div>
             </div>
           </div>
