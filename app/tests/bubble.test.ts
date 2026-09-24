@@ -29,9 +29,10 @@ describe('气泡解析：说话人前缀的三种写法', () => {
     expect(b).toHaveLength(1);
     expect(b[0].speaker).toBe('林薇');
     expect(b[0].known).toBe(true);
+    // nlBefore 记录"这块在原文里另起一行"：渲染层只按它换行（块之间不再无条件插 <br>）
     expect(b[0].blocks).toEqual([
       { type: 'say', text: '你怎么才来。' },
-      { type: 'act', text: '她把伞收起来。' },
+      { type: 'act', text: '她把伞收起来。', nlBefore: true },
     ]);
   });
 
@@ -52,6 +53,21 @@ describe('气泡解析：说话人前缀的三种写法', () => {
     expect(b[0].speaker).toBe('路人甲');
     expect(b[0].known).toBe(false);
     expect(b).toHaveLength(1);
+  });
+
+  // 叙述里的「XX：」不是说话人（用户报的"非常奇怪的分段"里就有它：叙述被当成新角色开了气泡+头像）
+  it('叙述句不是说话人：带结构助词/副词的候选一律归旁白（她的声音很轻：…）', () => {
+    const b = parseBubbles('她的声音很轻：「记得。」\n他沉默了一会儿：终于开口。', AI);
+    expect(b).toHaveLength(1);
+    expect(b[0].speaker).toBe(null);                       // 旁白，不是「她的声音很轻」这个"角色"
+    expect(b[0].blocks.map(x => x.text).join('|')).toBe('她的声音很轻：|记得。|他沉默了一会儿：终于开口。');
+    expect(b[0].blocks.map(x => x.type)).toEqual(['act', 'say', 'act']);
+  });
+
+  it('名单里的名字不受"叙述"规则影响（即使含这些字也照样认）', () => {
+    const b = parseBubbles('和在：「我是名单里的人。」', { roster: ['和在'] });
+    expect(b[0].speaker).toBe('和在');
+    expect(b[0].known).toBe(true);
   });
 
   it('名字带称呼后缀也能对上（薇薇姐 → 林薇）', () => {
@@ -75,6 +91,21 @@ describe('气泡解析：行内样式与容错', () => {
     expect(b).toHaveLength(1);
     expect(b[0].blocks[0].type).toBe('say');
     expect(b[0].blocks[0].text).toContain('刚才在走廊上就说了。');
+  });
+
+  // 混写的引号（“ 开、" 收）以前不认收尾 → 后面的（动作）和叙述一起被吞进深色台词块
+  // （用户报的"不是语言的部分却用了深色字体"）
+  it('混写引号也认收尾：“您好。"（她鞠了一躬。）', () => {
+    const b = parseBubbles('林薇：“您好。"（她鞠了一躬。）', AI);
+    expect(b[0].blocks).toEqual([
+      { type: 'say', text: '您好。' },
+      { type: 'act', text: '她鞠了一躬。' },
+    ]);
+  });
+
+  it('严格配对优先：嵌套引号仍按原样保留（不因兜底规则被提前截断）', () => {
+    const b = parseBubbles('林薇：「她说『好』。」', AI);
+    expect(b[0].blocks).toEqual([{ type: 'say', text: '她说『好』。' }]);
   });
 
   it('无前缀行归上一个气泡；开头就没有前缀则整段归旁白（speaker=null → 渲染成「白」）', () => {

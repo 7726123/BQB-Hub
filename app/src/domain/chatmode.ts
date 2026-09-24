@@ -422,9 +422,12 @@ export const ChatMode = {
     });
     merged.forEach(b => {
       const speaker = b.speaker === null ? NARRATOR : b.speaker;
-      const blocks = b.blocks.map(x => x.type === 'say'
+      // 块之间**照原文连排**：块只是"台词 / 非语言"的着色边界，不是段落边界——只有原文里真有换行
+      // （解析时记在 nlBefore 上）才换行。以前统一补 <br>，于是「台词，」+ 后半个句子这种行内动作
+      // 会被硬拆成两行，拆出来的第二行还常以标点开头（用户报的"奇怪分段 + 标点在行首"）。
+      const blocks = b.blocks.map((x, i) => (i > 0 && x.nlBefore ? '<br>' : '') + (x.type === 'say'
         ? '<span class="chat-say">' + nl2br(x.text) + '</span>'
-        : '<span class="chat-act">' + nl2br(x.text) + '</span>').join('<br>');
+        : '<span class="chat-act">' + nl2br(x.text) + '</span>')).join('');
       // 旁白：不带「白」头像/名字，直接一行淡色文字（用户反馈：不要那个标签更好看）
       if (speaker === NARRATOR) {
         out += '<div class="chat-narr">' + blocks + '</div>';

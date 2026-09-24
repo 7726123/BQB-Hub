@@ -10,7 +10,7 @@
 //      - 作者输入：引号 = 语言，（）内 = 淡色，裸文本 = 语言（bareIsSay: true）
 //      依据是软件既有的约定（写作页「场景草稿」就是"（）=心理/动作，「」=对话"）。
 
-export interface BubbleBlock { type: 'say' | 'act'; text: string }
+export interface BubbleBlock { type: 'say' | 'act'; text: string; nlBefore?: boolean }
 export interface Bubble {
   speaker: string | null;   // null = 没有明确说话人（渲染成「白」/旁白）
   known: boolean;           // 说话人是否命中当前世界书的角色名单（决定头像与简介是否可点开）
@@ -44,6 +44,10 @@ const MAX_NAME_CP = 8;
 const TITLES = ['小姐', '先生', '女士', '老师', '大人', '同学', '哥哥', '姐姐', '弟弟', '妹妹', '大叔', '阿姨', '夫人', '殿下', '君'];
 // 形如名字但明显不是说话人的词（整行以"注意："开头时不至于开出假气泡）
 const NAME_STOP = new Set(['注意', '提示', '备注', '说明', '规则', '格式', '示例', '例', '注', '旁白', '作者', '导演', '系统', '本章', '总结', '注音', '此时', '这时', '同时', '随后', '于是', '片刻', '接着']);
+// 叙述里「XX：」不是说话人：中文人名不会含这些结构助词/副词，而模型极爱写
+// `她的声音很轻：「记得。」` `他沉默了一会儿：终于开口。` 这类叙述——以前会把「她的声音很轻」
+// 当成一个新角色开气泡（带首字头像），用户看到的"非常奇怪的分段"里就有它。
+const NARRATION_CHARS = /[的了着是在把被很都也又还就才刚再]/;
 
 const LINE_SPEAKER = /^[ \t]*(?:[-*•]\s*)?(?:\*\*|【)?\s*([^：:]{1,16}?)\s*(?:\*\*|】)?\s*[：:]\s?([\s\S]*)$/;
 // 漂移写法（实测 10 次里出现 1 次）：模型用空格代替冒号（`白 她站在讲台前`）。
@@ -103,8 +107,9 @@ function matchSpeaker(line: string, roster: string[], norm: Map<string, string>,
       if (!NAME_STOP.has(cand) && !NAME_STOP.has(norm0)) {
         const known = resolveKnown(cand, roster, norm, aliases);
         if (known) return { name: known, known: true, rest };
-        // 形状像名字的未知说话人：开气泡但不认作已知角色
-        if (Array.from(cand).length <= 6) return { name: cand, known: false, rest };
+        // 形状像名字的未知说话人：开气泡但不认作已知角色（名单里的名字不受这条限制——
+        // 只挡"明显是叙述"的候选，见 NARRATION_CHARS）
+        if (Array.from(cand).length <= 6 && !NARRATION_CHARS.test(cand)) return { name: cand, known: false, rest };
       }
     }
   }
@@ -126,34 +131,53 @@ function matchSpeaker(line: string, roster: string[], norm: Map<string, string>,
 // ---- 行内扫描：把一段文本切成 语言 / 非语言 块（只剥标记，不丢字）----
 
 const SAY_OPEN: Record<string, string> = { '「': '」', '『': '』', '“': '”', '"': '"', '＂': '＂' };
+// 任一收尾引号都算"引号结束"（仅在严格配对的那个收尾符后面不再出现时启用）：
+// 模型常把 “ 和 " 混着写（`“你怎么才来。"`），严格配对时那个 " 不被认作结束，
+// 后面的（动作）与叙述会一起被吞进深色的台词块里——用户报的"不是语言的部分却用了深色字体"。
+const SAY_CLOSE_ANY: Record<string, boolean> = { '」': true, '』': true, '”': true, '"': true, '＂': true };
 
 function scanSegments(text: string, bareIsSay: boolean): BubbleBlock[] {
   const out: BubbleBlock[] = [];
   let buf = ''; let bufType: 'say' | 'act' = bareIsSay ? 'say' : 'act';
   const flush = () => {
     if (!buf) return;
+    // 块文本两端收干净（首尾空白不带进块里），但**记住这块前面原文里有没有换行**：
+    // 渲染层靠 nlBefore 决定要不要 <br>（段落边界来自原文，而不是"块与块之间"）。
+    // 以前两端直接 trim() 把换行吃掉，渲染层再统一补 <br>——于是段落位置来自块的切分，
+    // 行内动作被硬拆行、拆出来的行还会以标点开头（用户报的那两条）。
+    const lead = /^\s*/.exec(buf);
+    const hadNl = !!lead && lead[0].indexOf('\n') >= 0;
     const t = buf.replace(/[ \t]+/g, ' ').trim();
     if (t) {
       const last = out[out.length - 1];
-      if (last && last.type === bufType) last.text += (last.text.endsWith('\n') || t.startsWith('\n') ? '' : '') + t;
-      else out.push({ type: bufType, text: t });
+      if (last && last.type === bufType) last.text += (hadNl ? '\n' : '') + t;
+      else out.push({ type: bufType, text: t, nlBefore: hadNl || undefined });
+    } else if (hadNl && out.length > 0) {
+      out[out.length - 1].text += '\n';   // 只有换行的"空块"（原文里的空行）：保留成段落间隔
     }
     buf = '';
   };
   let mode: 'bare' | 'say' | 'act' = 'bare';
   let close = '';
+  let looseQuoteClose = false;   // true = 任意收尾引号都算结束（见 SAY_CLOSE_ANY）
   for (let i = 0; i < text.length; i++) {
     const ch = text[i];
     if (mode === 'bare') {
       const q = SAY_OPEN[ch];
-      if (q) { flush(); mode = 'say'; close = q; bufType = 'say'; continue; }
-      if (ch === '（' || ch === '(') { flush(); mode = 'act'; close = ch === '（' ? '）' : ')'; bufType = 'act'; continue; }
-      if (ch === '*') { flush(); mode = 'act'; close = '*'; bufType = 'act'; continue; }
+      if (q) {
+        flush(); mode = 'say'; close = q; bufType = 'say';
+        // 严格收尾符在这段文本里不再出现 → 放宽到"任意收尾引号"（混写/漏写收尾的兜底）
+        looseQuoteClose = text.indexOf(q, i + 1) < 0;
+        continue;
+      }
+      if (ch === '（' || ch === '(') { flush(); mode = 'act'; close = ch === '（' ? '）' : ')'; bufType = 'act'; looseQuoteClose = false; continue; }
+      if (ch === '*') { flush(); mode = 'act'; close = '*'; bufType = 'act'; looseQuoteClose = false; continue; }
       buf += ch;
       continue;
     }
-    if (ch === close) { flush(); mode = 'bare'; bufType = bareIsSay ? 'say' : 'act'; continue; }
-    if (close === '"' && ch === '”') { flush(); mode = 'bare'; bufType = bareIsSay ? 'say' : 'act'; continue; }
+    if (ch === close) { flush(); mode = 'bare'; bufType = bareIsSay ? 'say' : 'act'; looseQuoteClose = false; continue; }
+    if (mode === 'say' && looseQuoteClose && SAY_CLOSE_ANY[ch]) { flush(); mode = 'bare'; bufType = bareIsSay ? 'say' : 'act'; looseQuoteClose = false; continue; }
+    if (close === '"' && ch === '”') { flush(); mode = 'bare'; bufType = bareIsSay ? 'say' : 'act'; looseQuoteClose = false; continue; }
     buf += ch;
   }
   flush();
@@ -213,7 +237,9 @@ export function parseBubbles(raw: string, opts: ParseOpts = {}): Bubble[] {
   let cur: { speaker: string | null; known: boolean; text: string } | null = null;
   const flush = () => {
     if (!cur) return;
-    const blocks = scanSegments(cur.text, bareIsSay);
+    // 气泡文本只去掉**首尾**换行（避免气泡开头/结尾多出一个空行）；内部的换行一律保留：
+    // 渲染层不再在块之间插 <br>，段落边界完全由原文决定。
+    const blocks = scanSegments(cur.text.replace(/^\n+|\n+$/g, ''), bareIsSay);
     if (blocks.length) bubbles.push({ speaker: cur.speaker, known: cur.known, blocks });
     cur = null;
   };

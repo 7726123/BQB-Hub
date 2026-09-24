@@ -560,6 +560,23 @@ describe('渲染与流式', () => {
     expect(html.indexOf('21 字')).toBeGreaterThan(-1);                  // 字数标签还在
   });
 
+  // 用户报的"非常奇怪的分段 + 标点跑到行首"：块之间以前用 <br> 连，行内动作会被硬拆成两行，
+  // 拆出来的第二行常以标点开头（「台词」，她笑了 → 第二行是"，她笑了"）。
+  it('块之间照原文连排：不加人工换行，标点不会跑到行首', () => {
+    seedBooks();
+    setupPreset(1000);
+    ChatMode.append('ai', '林薇：「今天的风有点大呢」，她把手插进口袋里。', { words: 20 });
+    ChatMode.append('ai', '林薇：「今天的风有点大呢。」\n她把手插进口袋里。', { words: 20 });
+    ChatMode.render();
+    const html = els['chatStream'].innerHTML;
+    // 行内动作不再插换行（两块直接相邻）
+    expect(html.indexOf('今天的风有点大呢</span><span class="chat-act">，她把手插进口袋里。')).toBeGreaterThan(-1);
+    // 不再出现"标点紧跟在 <br> 之后"的形态
+    expect(/<br>\s*[，。、；：！？]/.test(html)).toBe(false);
+    // 模型自己写的换行仍然换行（nl2br 照旧）
+    expect(html.indexOf('今天的风有点大呢。</span><br><span class="chat-act">她把手插进口袋里。')).toBeGreaterThan(-1);
+  });
+
   // 用户反馈：第一轮一点发送就挂一段「（这一轮没有内容）」，看着像这一轮白跑了。
   // 真相：那是**流式占位**——推理模型先思考几十秒，这段时间正文还没吐出来；不是空回复。
   it('流式占位显示思考状态，不是「这一轮没有内容」', () => {
