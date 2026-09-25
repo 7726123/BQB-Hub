@@ -85,7 +85,7 @@ describe('气泡解析：行内样式与容错', () => {
     const b = parseBubbles('林薇：（她笑了一下）*把信推过来*「你拿着。」', AI);
     expect(b[0].blocks).toEqual([
       { type: 'act', text: '她笑了一下把信推过来' },
-      { type: 'say', text: '你拿着。' },
+      { type: 'say', text: '你拿着。', para: true },      // 说话/非说话 → 分段
     ]);
   });
 
@@ -102,7 +102,7 @@ describe('气泡解析：行内样式与容错', () => {
     const b = parseBubbles('林薇：“您好。"（她鞠了一躬。）', AI);
     expect(b[0].blocks).toEqual([
       { type: 'say', text: '您好。' },
-      { type: 'act', text: '她鞠了一躬。' },
+      { type: 'act', text: '她鞠了一躬。', para: true },
     ]);
   });
 
@@ -138,7 +138,7 @@ describe('作者输入解析（bareIsSay + （）=淡色 + 默认说话人）', 
     expect(b[0].speaker).toBe('林叶');
     expect(b[0].blocks).toEqual([
       { type: 'say', text: '哈？你在说什么啊！' },
-      { type: 'act', text: '站起来。完全听不明白他在说什么！' },
+      { type: 'act', text: '站起来。完全听不明白他在说什么！', para: true },   // 说话/非说话 → 分段
     ]);
   });
   it('整行被一对括号包住时剥掉最外层（用户习惯写法）', () => {
@@ -168,11 +168,11 @@ describe('漂移兜底：台词分色与旁白另起（真机反馈）', () => {
     expect(b[0].blocks).toEqual([{ type: 'say', text: '别拆。' }]);
   });
 
-  it('正常格式（有引号）里的行内叙述不受影响，仍按淡色', () => {
+  it('正常格式（有引号）里的行内叙述仍按淡色，只是与台词分段', () => {
     const b = parseBubbles('林薇：「林叶。」她没回头。', AI);
     expect(b[0].blocks).toEqual([
       { type: 'say', text: '林叶。' },
-      { type: 'act', text: '她没回头。' },
+      { type: 'act', text: '她没回头。', para: true },
     ]);
   });
 
@@ -185,7 +185,7 @@ describe('漂移兜底：台词分色与旁白另起（真机反馈）', () => {
     const b = parseBubbles('林薇 我替人送的。（她笑了一下）', AI);
     expect(b[0].blocks).toEqual([
       { type: 'say', text: '我替人送的。' },
-      { type: 'act', text: '她笑了一下' },
+      { type: 'act', text: '她笑了一下', para: true },
     ]);
   });
 
@@ -207,6 +207,91 @@ describe('漂移兜底：台词分色与旁白另起（真机反馈）', () => {
     const b = parseBubbles('白：走廊里没人。\n灯还在响。', AI);
     expect(b.map(x => x.speaker)).toEqual([NARRATOR]);
     expect(b[0].blocks[0].text.replace(/\n/g, '')).toBe('走廊里没人。灯还在响。');
+  });
+
+  it('第一人称的身体动作/操作是叙述（我把信封翻过来。/ 我抬头。）', () => {
+    expect(parseBubbles('林叶 我把信封翻过来。背面空的，封口用胶水粘的，边上有点毛。', AI)[0].blocks.map(x => x.type)).toEqual(['act']);
+    expect(parseBubbles('林叶 我抬头。', AI)[0].blocks.map(x => x.type)).toEqual(['act']);
+    // 有第二人称 / 祈使词时不降级——那是说话（把台词判成淡色是更严重的错）
+    expect(parseBubbles('林薇 你把信给我。', AI)[0].blocks.map(x => x.type)).toEqual(['say']);
+    expect(parseBubbles('林薇 别把这事说出去。', AI)[0].blocks.map(x => x.type)).toEqual(['say']);
+  });
+});
+
+// 用户 2026-09-25：「现在有部分非对话内容也用了深色……很多时候引号内部并不一定是对话内容」。
+// 书名/歌名/标语/被强调的词/黑板上写的字都会用「」，它们属于旁白，不该染台词色。
+describe('引号里的非对话内容归旁白（真机反馈）', () => {
+  const types = (raw: string) => parseBubbles(raw, AI)[0].blocks.map(x => x.type);
+
+  it('被强调的词（她把「就一次」说得很重）→ 淡色，且不与旁白分段', () => {
+    const b = parseBubbles('白：她把「就一次」说得很重，重得像在给我划界限。', AI);
+    expect(b[0].blocks).toEqual([{ type: 'act', text: '她把就一次说得很重，重得像在给我划界限。' }]);
+  });
+
+  it('歌名 / 招牌上写的字 / 叫法 都不算台词', () => {
+    expect(types('林薇：她哼起了「四季」的调子。')).toEqual(['act']);
+    expect(types('白：牌子上写着「禁止入内」。')).toEqual(['act']);
+    expect(types('白：班里管这个叫做「安静角」。')).toEqual(['act']);
+  });
+
+  it('英文引号里的单个字（最后一个"叶"的捺）也不算台词', () => {
+    expect(parseBubbles('白：最后一个"叶"的捺拖得很长。', AI)[0].blocks)
+      .toEqual([{ type: 'act', text: '最后一个叶的捺拖得很长。' }]);
+  });
+
+  it('有"说"类动词或冒号引导、带句末标点、有第一/二人称时仍然是台词', () => {
+    expect(types('林薇：她说「等一下」就跑了。')).toEqual(['act', 'say', 'act']);
+    expect(types('林薇：「值日表」？')).toEqual(['say']);       // 疑问语气 → 是说话
+    expect(types('林薇：「好。」')).toEqual(['say']);
+    expect(types('林薇：「我知道了。」')).toEqual(['say']);      // 第一人称 → 是说话
+  });
+
+  it('引号漏收尾时，尾部明确的叙述拆成旁白（不再整段吞进深色台词块）', () => {
+    const b = parseBubbles('林薇：「你先别问。\n她把手插回口袋。', AI);
+    expect(b[0].blocks).toEqual([
+      { type: 'say', text: '你先别问。' },
+      { type: 'act', text: '她把手插回口袋。', nlBefore: true },
+    ]);
+  });
+
+  it('旁白（白）气泡里不出现台词块——真机两份 fixture 全量核对', () => {
+    for (const name of ['chat-output-colon.txt', 'chat-output-space.txt']) {
+      const narr = parseBubbles(fixture(name), AI).filter(b => b.speaker === NARRATOR);
+      expect(narr.length, name).toBeGreaterThan(0);
+      const bad = narr.filter(b => b.blocks.some(x => x.type === 'say')).map(b => b.blocks.map(x => x.text).join(''));
+      expect(bad, name).toEqual([]);
+    }
+  });
+});
+
+// 用户 2026-09-25：「说话的内容和非说话的内容要分段，不要直接连着」（此前两人连排，同一行里
+// 颜色从深变淡，看着像染色出错）。换行前把下一块开头的标点收进上一块——新行不以标点开头。
+describe('说话与非说话分段（真机反馈）', () => {
+  it('台词 + 行内叙述：叙述另起一行（para），标点收进台词块', () => {
+    const b = parseBubbles('林薇：「风大」，她把手插进口袋里。', AI);
+    expect(b[0].blocks).toEqual([
+      { type: 'say', text: '风大，' },
+      { type: 'act', text: '她把手插进口袋里。', para: true },
+    ]);
+  });
+
+  it('原文里本来就换行的不再加 para（换行仍由 nlBefore 表达）', () => {
+    const b = parseBubbles('林薇：「风大。」\n她把手插进口袋里。', AI);
+    expect(b[0].blocks).toEqual([
+      { type: 'say', text: '风大。' },
+      { type: 'act', text: '她把手插进口袋里。', nlBefore: true },
+    ]);
+  });
+
+  it('被叙述隔开的台词分成三段（真机 fixture 的典型形态）', () => {
+    const b = parseBubbles('林薇：「林叶。」她没回头。「明天他可能不来。你别问我是谁说的。」', AI);
+    expect(b[0].blocks.map(x => x.type)).toEqual(['say', 'act', 'say']);
+    expect(b[0].blocks.map(x => !!(x.nlBefore || x.para))).toEqual([false, true, true]);
+  });
+
+  it('只剩标点的块并进上一块，不留空行（「好」。）', () => {
+    const b = parseBubbles('林薇：「好」。', AI);
+    expect(b[0].blocks).toEqual([{ type: 'say', text: '好。' }]);
   });
 });
 

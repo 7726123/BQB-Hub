@@ -431,10 +431,11 @@ export const ChatMode = {
     });
     merged.forEach(b => {
       const speaker = b.speaker === null ? NARRATOR : b.speaker;
-      // 块之间**照原文连排**：块只是"台词 / 非语言"的着色边界，不是段落边界——只有原文里真有换行
-      // （解析时记在 nlBefore 上）才换行。以前统一补 <br>，于是「台词，」+ 后半个句子这种行内动作
-      // 会被硬拆成两行，拆出来的第二行还常以标点开头（用户报的"奇怪分段 + 标点在行首"）。
-      const blocks = b.blocks.map((x, i) => (i > 0 && x.nlBefore ? '<br>' : '') + (x.type === 'say'
+      // 块之间按原文连排，但**说话与非说话要分段**（2026-09-25 用户："说话的内容和非说话的内容要
+      // 分段，不要直接连着"）：nlBefore = 原文里真有换行，para = 台词/旁白的切换处（解析层加的）。
+      // 以前块之间一律不换行，同一行里颜色突然从深变淡，看着像染色出错；而 1.5.97.36 之前是
+      // 块块都补 <br>（行内动作被硬拆、新行以标点开头）——现在是"只在类型切换处换行 + 标点并入上一块"。
+      const blocks = b.blocks.map((x, i) => (i > 0 && (x.nlBefore || x.para) ? '<br>' : '') + (x.type === 'say'
         ? '<span class="chat-say">' + nl2br(x.text) + '</span>'
         : '<span class="chat-act">' + nl2br(x.text) + '</span>')).join('');
       // 旁白：不带「白」头像/名字，直接一行淡色文字（用户反馈：不要那个标签更好看）

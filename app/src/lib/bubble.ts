@@ -12,8 +12,14 @@
 //   ④ 两条"漂移兜底"（2026-09-24 按真机反馈加的，见各自注释）：
 //      - 整段没有引号的角色气泡（模型忘写引号）→ 逐句分色，台词不再被当成淡色；
 //      - 没写说话人前缀的整行 → 另起一条旁白，不再粘进上一个角色的气泡尾部。
+//   ⑤ 引号里的内容不一定是台词（2026-09-25 用户："很多时候引号内部并不一定是对话内容"）：
+//      书名/歌名/标语/被强调的词/黑板上写的字也会用「」，它们属于旁白。判定见 _demoteQuotedTerms，
+//      只改分色不改字（丢字不变量不受影响）。
+//   ⑥ 说话与非说话分段（2026-09-25 用户："说话的内容和非说话的内容要分段，不要直接连着"）：
+//      相邻的台词块与非语言块之间在渲染上另起一行（para 标记）；换行前把下一块开头的标点
+//      收进上一块，新行不以标点开头（1.5.97.36 用户报过"标点成为一行的第一个"）。
 
-export interface BubbleBlock { type: 'say' | 'act'; text: string; nlBefore?: boolean }
+export interface BubbleBlock { type: 'say' | 'act'; text: string; nlBefore?: boolean; para?: boolean }
 export interface Bubble {
   speaker: string | null;   // null = 没有明确说话人（渲染成「白」/旁白）
   known: boolean;           // 说话人是否命中当前世界书的角色名单（决定头像与简介是否可点开）
@@ -206,13 +212,20 @@ function scanSegments(text: string, bareIsSay: boolean): BubbleBlock[] {
 // 于是台词全变成了旁白色。这里改成：默认按台词（深色）上色，只有明显的第三人称叙述/场景句
 // 仍按旁白（淡色）。**只在整段一个引号都没有时启用**——正常格式里的行内叙述
 // （`「林叶。」她没回头。`）不受影响，仍按淡色。
-const NARR_HEAD = /^(?:他|她|它|祂|他们|她们|它们|祂们|人家|别人|对方|那人|这人|教室|走廊|窗外|门外|门口|外面|屋里|房里|街上|路上|远处|四周|周围|空气|灯光|天色|阳光|月光|声音|人群|后排|前排|台上|台下|桌上|地面|墙角|楼下|楼上|气氛|场面|然后|接着|于是|随后|跟着|随即)/;
+const NARR_HEAD = /^(?:他|她|它|祂|他们|她们|它们|祂们|那人|这人|教室|走廊|窗外|门外|门口|外面|屋里|房里|街上|路上|远处|四周|周围|空气|灯光|天色|阳光|月光|声音|人群|后排|前排|台上|台下|桌上|地面|墙角|楼下|楼上|气氛|场面|然后|接着|于是|随后|跟着|随即)/;
 const SPEECH_MARK = /[我你您咱]|[？！…]|[吧吗呢啊哦呀嘛](?:[。！？…]|$)/;
+// 第一人称的"身体动作/操作"叙述（drift 输出里主角的动作常写成 `我把信封翻过来。` `我抬头。`）：
+// 处置式（把…）与明确的肢体动作词 → 当叙述。只要句子里有第二人称/疑问/语气词/祈使词就不降级——
+// 那是说话（`你把信给我。` `别把这事说出去。`）。把台词判成淡色是用户报过的更严重的错，宁可漏判。
+const ACT_GUARD = /[你您咱]|[？！…～]|[吧吗呢啊哦呀嘛啦嘞]|别|请|喂|嗯|谢谢|对不[起住]/;
+const ACT_POSSESS = /把[^，。！？…]{1,14}/;
+const ACT_BODY = /(?:抬|低|回|点|摇|转)(?:起|下|过|了|着)?(?:了|一下)?(?:头|身|脸|眼)|伸出手|伸手|抬手|收回|掏出|塞回|塞进|捂住?|按住|拍|敲|踢|踩|拎|抱起?|搂|牵|背起|戴上|脱下|解开|系上|打开|关上|收起|翻开|翻到|合上|放下|拿起|抓起|捏住|推开|拉开|走进|走出|回到|停住|愣住|皱眉|叹气|抬眼|垂下|看向|盯着|瞥/;
 
 function looksLikeSpeech(sentence: string): boolean {
   const s = sentence.trim();
   if (!s) return false;
   if (NARR_HEAD.test(s)) return false;
+  if (!ACT_GUARD.test(s) && (ACT_POSSESS.test(s) || ACT_BODY.test(s))) return false;
   if (!SPEECH_MARK.test(s) && s.length >= 18) return false;   // 没有口语标记的长句 → 当叙述
   return true;
 }
@@ -244,6 +257,115 @@ function speechifyAct(text: string, nlBefore?: boolean): BubbleBlock[] {
     const nl = i === 0 ? nlBefore : p.nlBefore;
     if (last && last.type === type) last.text += (nl ? '\n' : '') + p.text;
     else out.push({ type, text: p.text, nlBefore: nl || undefined });
+  });
+  return out;
+}
+
+// ---- 引号里的内容不一定是台词（2026-09-25：用户「很多时候引号内部并不一定是对话内容」）----
+// 书名/歌名/标语/被强调的词/黑板上写的字/牌子上写的字也用引号，它们属于旁白，不该染成台词色：
+//   `白：她把「就一次」说得很重`   `她哼起了「四季」的调子`   `最后一个"叶"的捺拖得很长`
+//   `牌子上写着「禁止入内」`       `班里顿时「安静」了下来`
+// 判定为"引用"（→ 并入旁白淡色）要**同时**满足下面这些条件（宁可漏判也不误判——把台词判成
+// 旁白正是 1.5.98.1 用户报过的错"对话内容却是淡色"，那更严重）：
+//   ① 引号内没有句末标点；② 不长（≤8 字）；
+//   ③ 没有第一/第二人称与语气词（「我知道了」「你好吗」是在说话）；
+//   ④ 引号前面是"书写/命名"类词（写着/叫做/题为…），**或者**同一行里它前后都接着叙述（嵌在句中）；
+//   ⑤ 引号前面不是"说"类动词或冒号（`她说「等一下」` 是在说话，不是引用）。
+const TERM_MAX_CP = 8;
+const TERM_PUNCT = /[。！？…!?～~]/;
+const TERM_PERSON = /[我你您咱]/;
+const TERM_PARTICLE = /[吧吗呢啊哦呀嘛啦嘞]/;
+const TERM_INTERJECTION = /^(?:嗯+|哦+|噢+|啊+|诶+|欸+|喂+|哈+|嘿+|哼+|呀+|哎呀|哎哟|唔+|喔+|唉+)$/;
+// "说"类动词收尾（后面跟的引号是台词）
+const SAY_LEAD = /(?:说|道|问|答|喊|叫|嚷|吼|唱|念|骂|嘟囔|咕哝|低语|开口|回答|反问|追问|补充|重复|自语|心说|心想|暗想|默念)$/;
+// 收尾是「道」但不是"说话"的词（知道/味道/街道…）——不参与上面的判定
+const NOT_SAY_DAO = /(?:知道|味道|街道|难道|一道|大道|走道|通道|地道|门道|厚道)$/;
+// "书写/命名"类词收尾（后面跟的引号是引用：标牌上的字、书名、叫法）
+const WRITE_LEAD = /(?:写着|写下|写了|写道|写在|刻着|印着|贴着|挂着|标着|画着|绣着|记着|登着|题为|叫做|名叫|称为|俗称|字样)$/;
+
+function _isQuotedTerm(text: string, leadAct: string, hasActAfter: boolean): boolean {
+  const t = String(text || '').replace(/\s+/g, '');
+  if (!t || Array.from(t).length > TERM_MAX_CP) return false;
+  if (TERM_PUNCT.test(t)) return false;
+  if (TERM_PERSON.test(t) || TERM_PARTICLE.test(t) || TERM_INTERJECTION.test(t)) return false;
+  const lead = String(leadAct || '').replace(/\s+/g, '');
+  if (lead) {
+    if (WRITE_LEAD.test(lead)) return true;                              // 标牌/书名/叫法 → 引用
+    if (/[：:]$/.test(lead)) return false;                               // 冒号引导 → 台词
+    if (SAY_LEAD.test(lead) && !NOT_SAY_DAO.test(lead)) return false;    // 「她说「等一下」」→ 台词
+  }
+  return !!lead && hasActAfter;                                          // 嵌在叙述句子中间 → 引用
+}
+
+// 把"引用"的台词块降级成旁白块（只改类型，一个字不动）。相邻的引用块会与前后旁白块合并。
+function _demoteQuotedTerms(blocks: ScanBlock[]): ScanBlock[] {
+  const out: ScanBlock[] = [];
+  for (let i = 0; i < blocks.length; i++) {
+    const b = blocks[i];
+    // 只有"引号包出来的台词块"参与判定：裸文本（fromBare）与（）/* 造成的块不动；
+    // 引号内容里本来就有换行的（多行台词）也不动
+    if (b.type !== 'say' || b.fromBare || b.text.indexOf('\n') >= 0) { out.push(b); continue; }
+    const prev = out[out.length - 1];
+    const next = blocks[i + 1];
+    const leadSameLine = !!prev && !b.nlBefore && prev.text.indexOf('\n') < 0;
+    const nextSameLine = !!next && !next.nlBefore && next.text.indexOf('\n') < 0;
+    if (_isQuotedTerm(b.text, leadSameLine && prev ? prev.text : '', nextSameLine)) {
+      out.push({ type: 'act', text: b.text, nlBefore: b.nlBefore, fromBare: b.fromBare });
+    } else out.push(b);
+  }
+  return out;
+}
+
+// ---- 引号一直没闭合时，被吞进台词块的后续行多半是叙述 ----
+// 模型漏写收尾引号（`林薇：「你先别问。\n她把手插回口袋。`），后面所有内容都会算进深色台词块
+// ——用户报的"非对话内容也用了深色"里就有它。只把尾部**明确是叙述**的行拆出来（第三人称/
+// 场景开头、且没有口语标记），多行台词（模型只忘了最后那个」）不受影响：上一行以句末标点
+// 结束时本来就不该再往下接台词。
+const NARR_TAIL = /^(?:他|她|它|祂|他们|她们|它们|祂们|教室|走廊|窗外|门外|门口|外面|屋里|房里|街上|路上|远处|四周|周围|空气|灯光|天色|阳光|月光|声音|人群|桌上|地面|墙角|楼下|楼上|气氛|场面|然后|接着|于是|随后)/;
+const TAIL_SPEECH = /[我你您咱]|[？！…～]|[吧吗呢啊哦呀嘛](?:[。！？…]|$)/;
+
+function _unswallowNarration(blocks: ScanBlock[], open: boolean): ScanBlock[] {
+  if (!open || blocks.length === 0) return blocks;
+  const out = blocks.slice();
+  for (let guard = 0; guard < 20; guard++) {
+    const last = out[out.length - 1];
+    if (!last || last.type !== 'say' || last.fromBare) break;
+    const cut = last.text.lastIndexOf('\n');
+    if (cut < 0) break;
+    const head = last.text.slice(0, cut);
+    const tail = last.text.slice(cut + 1).trim();
+    if (!/[。！？…」』”"]\s*$/.test(head)) break;          // 上一行没说完整 → 台词跨行，不动
+    if (!tail || !NARR_TAIL.test(tail) || TAIL_SPEECH.test(tail)) break;
+    last.text = head.replace(/\s+$/, '');
+    out.push({ type: 'act', text: tail, nlBefore: true, fromBare: true });
+  }
+  return out;
+}
+
+// ---- 说话与非说话分段（2026-09-25 用户："说话的内容和非说话的内容要分段，不要直接连着"）----
+// 台词块与非语言块相邻时，在非语言那一块前面另起一行（para）。以前两者直接连排——同一行里颜色
+// 突然从深变淡，看着像染色出错。换行前把下一块开头的标点收进上一块（`「好」，她转身走了。` 不能让
+// 「，」成为新行的第一个字——那是 1.5.97.36 用户报过的"标点成为一行的第一个"）。
+const LEAD_PUNCT = /^[，。、；：！？…～,.!?;:）)\]】」』”"'’]+/;
+
+function _segmentByType(blocks: BubbleBlock[]): BubbleBlock[] {
+  const out: BubbleBlock[] = [];
+  blocks.forEach(b => {
+    const cur: BubbleBlock = { type: b.type, text: b.text };
+    if (b.nlBefore) cur.nlBefore = true;
+    if (b.para) cur.para = true;
+    const prev = out[out.length - 1];
+    if (prev && prev.type === cur.type) {
+      prev.text += (cur.nlBefore ? '\n' : '') + cur.text;
+      return;
+    }
+    if (prev && !cur.nlBefore) {
+      const m = LEAD_PUNCT.exec(cur.text);
+      if (m) { prev.text += m[0]; cur.text = cur.text.slice(m[0].length); }
+      if (!cur.text) return;              // 只剩标点：并进上一块，不留空行
+      cur.para = true;                    // 说话 / 非说话 → 分段
+    }
+    out.push(cur);
   });
   return out;
 }
@@ -322,12 +444,17 @@ export function parseBubbles(raw: string, opts: ParseOpts = {}): Bubble[] {
     // 渲染层不再在块之间插 <br>，段落边界完全由原文决定。
     const body = cur.text.replace(/^\n+|\n+$/g, '');
     const scanned = _scanRaw(body, bareIsSay);
+    // 引号里的内容不一定是台词（书名/标语/被强调的词…）+ 引号漏收尾时把尾部叙述拆出来：
+    // 作者输入（bareIsSay）不做这两步——作者写引号就是台词，（）里的引号也不会成为台词块。
+    const src: ScanBlock[] = bareIsSay
+      ? scanned.blocks
+      : _unswallowNarration(_demoteQuotedTerms(scanned.blocks), scanned.open);
     // 漂移兜底①：AI 输出、角色气泡、整段一个引号都没有 → 裸文本逐句分色（台词深、叙述淡）。
     // 引号只在"有"的时候才说明模型在正常格式上，（）/* 造成的非语言块不动。
     const speechify = !bareIsSay && !!cur.speaker && cur.speaker !== NARRATOR
       && !/[「」『』“”"]/.test(body);
     const blocks: BubbleBlock[] = [];
-    scanned.blocks.forEach(b => {
+    src.forEach(b => {
       const parts: BubbleBlock[] = (speechify && b.type === 'act' && b.fromBare)
         ? speechifyAct(b.text, b.nlBefore)
         : [{ type: b.type, text: b.text, nlBefore: b.nlBefore }];
@@ -339,7 +466,9 @@ export function parseBubbles(raw: string, opts: ParseOpts = {}): Bubble[] {
         else blocks.push({ type: p.type, text: p.text, nlBefore: p.nlBefore });
       });
     });
-    if (blocks.length) bubbles.push({ speaker: cur.speaker, known: cur.known, blocks });
+    // 说话与非说话分段（para）：台词块与非语言块之间另起一行，标点不收进行首
+    const final = _segmentByType(blocks);
+    if (final.length) bubbles.push({ speaker: cur.speaker, known: cur.known, blocks: final });
     cur = null;
   };
   for (const line of text.split('\n')) {

@@ -618,21 +618,33 @@ describe('渲染与流式', () => {
     expect(html.indexOf('21 字')).toBeGreaterThan(-1);                  // 字数标签还在
   });
 
-  // 用户报的"非常奇怪的分段 + 标点跑到行首"：块之间以前用 <br> 连，行内动作会被硬拆成两行，
-  // 拆出来的第二行常以标点开头（「台词」，她笑了 → 第二行是"，她笑了"）。
-  it('块之间照原文连排：不加人工换行，标点不会跑到行首', () => {
+  // 用户 2026-09-25："说话的内容和非说话的内容要分段，不要直接连着"（此前两人连排，同一行里颜色
+  // 从深变淡，看着像染色出错）；标点不能成为新行的第一个字（1.5.97.36 报过）。
+  it('说话与非说话分段：类型切换处换行，标点跟着台词走不另起行', () => {
     seedBooks();
     setupPreset(1000);
     ChatMode.append('ai', '林薇：「今天的风有点大呢」，她把手插进口袋里。', { words: 20 });
     ChatMode.append('ai', '林薇：「今天的风有点大呢。」\n她把手插进口袋里。', { words: 20 });
     ChatMode.render();
     const html = els['chatStream'].innerHTML;
-    // 行内动作不再插换行（两块直接相邻）
-    expect(html.indexOf('今天的风有点大呢</span><span class="chat-act">，她把手插进口袋里。')).toBeGreaterThan(-1);
+    // 「，」收进台词块，动作另起一行（不再和台词连排）
+    expect(html.indexOf('今天的风有点大呢，</span><br><span class="chat-act">她把手插进口袋里。')).toBeGreaterThan(-1);
     // 不再出现"标点紧跟在 <br> 之后"的形态
     expect(/<br>\s*[，。、；：！？]/.test(html)).toBe(false);
     // 模型自己写的换行仍然换行（nl2br 照旧）
     expect(html.indexOf('今天的风有点大呢。</span><br><span class="chat-act">她把手插进口袋里。')).toBeGreaterThan(-1);
+  });
+
+  // 用户 2026-09-25："现在有部分非对话内容也用了深色……引号内部并不一定是对话内容"。
+  it('引号里的非对话内容（被强调的词/招牌字）渲染成淡色，不拆行', () => {
+    seedBooks();
+    setupPreset(1000);
+    ChatMode.append('ai', '白：她把「就一次」说得很重，重得像在给我划界限。', { words: 20 });
+    ChatMode.render();
+    const html = els['chatStream'].innerHTML;
+    expect(html.indexOf('chat-say')).toBe(-1);                       // 整行没有台词色
+    expect(html.indexOf('她把就一次说得很重')).toBeGreaterThan(-1);   // 也没被拆成多行
+    expect(html.indexOf('<br>')).toBe(-1);
   });
 
   // 用户反馈：第一轮一点发送就挂一段「（这一轮没有内容）」，看着像这一轮白跑了。
