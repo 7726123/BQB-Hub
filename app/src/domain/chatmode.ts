@@ -13,7 +13,7 @@
 // 与小说模式的差异（有意为之）：不走 waterline / 归档回读 / 事实卡（那些的输入是"正文"，见 §13.23）；
 // 上下文的"最近演出"= chatLog 尾部原文，长度要求写在用户消息末尾（实测只写在 system 里会掉到 65–80%）。
 
-import { WorldBookManager, selectInjectableEntries, WB_INJECT_MAX_CHARS } from './worldbook';
+import { WorldBookManager, selectInjectableEntries, WB_INJECT_MAX_CHARS, hasUserNamedEntry } from './worldbook';
 import { PresetManager } from './preset';
 import { APIHandler } from './api';
 import { BookManager } from './book';
@@ -174,16 +174,26 @@ export const ChatMode = {
   // （「温水：」「和彦：」），不认的话这些行会被当成"名单外的新人物"另起一个头像气泡——
   // 用户报的「对话模式里多出一个角色」就是这么来的。只取前缀/后缀（姓、名），不取中间片段；
   // 单字太容易误伤，最少两个字；名单里真有同名角色时以名单为准（resolveKnown 先查名单）。
+  // 「主角」和「user」是同一个人的另外两种写法：卡片常用 user 当主角占位符（2026-09-25 用户
+  // 反馈），模型照抄条目里的 user 写「user：」时，不收敛就会多出一个叫 user 的陌生人气泡。
+  // 没设主角名时全部落到「我」——名单里也是「我」，同一个身份只出现一次（不然「主角：」+「我：」
+  // 会渲染成两条各自靠右的气泡，像两个人）。
   aliases(): Record<string, string> {
     const p = this.protagonistName();
-    if (!p) return {};
-    const map: Record<string, string> = { '我': p, '主角': p };
+    const self = p || '我';
+    const map: Record<string, string> = { '我': self, '主角': self };
+    // 世界书里真有一个叫 User/user 的角色时，user 是正经角色名，不接管
+    if (!this._hasUserEntry()) map['user'] = self;
+    if (!p) return map;
     const chars = Array.from(p);
     for (let len = 2; len < chars.length; len++) {
       map[chars.slice(0, len).join('')] = p;
       map[chars.slice(chars.length - len).join('')] = p;
     }
     return map;
+  },
+  _hasUserEntry(): boolean {
+    try { return hasUserNamedEntry(this._entries()); } catch (e) { return false; }
   },
   parseOpts(): { roster: string[]; aliases: Record<string, string>; narrator?: string } {
     // narrator = 主角：它的气泡里"我…"的长动作句按叙述着色（模型整轮不写引号时的兜底，见 lib/bubble.ts）
@@ -531,6 +541,16 @@ export const ChatMode = {
     return '<div style="text-align:center;font-size:11px;color:var(--text-muted);margin:10px 0 6px;">' + esc(label) + '</div>';
   },
 
+  // 模型偶尔把占位符原样写进输出（`{{user}}：「…」`）：花括号会让解析器不认这行（不是名字形状），
+  // 字面量还会直接显示给读者。渲染前只把**花括号写法**换成名字，正常正文一个字符都不动。
+  _fixMacros(t: string): string {
+    const self = this.protagonistName() || '我';
+    return String(t || '')
+      .replace(/\{\{\s*user\s*\}\}/gi, () => self)
+      .replace(/\{\s*user\s*\}/gi, () => self)
+      .replace(/\{\{\s*char\s*\}\}/gi, () => '其他角色');
+  },
+
   _bubbleHtml(m: ChatMsg): string {
     // 作者的输入：像"戏里的一句"（带引号/括号，或以「我」/角色名打头）就渲染成主角气泡（靠右）；
     // 其余（长句要求、场景说明）渲染成一行淡色文字——不再有「导演」标签，也没有模式切换按钮。
@@ -538,9 +558,10 @@ export const ChatMode = {
       return '<div class="chat-note">' + nl2br(m.raw) + '</div>';
     }
     const name = this.protagonistName() || '我';
+    const raw = this._fixMacros(m.raw);
     // 解析：作者发言按"用户规则"（裸文本=台词、（）=动作），AI 演出按"输出规则"（非引号=淡色）
-    const bubbles: Bubble[] = m.raw.trim()
-      ? parseBubbles(m.raw, m.kind === 'author'
+    const bubbles: Bubble[] = raw.trim()
+      ? parseBubbles(raw, m.kind === 'author'
         ? { ...this.parseOpts(), bareIsSay: true, defaultSpeaker: name }
         : { ...this.parseOpts(), defaultSpeaker: null })
       : [];

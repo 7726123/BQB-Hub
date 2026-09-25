@@ -184,5 +184,11 @@ export function selectInjectableEntries(entries: any[], budgetChars: number): WB
   return { kept: kept, skipped: skipped, chars: used, budget: budget };
 }
 
+// 世界书里有没有**真的叫 user/User** 的条目。有的话 user 是这张卡里的正经角色名，
+// 主角占位符展开（{{user}}/{user}/裸 user）与对话模式的「user → 主角」别名都要让位，不能接管它。
+export function hasUserNamedEntry(entries: Array<{ name?: string }> | null | undefined): boolean {
+  return (entries || []).some(function (e) { return !!e && String((e as any).name || '').trim().toLowerCase() === 'user'; });
+}
+
 // 挂载已移除（单 bundle 改造 P3-B）：13 个消费方 ES import 本模块；worldbook.js 产物停发
 export default WorldBookManager;

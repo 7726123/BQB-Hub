@@ -10,7 +10,7 @@ import { RegexEngine, type RegexRule } from '../lib/regex';
 import { BODY_MARKER, stripLeadingBodyMarker } from '../lib/think-protocol';
 import { PluginManager } from './plugins';
 import { hasNativeReasoning } from './modelcompat';
-import { WorldBookManager, selectInjectableEntries, WB_INJECT_MAX_CHARS } from './worldbook';
+import { WorldBookManager, selectInjectableEntries, WB_INJECT_MAX_CHARS, hasUserNamedEntry } from './worldbook';
 import { normalizeStoryWindow, storyWindowTrigger, STORY_WINDOW_DEFAULT, STORY_WINDOW_AUTO, MODEL_CONTEXT_DEFAULT, normalizeModelContext, windowFromContext, recallNeeded } from '../lib/contextbudget';
 import { BookManager, parseSampler, normalizeQuotes } from './book';
 import { ProtagonistManager } from './protagonist';
@@ -93,6 +93,13 @@ var m: any;
 
 function _expandSTInMessages(messages: any) {
   var vars = _collectSTVars(messages);
+  // 世界书里真有一个叫 User/user 的角色时，user 是这张卡里的正经角色名：裸 user 不展开
+  // （{{user}}/{user} 带花括号，是明确的占位符写法，照旧展开）
+  var _userIsRealName = false;
+  try {
+    var _wbA: any = (typeof WorldBookManager !== 'undefined' && WorldBookManager && WorldBookManager.getActive) ? WorldBookManager.getActive() : null;
+    _userIsRealName = hasUserNamedEntry((_wbA && _wbA.entries) || []);
+  } catch (e) { /* 取书失败：按"没有"处理 */ }
   for (var i = 0; i < messages.length; i++) {
     if (typeof messages[i].content !== 'string') continue;
     var t = messages[i].content;
@@ -115,8 +122,7 @@ function _expandSTInMessages(messages: any) {
     t = t.replace(/\{\{char\}\}/gi, '其他角色');
     // {{user}}/{user} → 主角名（世界书条目/角色卡里的主角占位符）：写卡 agent 按规则原样保留
     // 占位符，落到具体名字只在这一层发生——换主角名后所有条目自动跟着变。
-    // 只认带花括号的两种写法；裸 user 不替换（会误伤英文单词）。函数式替换：名字里含 $ 时
-    // 字符串替换会把 $& 之类当替换模式。
+    // 函数式替换：名字里含 $ 时字符串替换会把 $& 之类当替换模式。
     var _puName = '主角';
     try {
       var _pu = (App && App.getProtagonist) ? App.getProtagonist() : null;
@@ -124,6 +130,14 @@ function _expandSTInMessages(messages: any) {
     } catch (e) { /* App 尚未就绪时退回「主角」 */ }
     t = t.replace(/\{\{\s*user\s*\}\}/gi, function () { return _puName; });
     t = t.replace(/\{\s*user\s*\}/gi, function () { return _puName; });
+    // 裸 user（酒馆卡/预设里也常这么写）只在它是**独立单词**时算占位符：username / user_name /
+    // superuser 这类英文词一个字母都不动（旧实现是在预设 systemPrompt 上 /user/gi 无词边界替换，
+    // 实际写成了带退格字节的坏正则、根本不匹配，2026-09-25 查 user 占位符时一并下线）。
+    // 正文块（作者自己写的原文，可能几万字）不碰：正文里出现英文单词 user 是作者的原文，不是占位符；
+    // 占位符只可能出现在设定/预设里（世界书条目、角色卡、预设模块）。
+    if (!_userIsRealName && t.indexOf('## 正文（历史 + 最新进度') !== 0) {
+      t = t.replace(/(^|[^A-Za-z0-9_])(?:user)(?![A-Za-z0-9_])/gi, function (_: any, pre: any) { return pre + _puName; });
+    }
     // {{random::A|B|C}} → 随机取一个选项
     t = t.replace(/\{\{random::([\s\S]*?)\}\}/gi, function (_: any, opts: any) {
       var arr = opts.split('|').map(function (s: any) { return s.trim(); }).filter(Boolean);
@@ -1043,10 +1057,12 @@ const App: AppShape = {
       }
     }
     if (!systemPrompt) systemPrompt = PresetManager.getActiveSystemPrompt();
-    // Replace {user}/{{user}}/bare user with protagonist name
+    // 预设正文里的 {{user}}/{user} 先展开（带花括号才是明确的占位符写法）；裸 user 交给
+    // _expandSTInMessages 统一处理——词边界（不动 username）与「书里真有叫 user 的角色就不接管」
+    // 两条规则都在那一层，两个模式行为一致。
     const _genProtag = this.getProtagonist();
     const _genProtagName = (_genProtag && _genProtag.name) ? _genProtag.name : '主角';
-    systemPrompt = systemPrompt.replace(/{{user}}/gi, _genProtagName).replace(/{user}/gi, _genProtagName).replace(/user/gi, _genProtagName);
+    systemPrompt = systemPrompt.replace(/\{\{\s*user\s*\}\}/gi, _genProtagName).replace(/\{\s*user\s*\}/gi, _genProtagName);
     let _effectiveSP = systemPrompt;
                 // 思考强度为 off 时：提示词强制禁止思考（对任何模型生效的兜底）
                 if (this.thinkingLevel() === 'off') {

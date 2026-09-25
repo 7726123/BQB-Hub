@@ -6,6 +6,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import { MINIMAL_PRESET_MODULES } from '../src/domain/preset';
+import { WorldBookManager as WBM } from '../src/domain/worldbook';
 
 // 真实 App 模块（import 时会把 App 挂到 globalThis）
 await import('../src/domain/app');
@@ -161,25 +162,63 @@ describe('写作页发送：生成轮次收尾必须复位 isGenerating', () => 
   });
 });
 
-// 主角占位符：世界书条目/角色卡里的 {{user}}/{user} 在发给模型前展开成主角名。
-// 此前只有预设 systemPrompt 走替换（app.ts:988 那一段），而世界书内容是之后才拼进 _stableCtx 的，
-// 从未经过替换——条目里的占位符会以字面量发给模型。写卡 agent 现在按规则原样保留占位符，
-// 落到具体名字全靠这一层，所以这条链路必须有护栏。
-describe('主角占位符 {{user}}/{user} → 主角名（发给模型前展开）', () => {
-  it('世界书条目里的 {{user}}/{user}/{{ user }} 展开为主角名，{{char}} 仍换「其他角色」，裸 user 不动', () => {
+// 主角占位符：世界书条目/角色卡里的 {{user}}/{user} 与**独立单词**的裸 user 在发给模型前
+// 展开成主角名。此前只有预设 systemPrompt 走替换（app.ts 那一段），而世界书内容是之后才拼进
+// _stableCtx 的，从未经过替换——条目里的占位符会以字面量发给模型。写卡 agent 现在按规则原样
+// 保留占位符，落到具体名字全靠这一层，所以这条链路必须有护栏。
+describe('主角占位符 {{user}}/{user}/裸 user → 主角名（发给模型前展开）', () => {
+  it('世界书条目里的 {{user}}/{user}/{{ user }} 展开为主角名，{{char}} 仍换「其他角色」', () => {
     App.getProtagonist = () => ({ name: '陆离' });
     const expand = (G as any)._expandSTInMessages;
     expect(typeof expand).toBe('function');
     const messages: any[] = [
       { role: 'system', content: '### [其他] 初遇\n{{user}} 与 月宫绾音 初次见面，{user} 递上了伞。{{ user }} 的手在抖。' },
-      { role: 'user', content: 'the user said hello（裸 user 不是占位符，不替换）' },
       { role: 'system', content: '{{char}} 对 {{user}} 抱有敌意。' },
     ];
     expand(messages);
     expect(messages[0].content).toContain('陆离 与 月宫绾音 初次见面，陆离 递上了伞。陆离 的手在抖。');
     expect(messages[0].content).not.toContain('{{user}}');
-    expect(messages[1].content).toBe('the user said hello（裸 user 不是占位符，不替换）');
-    expect(messages[2].content).toBe('其他角色 对 陆离 抱有敌意。');
+    expect(messages[1].content).toBe('其他角色 对 陆离 抱有敌意。');
+  });
+
+  // 2026-09-25 用户：「有时候会使用 user 作为占位符」——酒馆卡/预设里裸写 user 是常见写法，
+  // 但对齐成"独立单词才算占位符"：英文长词一个字母都不许动（旧实现写的 /user/gi 无词边界替换
+  // 实际上还是坏正则、根本不匹配，等于没做；现在按行内的 user / User 才展开）。
+  it('裸 user 只在独立单词时展开：username / user_name / superuser 不动', () => {
+    App.getProtagonist = () => ({ name: '陆离' });
+    const expand = (G as any)._expandSTInMessages;
+    const messages: any[] = [
+      { role: 'system', content: '### [其他] 初遇\nuser 是学生会长，User 的同桌是林薇。username=user_name 且 superuser 不动。' },
+    ];
+    expand(messages);
+    expect(messages[0].content).toContain('陆离 是学生会长，陆离 的同桌是林薇。username=user_name 且 superuser 不动。');
+  });
+
+  it('正文块不展开裸 user（那是作者自己写的原文，不是占位符）', () => {
+    App.getProtagonist = () => ({ name: '陆离' });
+    const expand = (G as any)._expandSTInMessages;
+    const messages: any[] = [
+      { role: 'system', content: '## 正文（历史 + 最新进度；最后一段就是接着往下写的位置）\nthe user opened the door.' },
+      { role: 'system', content: '## 世界书条目（必须严格遵守，不得违反）\n### [其他] 初遇\nuser 推开门。' },
+    ];
+    expand(messages);
+    expect(messages[0].content).toContain('the user opened the door.');
+    expect(messages[1].content).toContain('陆离 推开门。');
+  });
+
+  it('世界书里真有叫 User/user 的角色时，裸 user 不展开（那是正经角色名）', () => {
+    App.getProtagonist = () => ({ name: '陆离' });
+    // app.ts 的展开层直接读 WorldBookManager.getActive()——打桩成"这本书里有叫 User 的角色"
+    const orig = WBM.getActive;
+    WBM.getActive = (() => ({ entries: [{ id: 'u1', type: '角色', name: 'User', content: '本书的一个角色。' }] })) as any;
+    try {
+      const expand = (G as any)._expandSTInMessages;
+      const messages: any[] = [{ role: 'system', content: '### [角色] User\nuser 与 陆离 是同桌。' }];
+      expand(messages);
+      expect(messages[0].content).toContain('user 与 陆离 是同桌。');
+    } finally {
+      WBM.getActive = orig;
+    }
   });
 });
 

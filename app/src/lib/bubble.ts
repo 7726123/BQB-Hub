@@ -30,7 +30,7 @@ export interface ParseOpts {
   roster?: string[];         // 角色名单（世界书「角色」条目名 + 主角名）
   bareIsSay?: boolean;       // 裸文本算语言（作者输入 true；AI 输出 false）
   defaultSpeaker?: string | null;  // 无前缀时的归属（作者输入 = 主角名；AI 输出 = null → 白）
-  aliases?: Record<string, string>; // 别名 → 规范名（如 { '我': 主角名 }：第一人称视角下模型会说「我」）
+  aliases?: Record<string, string>; // 别名 → 规范名（如 { '我': 主角名, 'user': 主角名 }：第一人称的「我」、卡片里的 user 占位符都是主角本人）
   narrator?: string;         // 第一人称叙述者（主角）的名字：它的气泡里"我…"的长动作句按叙述着色（见 looksLikeSpeech）
 }
 
@@ -74,18 +74,41 @@ export function normalizeSpeakerName(raw: string): string {
   return s;
 }
 
+// 名字对照表（归一化名 → 名单里的显示名）。**纯拉丁名字**再登记一份小写键：模型把 user / Alice
+// 写成 User / ALICE 也要能落到同一个人（2026-09-25 用户反馈：卡片常用 user 当主角占位符，而主角名
+// 完全自定义）。中文名没有大小写，行为不变。先登记的优先，不被后来的同键覆盖。
+function addNameKey(map: Map<string, string>, name: string, display: string) {
+  const k = normalizeSpeakerName(name);
+  if (!k) return;
+  if (!map.has(k)) map.set(k, display);
+  if (/[A-Za-z]/.test(k) && !/[\u4e00-\u9fa5]/.test(k)) {
+    const lk = k.toLowerCase();
+    if (!map.has(lk)) map.set(lk, display);
+  }
+}
+
+// 查名字（原样 → 去大小写），查不到返回 null
+function lookupName(map: Map<string, string>, cand: string): string | null {
+  const k = normalizeSpeakerName(cand);
+  if (!k) return null;
+  const hit = map.get(k);
+  if (hit) return hit;
+  const lk = k.toLowerCase();
+  return lk === k ? null : (map.get(lk) || null);
+}
+
 interface SpeakerHit { name: string; known: boolean; rest: string }
 
 // 名字里可能出现的并列连接词（「温水与和彦」= 同一个人拆成姓与名两截）
 const SPEAKER_CONJ = ['与', '和', '＆', '&'];
 
 // 名字能对上名单（或别名/旁白）才算已知——空格/方括号写法用它把关
-function resolveKnown(cand: string, roster: string[], norm: Map<string, string>, aliases: Record<string, string>): string | null {
+function resolveKnown(cand: string, roster: string[], norm: Map<string, string>, aliases: Map<string, string>): string | null {
   const norm0 = normalizeSpeakerName(cand);
   if (norm0 === NARRATOR) return NARRATOR;
-  const exact = norm.get(norm0);
+  const exact = lookupName(norm, cand);
   if (exact) return exact;
-  const alias = aliases[cand] || aliases[norm0];
+  const alias = lookupName(aliases, cand);
   if (alias) return alias;
   // 并列写法（「温水与和彦」这类）：删掉其中**一个**连接词后正好是名单里的名字/别名 → 算同一个人。
   // 不认这一条的话，名字会被当成"名单外的新人物"另起一个头像气泡——实测用户就是这么看到
@@ -94,9 +117,9 @@ function resolveKnown(cand: string, roster: string[], norm: Map<string, string>,
   for (let i = 0; i < norm0.length; i++) {
     if (SPEAKER_CONJ.indexOf(norm0[i]) < 0) continue;
     const stripped = norm0.slice(0, i) + norm0.slice(i + 1);
-    const jn = norm.get(stripped);
+    const jn = lookupName(norm, stripped);
     if (jn) return jn;
-    const ja = aliases[stripped];
+    const ja = lookupName(aliases, stripped);
     if (ja) return ja;
   }
   for (const rname of roster) {
@@ -107,7 +130,7 @@ function resolveKnown(cand: string, roster: string[], norm: Map<string, string>,
 
 // 行首说话人：命中名单（或名单里的名字是候选的前缀）才算"已知"；
 // 形状像名字但不在名单里仍然开出气泡（known:false，渲染成首字色块），只是不能点开简介。
-function matchSpeaker(line: string, roster: string[], norm: Map<string, string>, aliases: Record<string, string>): SpeakerHit | null {
+function matchSpeaker(line: string, roster: string[], norm: Map<string, string>, aliases: Map<string, string>): SpeakerHit | null {
   const m = LINE_SPEAKER.exec(line);
   if (m) {
     const cand = String(m[1] || '').trim();
@@ -504,8 +527,12 @@ const emptyReport = (): ParseReport => ({ bubbles: 0, sayChars: 0, actChars: 0, 
 function prepare(opts: ParseOpts) {
   const roster = (opts.roster || []).map(s => String(s || '').trim()).filter(Boolean);
   const norm = new Map<string, string>();
-  roster.forEach(n => { const k = normalizeSpeakerName(n); if (!norm.has(k)) norm.set(k, n); });
-  return { roster, norm, aliases: opts.aliases || {} };
+  roster.forEach(n => addNameKey(norm, n, n));
+  // 别名（我/主角/user → 主角名）：同样登记小写键，模型写 User 也能落到同一个人
+  const aliases = new Map<string, string>();
+  const al = opts.aliases || {};
+  Object.keys(al).forEach(k => { const t = String(al[k] || ''); if (t) addNameKey(aliases, k, t); });
+  return { roster, norm, aliases };
 }
 
 // 整行被一对括号包住时剥掉最外层：作者常用这种写法把一句话整体括起来当"旁白动作"
@@ -587,7 +614,7 @@ export function parseBubbles(raw: string, opts: ParseOpts = {}): Bubble[] {
     const hit = matchSpeaker(line, roster, norm, aliases);
     if (hit) { flush(); cur = { speaker: hit.name, known: hit.known, text: hit.rest }; continue; }
     if (!cur) {
-      cur = { speaker: def, known: def ? norm.has(normalizeSpeakerName(def)) : false, text: '' };
+      cur = { speaker: def, known: def ? !!lookupName(norm, def) : false, text: '' };
     } else if (_splitToNarration(cur, line, bareIsSay)) {
       // 漂移兜底②：模型忘写前缀的旁白另起一条，不再粘进上一个角色的气泡尾部
       flush();
@@ -652,10 +679,9 @@ export function analyzeParse(raw: string, opts: ParseOpts = {}): ParseReport {
   }
   if (total0 > 0 && rep.fallbackChars > total0 * 0.5) rep.notes.push('格式漂移（过半内容没有说话人前缀）');
   if (roster.length) {
-    const norm = new Set(roster.map(normalizeSpeakerName));
-    const alias = opts.aliases || {};
+    const { norm, aliases } = prepare(opts);
     // 「白」是旁白标记不是角色；别名命中的（我→主角）也不算名单外
-    const stray = rep.speakers.filter(s => s !== NARRATOR && !norm.has(normalizeSpeakerName(s)) && !(s in alias));
+    const stray = rep.speakers.filter(s => s !== NARRATOR && !lookupName(norm, s) && !lookupName(aliases, s));
     if (stray.length > 0) rep.notes.push('名单外说话人：' + stray.join('、'));
   }
   return rep;

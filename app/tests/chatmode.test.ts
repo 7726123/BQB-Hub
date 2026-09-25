@@ -376,12 +376,55 @@ describe('提示词组装（同一份世界书 + 指定字数）', () => {
     setupPreset(1000);
     g.App.getProtagonist = () => null;                 // 本例：世界书里没设主角
     expect(ChatMode.roster()).toEqual(['林薇', '陈亦', '林薇（副）', '我']);
-    expect(ChatMode.aliases()).toEqual({});
+    // 没设主角名时，「我」「主角」「user」都是同一个人的写法，统一收敛到「我」：
+    // 不收敛的话模型写「主角：」会多出一条叫「主角」的右侧气泡（同一个人两个身份）
+    expect(ChatMode.aliases()).toEqual({ '我': '我', '主角': '我', 'user': '我' });
+    expect(parseBubbles('主角：「谁的。」', ChatMode.parseOpts())[0].speaker).toBe('我');
     // 设了主角：名单带主角名，「我」通过别名映射到主角身上
     g.App.getProtagonist = () => ({ name: '林叶' });
     expect(ChatMode.roster()).toEqual(['林薇', '陈亦', '林薇（副）', '林叶']);
-    expect(ChatMode.aliases()).toEqual({ '我': '林叶', '主角': '林叶' });
+    expect(ChatMode.aliases()).toEqual({ '我': '林叶', '主角': '林叶', 'user': '林叶' });
     expect(parseBubbles('我：「谁的。」', ChatMode.parseOpts())[0].speaker).toBe('林叶');
+  });
+
+  // 用户 2026-09-25：卡片常用 user 当主角占位符，主角名完全自定义（不在世界书里、或干脆就叫 user）。
+  // 模型把条目里的 user 照抄成说话人时，不能多出一个叫 user 的陌生人气泡。
+  it('user 占位符也是主角：模型写 user：/User：都渲染成主角本人（靠右、不是名单外角色）', () => {
+    seedBooks();
+    setupPreset(1000);
+    g.App.getProtagonist = () => ({ name: '阿柒' });        // 自定义主角名，世界书里没有这个角色
+    expect(parseBubbles('user：「我在食堂等你。」', ChatMode.parseOpts())[0]).toMatchObject({ speaker: '阿柒', known: true });
+    ChatMode.append('ai', 'user：「我在食堂等你。」\nUser：我把伞收起来。\n林薇：「行。」', { words: 30 });
+    ChatMode.render();
+    const html = els['chatStream'].innerHTML;
+    expect(html.indexOf('>user<')).toBe(-1);                 // 不再有叫 user 的说话人
+    expect((html.match(/chat-name">/g) || []).length).toBe(2);   // user/User 合成一条 + 林薇
+    expect((html.match(/chat-row-me/g) || []).length).toBe(1);   // 主角靠右，只出现一次
+    expect((html.match(/chat-name">阿柒<\/div>/g) || []).length).toBe(1);
+  });
+
+  it('世界书里真有叫 User/user 的角色时，user 不当作主角（那是正经角色名）', () => {
+    seedBooks();
+    setupPreset(1000);
+    g.App.getProtagonist = () => ({ name: '阿柒' });
+    const wb = WBM.getAll().find(w => w.id === ChatMode.bookId())!;
+    wb.entries = wb.entries.concat([{ id: 'eU', type: '角色', name: 'User', content: '这是本书里的一个角色。' }]);
+    WBM.saveAll(WBM.getAll());
+    expect(ChatMode.aliases()['user']).toBeUndefined();
+    expect(parseBubbles('User：我在。', ChatMode.parseOpts())[0]).toMatchObject({ speaker: 'User', known: true });
+  });
+
+  // 模型偶尔把占位符原样写进输出：花括号不是名字形状，解析器不认这行，字面量会显示给读者。
+  it('输出里的 {{user}} 字面量在渲染前换成主角名（花括号不给读者看）', () => {
+    seedBooks();
+    setupPreset(1000);
+    g.App.getProtagonist = () => ({ name: '阿柒' });
+    ChatMode.append('ai', '{{user}}：「我在食堂等你。」\n{{char}} 站在门口。', { words: 20 });
+    ChatMode.render();
+    const html = els['chatStream'].innerHTML;
+    expect(html.indexOf('{{')).toBe(-1);
+    expect(html.indexOf('chat-name">阿柒')).toBeGreaterThan(-1);
+    expect(html.indexOf('其他角色')).toBeGreaterThan(-1);
   });
 
   // 用户报告：扮演温水和彦时对话里"多出一个角色"——模型用姓/名单独称呼主角（甚至并成

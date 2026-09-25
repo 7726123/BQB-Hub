@@ -479,6 +479,27 @@ describe('主角名的简写与并列写法（不再多出一个角色）', () =
   it('名单里真有同名角色时以名单为准（别名只是兜底，不抢名单）', () => {
     expect(parseBubbles('温水：我在。', { roster: ['温水', '温水和彦'] })[0].speaker).toBe('温水');
   });
+
+  // 2026-09-25 用户：卡片常用 user 当主角占位符，主角名完全自定义（不在世界书里）。
+  // 模型照抄条目里的 user 写「user：」，或者把拉丁名写成大写、大小写混写——都要落到同一个人。
+  it('纯拉丁名字大小写不敏感：User/ALICE 也落到名单里的 user/Alice', () => {
+    const a = parseBubbles('User：「我在食堂等你。」', { roster: ['user', '林薇'] });
+    expect(a[0].speaker).toBe('user');
+    expect(a[0].known).toBe(true);
+    const b = parseBubbles('ALICE：我在。', { roster: ['Alice'] });
+    expect(b[0].speaker).toBe('Alice');
+    expect(b[0].known).toBe(true);
+    // 中文名没有大小写这回事：行为不变（名单外仍是名单外）
+    const c = parseBubbles('林薇：嗯。', { roster: ['苏老师'] });
+    expect(c[0].speaker).toBe('林薇');
+    expect(c[0].known).toBe(false);
+  });
+
+  it('别名键也大小写不敏感：别名表里的 user 命中 User 写法', () => {
+    const b = parseBubbles('User：「我在食堂等你。」', { roster: ['林薇'], aliases: { user: '陆离' } });
+    expect(b[0].speaker).toBe('陆离');
+    expect(b[0].known).toBe(true);
+  });
 });
 
 describe('格式块：名单/主角/字数渲染', () => {
