@@ -1303,9 +1303,10 @@ describe('尾部模块：思考要求插在【作者】之后、【格式】之�
     seedBooks();
     presetWith([{ id: 'm_style', name: '文风', content: '# 文风\n- 克制。', enabled: true, role: 'system', order: 8 }]);
     const user = ChatMode.buildUser('接着演');
-    expect(user).toContain('开始演');
-    expect(user).toContain('格式过一遍');
-    expect(user).not.toContain('绝对禁止在思考里写正文草稿');   // 那是续写版，演出版不能禁（会丢引号）
+    expect(user).toContain('清单：');            // 清单式（演出版）
+    expect(user).toContain('格式过一遍');         // 气泡格式排练保留（禁掉会丢引号）
+    expect(user).toContain('过格式【不要遗漏】');
+    expect(user).not.toContain('开始演');         // 收尾仪式已删（漏通道的首要嫌疑）
   });
 });
 

@@ -491,9 +491,24 @@ describe('尾部模块：位置/模式/思考标记', () => {
     expect([chat.role, chat.mode, chat.slot]).toEqual(['user', 'chat', 'think']);
     expect(novel.content).toBe(THINK_TAIL_FALLBACK.novel);
     expect(chat.content).toBe(THINK_TAIL_FALLBACK.chat);
-    // 两条都必须交代"停在哪儿"，这是止住长思考的关键（起止仪式）
-    expect(novel.content).toContain('开始写');
-    expect(chat.content).toContain('开始演');
+    // 清单式：两条都必须是"清单 + 禁自我否决"，且都交代"停在哪儿"
+    expect(novel.content).toContain('清单：');
+    expect(chat.content).toContain('清单：');
+    expect(novel.content).toContain('不列备选、不比较方案、不自我否决');
+    expect(chat.content).toContain('不列备选、不比较方案、不自我否决');
+    expect(novel.content).toContain('不要写出那句话');
+    expect(chat.content).toContain('不要写出那句话');
+    // 头尾各一次「不要遗漏」的格式/硬要求回顾（两条酒馆预设的共同做法，格式遵守靠它）
+    expect(novel.content).toContain('过要求【不要遗漏】');
+    expect(novel.content).toContain('交稿前确认【不要遗漏】');
+    expect(chat.content).toContain('过要求【不要遗漏】');
+    expect(chat.content).toContain('过格式【不要遗漏】');
+    expect(chat.content).toContain('交稿前确认【不要遗漏】');
+    // 收尾仪式已删除（实测：写了这句的样本 78% 漏通道，没写的 21%）——保留首行「先看再写」
+    expect(novel.content).not.toContain('开始写');
+    expect(chat.content).not.toContain('开始演');
+    expect(novel.content).toContain('思考的第一行只写：先看再写');
+    expect(chat.content).toContain('思考的第一行只写：先看再写');
     // 续写版禁"在思考里写文章"（文体级表述，避免"不许写正文"漏到输出上）；演出版不能禁——
     // 它的思考要兼职排练气泡格式（引号/白行）
     expect(novel.content).toContain('不抄对白原文');
@@ -558,16 +573,15 @@ describe('尾部模块：位置/模式/思考标记', () => {
     [THINK_TAIL_FALLBACK.novel, THINK_TAIL_FALLBACK.chat].forEach((c) => {
       expect(c).not.toContain('思考强度');            // 强度归设置项，文案只说长度上限
       expect(c).not.toMatch(/[一二两三四五六七八九十]个字/);   // 「先看再写」是四个字，别再数了
-      expect(c).toContain('800 字');                  // 预算明确
-      // 预算必须写明"只是思考的上限"：只写"全程不超过 N 字"时，模型会把它当成整回合的上限、
-      // 想满就收工（实测出现过整轮正文为空）
-      expect(c).toContain('这只是思考的上限');
-      expect(c).toContain('想完还要接着写');
+      expect(c).toContain('这只是思考的上限，想完还要接着写');   // 预算明确 + 说明它只是思考的上限
     });
-    // 起止语仍在（止住长思考的关键），且首尾各只出现在指定位置
+    expect(THINK_TAIL_FALLBACK.novel).toContain('2000 字');   // 续写：清单更长、预算放宽
+    expect(THINK_TAIL_FALLBACK.chat).toContain('1500 字');    // 演出：轮次短，预算略紧
+    // 首行仪式保留（在思考内部、不带通道切换含义）；收尾仪式已删（漏通道的首要嫌疑，见 preset.ts 注释）
     expect(THINK_TAIL_FALLBACK.novel).toContain('思考的第一行只写：先看再写');
-    expect(THINK_TAIL_FALLBACK.novel).toContain('思考的最后一行只写：开始写');
-    expect(THINK_TAIL_FALLBACK.chat).toContain('思考的最后一行只写：开始演');
+    expect(THINK_TAIL_FALLBACK.chat).toContain('思考的第一行只写：先看再写');
+    expect(THINK_TAIL_FALLBACK.novel).not.toContain('开始写');
+    expect(THINK_TAIL_FALLBACK.chat).not.toContain('开始演');
     // 系统侧那条（细则）与尾部两条用名字区分开
     expect(mods.find((m) => m.id === 'min_18_cot_full')!.name).toBe('思维链细则（系统）');
     expect(mods.find((m) => m.id === 'min_25_think_tail_novel')!.name).toBe('思维链·续写');
