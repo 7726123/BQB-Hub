@@ -86,6 +86,44 @@ describe('PresetManager', () => {
     expect(kept.find((mm) => mm.id === patch.moduleId)!.content).toBe('我自己的梳理要求');
   });
 
+  // 文风模块（min_05_style_kei）：2026-09-25 按桌面上两部台版轻小说（败犬女主 / 路人女主）重写。
+  // 用户反馈「预设太弱、玩起来很奇怪」——旧文案只有 6 条抽象要求，新文案把可执行的写法钉进去。
+  it('文风模块：关键写法齐全，且旧文案会被补丁同步到老设备（改过则保留）', () => {
+    PSM.initDefaults();
+    const mods = ((PSM.getPresets()[0] as unknown as { promptModules: Array<{ id: string; content: string; enabled: boolean }> }).promptModules);
+    const mod = mods.find((m) => m.id === 'min_05_style_kei')!;
+    expect(mod.enabled).toBe(true);
+    expect(mod.content).toContain('文风：轻小说·日常（台版腔）');
+    expect(mod.content).toContain('对白独立成行');
+    expect(mod.content).toContain('每个角色有自己的声音');
+    expect(mod.content).toContain('句尾习惯');
+    expect(mod.content).toContain('不写「气氛有些尴尬」');
+    expect(mod.content).toContain('省略号与破折号');
+    expect(mod.content).toContain('避免书面腔');
+    expect(mod.content).not.toContain('视角');   // 视角只由 min_09..min_12 决定
+    expect(mod.content).not.toContain('字数');
+
+    // 老设备：模块内容还是旧文案 → 启动同步后换成新版
+    const patch = MINIMAL_PRESET_PATCHES.find((x) => x.moduleId === 'min_05_style_kei')!;
+    expect(patch.id).toBe('style-kei-v2');
+    PSM.savePresets(PSM.getPresets().map((p) => (p.id === 'preset_minimal'
+      ? { ...p, promptModules: (p as unknown as { promptModules: Array<{ id: string; content: string }> }).promptModules.map((mm) => (mm.id === patch.moduleId ? { ...mm, content: patch.oldContent } : mm)) }
+      : p)) as never);
+    sm().remove('minimalPresetPatchApplied');
+    PSM.applyMinimalPresetPatches();
+    const after = (PSM.getPresets().find((p) => p.id === 'preset_minimal') as unknown as { promptModules: Array<{ id: string; content: string }> }).promptModules;
+    expect(after.find((mm) => mm.id === patch.moduleId)!.content).toContain('台版腔');
+
+    // 用户自己改过文风 → 不覆盖（与其它内置文案补丁一致）
+    sm().remove('minimalPresetPatchApplied');
+    PSM.savePresets(PSM.getPresets().map((p) => (p.id === 'preset_minimal'
+      ? { ...p, promptModules: (p as unknown as { promptModules: Array<{ id: string; content: string }> }).promptModules.map((mm) => (mm.id === patch.moduleId ? { ...mm, content: '我自己的文风要求' } : mm)) }
+      : p)) as never);
+    PSM.applyMinimalPresetPatches();
+    const kept = (PSM.getPresets().find((p) => p.id === 'preset_minimal') as unknown as { promptModules: Array<{ id: string; content: string }> }).promptModules;
+    expect(kept.find((mm) => mm.id === patch.moduleId)!.content).toBe('我自己的文风要求');
+  });
+
   it('内置预设补全：老用户升级补一条、不抢当前预设、删掉后不再自动加回', () => {
     PSM.savePresets([{ id: 'mine', name: '我的预设', prompts: [], createdAt: 0 }]);
     PSM.setCurrentPresetId('mine');

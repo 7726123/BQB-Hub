@@ -265,6 +265,31 @@ describe('批量结果回传模型：结构化 JSON 与 failed 明细', () => {
   });
 });
 
+describe('对话示例（可选）：AI 先给候选让用户挑，角色不该死板', () => {
+  it('method 默认文案含【对话示例】：候选形式、可选不追问、原话写回、克制', () => {
+    const b = Cw()._defaultBlocks();
+    const m = String(b.method);
+    expect(m).toContain('【对话示例');
+    expect(m).toContain('2~3 组候选台词');
+    expect(m).toContain('跳过');                    // 明确可选
+    expect(m).toContain('不要再追问');
+    expect(m).toContain('说话方式·例句');           // 写回位置
+    expect(m).toContain('原文一字不改');
+    expect(m).toContain('一轮只问一个角色');
+    expect(m).toContain('对话示例（可选，AI 先给候选让用户挑）');   // 写卡流程里也记了这一步
+  });
+
+  it('apply_character 的工具描述里也提到「说话方式·例句」（模型看得到）', () => {
+    const tools = String(JSON.stringify((Cw() as unknown as { _tools?: () => unknown })._tools ? (Cw() as unknown as { _tools: () => unknown })._tools() : []));
+    expect(tools).toContain('说话方式·例句');
+  });
+
+  it('规则靠版本升级推给老用户（v20 → v21 起）', () => {
+    const b = Cw()._defaultBlocks();
+    expect(b.__version).toBeGreaterThanOrEqual(21);
+  });
+});
+
 describe('主角占位符：写卡侧规则与残留判据', () => {
   it('默认 base 含「{{user}}/{user} 必须原样保留」规则（改造时不许删、不许写死人名）', () => {
     const b = Cw()._defaultBlocks();
