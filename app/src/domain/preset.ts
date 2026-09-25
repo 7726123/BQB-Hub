@@ -18,8 +18,8 @@ export interface SystemPrompt { id: string; name: string; content: string }
 
 // 内置「轻小说·最小预设」：2026-09 起取代旧「标准预设」（旧预设文本源自第三方预设改写，
 // 随开源合规清理下架；存量用户设备里的副本仍在 localStorage，不受影响）。
-// 模块分组：视角 / 文风 / 字数 / 思维链 每组只启用一个；默认启用 13 个系统模块（合计约 5100 字）
-// + 2 个「思考要求」尾部模块（role='user'，不进系统提示词、追加到用户消息末尾；见下方注释）。
+// 模块分组：视角 / 文风 / 字数 / 思维链 每组只启用一个；默认启用 12 个系统模块 + 2 个「思维链」尾部模块
+// （role='user'，不进系统提示词、追加到用户消息末尾，是思考纪律的唯一来源；系统侧那两条细则默认关闭）。
 // （2026-09-25 增补「叙事焦点·去主角中心 / 出场角色·克制 / 情绪·不冷静」三条，用户反馈驱动）。
 // 注意：文本内不出现 <thinking> 字样（原生推理模型会被诱导弹标签）、不出现英文 user
 // （app.ts 会把任意 user 替换成主角名）、不出现 ${...}（预设展开时会剥壳）；含「梳理：」
@@ -303,7 +303,10 @@ const MINIMAL_PRESET_MODULES: Array<{ id: string; name: string; content: string;
 - 篇幅够长，要有层次的推进：起、承、转各写足，避免中段注水。`
   },
   {
-    id: 'min_18_cot_full', name: '思维链细则（系统）', enabled: true, role: 'system', order: 22,
+    // 2026-09-26 合并：思考纪律只有一处生效来源（尾部的「思维链·续写」）。实测两处并存时，
+    // 模型完全跟着尾部那条走，system 里这条对真实思维链没有任何作用（用户实测确认），
+    // 留着只会让人以为有两套规则。文案保留、默认关闭，想分开用的人可以自己打开。
+    id: 'min_18_cot_full', name: '思维链细则（系统）', enabled: false, role: 'system', order: 22,
     content: `# 动笔前的梳理
 
 梳理：动笔前把下面六步走完，每步只写结论。思考写成要点、短语、箭头，不写成句子。
@@ -364,18 +367,24 @@ const MINIMAL_PRESET_MODULES: Array<{ id: string; name: string; content: string;
   // 这两条就是出厂文案，用户可改、可关、可删；任何预设只要自带一条启用的「思考要求」尾部模块，
   // 软件就不再插自己的兜底（见 PresetManager.tailText）。
   {
+    // 唯一来源（2026-09-26 合并）：原先 system 的「思维链细则」（六步）与这条（四步）并存，
+    // 实测模型只跟尾部这条走，system 那条不起作用；现在把"思考什么"折进四步，系统侧默认关闭。
+    // 措辞上的两处教训：① 不再出现「思考强度：低」（强度归设置项）；② 不再用「N个字」计数
+    // （写错会让模型为不一致分心）；③ 预算写明"只是思考的上限，想完还要接着写正文"（否则模型
+    // 会把预算当成整回合的上限、想满就收工）；④ 禁令只说"不写完整句子/不抄对白"这种文体级表述——
+    // 直接写"不许写正文"会漏到输出上（实测出现整轮正文为空的失败）。
     id: 'min_25_think_tail_novel', name: '思维链·续写', enabled: true, role: 'user', slot: 'think', mode: 'novel', order: 24,
     content: `【思维链要求（硬性要求，逐条执行）】
-- 全程不超过 1500 字。写完立刻停，不长篇考据、不磨。
 - 思考的第一行只写：先看再写
-- 只按下面四步走，不额外发散：不反复考据同一条设定，不推翻重来，不自我复述。
-- 绝对禁止在思考里写正文草稿（重点强调项）：不写完整句子，不写对白原文，不写成段场景或心理描写。思考里出现的任何一句话都不允许直接粘进正文；一旦写出，立刻删掉、只留结论。取舍用 ✓/✗ 记，不要把候选句子重抄一遍。
-一、现状 → 时间、地点、在场的人、上一个动作停在哪儿。
-二、人物 → 一人一行：此刻想要什么／知道什么（守住信息差）／说话是什么味道。
-三、方向 → 两条走向各推两步因果，选一条，写明为什么选它。
-四、落点 → 这一段停在哪个动作或哪句话上（只写要点，不要写出那句话）。
+- 只做下面四步，走完就停；思考一共不超过 800 字（这只是思考的上限，想完还要接着写正文）。
+- 思考只写要点：短词、短语、编号、箭头；不写完整句子、不抄对白原文、不写成段描写。写得像文章的部分一律删掉，只留结论。
+- 不要"先写一版再检查"：没有草稿要检查，想完直接写。
+一、读指令与现状 → 作者这次给的是哪一类（留白续写／一句对白／一段大纲／明确要求）；现在什么时间、什么地点、谁在场、上一个动作停在哪儿。
+二、人物（每个要出场的人一行）→ 此刻想要什么、知道什么（守住信息差）、会怎么说话（语气/口头禅）、以他的性格最自然的反应是什么（会不会拒绝、沉默、说谎）。
+三、方向 → 两条走向各推两步因果，选最符合人物、最有张力的一条，写明为什么选它；定这一段写到哪里停。
+四、落点 → 这一段停在哪个动作或哪句话上（只写要点，不要写出那句话）；这一轮要落实的要求（字数、视角、文风、禁写项）是什么，各三五个词记一下。
 - 思考的最后一行只写：开始写
-写完这一行立刻停止思考、直接输出正文；正文只写一次，正文里不留任何思考痕迹。`
+写下这一行立刻停止思考，接着把这一轮的正文完整写出来，只写一次，正文里不留任何思考痕迹。`
   },
   {
     // 对话模式**不能**照抄上面那条：它的思考还兼职"把气泡的引号/说话人格式排练一遍"。
@@ -384,7 +393,7 @@ const MINIMAL_PRESET_MODULES: Array<{ id: string; name: string; content: string;
     // 思考块放在【格式】之前 + 只用正向措辞"→ 3/18 轮漂移，与现状 2/12 持平，思考中位 283 字。
     id: 'min_26_think_tail_chat', name: '思维链·演出', enabled: true, role: 'user', slot: 'think', mode: 'chat', order: 25,
     content: `【思维链要求（硬性要求）】
-- 全程不超过 1500 字。写完立刻停。
+- 思考一共不超过 800 字（这只是思考的上限，想完还要接着写演出）。写完立刻停。
 - 想完就动手：不推翻重来，不反复考据同一条设定，不自我复述，同一段不要写两遍。
 一、在场与关系 → 这一轮在场的人、各自想要什么、知道什么（守住信息差）。
 二、这一轮怎么走 → 二到三个来回怎么推进，停在哪个动作或哪句话上。
@@ -663,7 +672,17 @@ const MINIMAL_PRESET_LATE_MODULES_V4: Array<{ id: string; before: string[] }> = 
 const MINIMAL_PRESET_FORCE_SYNC: Array<{ id: string; moduleId: string }> = [
   { id: 'ai-flavor-v2', moduleId: 'min_20_ai_flavor' },
   { id: 'think-tail-novel-v2', moduleId: 'min_25_think_tail_novel' },
-  { id: 'think-tail-chat-v2', moduleId: 'min_26_think_tail_chat' }
+  { id: 'think-tail-chat-v2', moduleId: 'min_26_think_tail_chat' },
+  // 合并成全预设唯一来源后的稿子（四步 + 预算澄清 + 文体级禁令 + 正面兜底）
+  { id: 'think-merge-v3', moduleId: 'min_25_think_tail_novel' }
+];
+
+// 一次性关停清单（2026-09-26 合并）：系统侧那两条思维链细则默认关闭——模型只跟尾部那条走，
+// 留着会让人以为有两套规则。只关设备上**已存在**的模块（用户删掉的不加回），只处理一次；
+// 文案保留，用户想分开用可以自己开回来。
+const MINIMAL_PRESET_FORCE_DISABLE: Array<{ id: string; moduleId: string }> = [
+  { id: 'cot-merge-off-v3', moduleId: 'min_18_cot_full' },
+  { id: 'cot-short-merge-off-v3', moduleId: 'min_19_cot_short' }
 ];
 
 function minimalPreset(): Preset {
@@ -848,6 +867,7 @@ export const PresetManager = {
     this.applyMinimalPresetPatches();
     this.applyMinimalPresetLateModules();
     this.applyMinimalPresetForceSync();
+    this.applyMinimalPresetForceDisable();
     if (!SM().get('apiConfig', null)) {
       SM().set('apiConfig', { endpoint: 'https://api.deepseek.com/v1', model: 'deepseek-v4-flash', temperature: 1, topP: 1, presencePenalty: 0, frequencyPenalty: 0, topK: 0, topA: 0, minP: 0, repetitionPenalty: 1, maxContextUnlocked: true, openaiMaxContext: 2000000, openaiMaxTokens: 65535, namesBehavior: 0, sendIfEmpty: '', impersonationPrompt: '', newChatPrompt: '', newGroupChatPrompt: '', newExampleChatPrompt: '', continueNudgePrompt: '', biasPresetSelected: 'Default (none)', wiFormat: '', scenarioFormat: '', personalityFormat: '', groupNudgePrompt: '', streamOpenai: true, prompts: [] });
     }
@@ -958,6 +978,34 @@ export const PresetManager = {
         console.log('[Preset] 已强制覆盖模块文案（用户改过也覆盖）:', forced.join('、'));
       }
     } catch (e) { console.warn('[Preset] 强制覆盖模块文案失败:', e); }
+  },
+
+  // 一次性关停（见 MINIMAL_PRESET_FORCE_DISABLE）：只改 enabled，不动文案与名字；只处理一次。
+  applyMinimalPresetForceDisable(): void {
+    try {
+      if (MINIMAL_PRESET_FORCE_DISABLE.length === 0) return;
+      const list = this.getPresets();
+      const p = list.find(x => x.id === 'preset_minimal');
+      if (!p || !Array.isArray(p.promptModules)) return;
+      const _done = SM().get<string[]>('minimalPresetForceDisableDone', []);
+      const done: string[] = Array.isArray(_done) ? _done.slice() : [];
+      const mods = p.promptModules as Array<{ id?: string; enabled?: boolean }>;
+      const off: string[] = [];
+      MINIMAL_PRESET_FORCE_DISABLE.forEach(entry => {
+        if (done.indexOf(entry.id) >= 0) return;
+        done.push(entry.id);
+        const mod = mods.find(m => m.id === entry.moduleId);
+        if (!mod || mod.enabled === false) return;        // 不存在（用户删了）或本来就关着
+        mod.enabled = false;
+        const shipped = MINIMAL_PRESET_MODULES.find(m => m.id === entry.moduleId);
+        off.push(shipped ? shipped.name : entry.moduleId);
+      });
+      SM().set('minimalPresetForceDisableDone', done);
+      if (off.length) {
+        this.savePresets(list);
+        console.log('[Preset] 已默认关闭（合并后只剩尾部那一条思维链）:', off.join('、'));
+      }
+    } catch (e) { console.warn('[Preset] 一次性关停失败:', e); }
   }
 };
 

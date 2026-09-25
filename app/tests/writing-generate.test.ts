@@ -526,11 +526,55 @@ describe('尾部模块注入：思考要求落在最后一条用户消息末尾'
     await App.generate('autoContinue');
 
     const user = (calls[0] || []).filter((m: any) => m && m.role === 'user').pop();
-    expect(String(user.content)).toContain('先看再写');            // 内置思考要求（续写版）
-    expect(String(user.content)).toContain('绝对禁止在思考里写正文草稿');
+    expect(String(user.content)).toContain('先看再写');            // 思维链（续写版）：唯一来源，在用户消息尾部
+    expect(String(user.content)).toContain('不抄对白原文');         // 文体级禁令也在这一条里
+    expect(String(user.content)).toContain('这只是思考的上限');      // 预算澄清（避免模型想满就收工）
     expect(String(user.content)).not.toContain('开始演');          // 演出版那条不该出现在续写请求里
     const sysText = (calls[0] || []).filter((m: any) => m && m.role === 'system').map((m: any) => String(m.content)).join('\n');
     expect(sysText).not.toContain('先看再写');                     // 尾部模块不进 system
-    expect(sysText).toContain('思考里禁止写正文');                  // system 里的详细规范还在
+    // 2026-09-26 合并：系统侧那两条细则默认关闭 → system 里不再有它们的文案（思考纪律只剩尾部这一处）
+    expect(sysText).not.toContain('# 动笔前的梳理');
+    expect(sysText).not.toContain('思考里禁止写正文');
+  });
+});
+
+// 2026-09-26 合并：思考纪律只剩尾部那一条 → 系统提示词里不再有"梳理"字样。
+// 没有原生推理通道的模型（豆包/Claude 等）靠 `_thinkingRequired` 才会拿到 <thinking> 硬协议，
+// 所以"预设里有启用的思维链模块"必须也算触发条件，否则这些模型会连思考协议一起丢掉。
+describe('无原生思考通道的模型：靠"预设里有思维链模块"拿到 <thinking> 硬协议', () => {
+  async function instrOnce(model: string): Promise<string> {
+    const mem = new Map<string, string>();
+    G.StorageManager = {
+      get: (k: string, d?: any) => (mem.has(k) ? JSON.parse(mem.get(k)!) : d),
+      set: (k: string, v: any) => { mem.set(k, JSON.stringify(v)); },
+      remove: (k: string) => { mem.delete(k); },
+    };
+    const realPM = (await import('../src/domain/preset')).PresetManager;
+    G.PresetManager = realPM;
+    realPM.initDefaults();
+    mem.set('apiConfig', JSON.stringify({ apiKey: 'k', model, endpoint: 'http://x/v1' }));
+    const calls: any[] = [];
+    G.APIHandler = {
+      _apiCalls: [], abort: () => {},
+      fetchCompletions: vi.fn(async (msgs: any, _onChunk: any, onDone: any) => { calls.push(msgs); onDone('', false, ''); }),
+    };
+    App.thinkingLevel = () => 'medium';
+    App.getProtagonist = () => ({ name: '夏洛' });
+    App.isGenerating = false;
+    await App.generate('autoContinue');
+    const user = (calls[0] || []).filter((m: any) => m && m.role === 'user').pop();
+    return String((user && user.content) || '');
+  }
+
+  it('非原生推理模型（test-model）→ 指令里带 <thinking> 硬协议', async () => {
+    const instr = await instrOnce('test-model');
+    expect(instr).toContain('【输出顺序·最高优先级】');
+    expect(instr).toContain('<thinking>');
+  });
+
+  it('原生推理模型（deepseek）→ 不追加文本标签协议', async () => {
+    const instr = await instrOnce('deepseek-v4.1-flash');
+    expect(instr).not.toContain('<thinking>');
+    expect(instr).toContain('先看再写');   // 思维链还是照发（走原生通道）
   });
 });

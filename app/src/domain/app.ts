@@ -25,7 +25,7 @@ import { UpdateManager } from './update';
 import * as TavernAdapter from './tavern-adapter';
 import { ClientLog } from './clientlog';
 import { sanitizeEndpointUrl, chatCompletionsUrl } from '../lib/endpoint';
-import { moduleRole, pickModules, stPromptsToModules, nativeModulesToModules } from './preset';
+import { moduleRole, moduleSlot, pickModules, stPromptsToModules, nativeModulesToModules } from './preset';
 
 // 价格表默认值（人民币/百万 token）：DeepSeek V4.1 峰时价。
 // 2026-09-26 之前默认是 1 / 0.1 / 2 —— 缓存价按"输入的 10%"填，而真实是 2%（命中便宜 50 倍），
@@ -1129,8 +1129,16 @@ const App: AppShape = {
     //  thinking/<!-- 梳理 --> 标签】——这正是「酒馆不炸」的原因：思考走原生通道，
     // 正文永远在 content，不存在标签漏闭合/外露/吞正文的问题。仅对没有原生推理
     // 通道的模型（豆包/Claude 等）才追加正文标签指令。
-    // 预设是否要求模型先梳理（writing_process/梳理字样）再写正文
-    var _thinkingRequired = /writing_process|<!--\s*梳理|梳理：/.test(_effectiveSP);
+    // 预设是否要求模型先梳理（writing_process/梳理字样）再写正文。
+    // 2026-09-26 合并后：思考纪律只剩尾部那一条（「思维链·续写」），系统里不再有"梳理"字样——
+    // 所以"预设里有启用的思维链模块"本身也算数，否则没有原生推理通道的模型（豆包等）
+    // 会连 <thinking> 硬协议一起丢掉。
+    var _hasPresetThink = false;
+    try {
+      _hasPresetThink = PresetManager.activeModules('novel')
+        .some(function (m: any) { return moduleSlot(m) === 'think'; });
+    } catch (e) { _hasPresetThink = false; }
+    var _thinkingRequired = /writing_process|<!--\s*梳理|梳理：/.test(_effectiveSP) || _hasPresetThink;
     // 无原生思考通道的模型（豆包/Claude/部分 qwen/glm 等）：思考只能写进正文文本。
     // 统一追加「思考放 <thinking> 标签」指令，把文本思考收敛到编辑器流式状态机认得的
     // 通用标记上（<thinking>…</thinking>），流式期间即被切进思考框，正文不残留——

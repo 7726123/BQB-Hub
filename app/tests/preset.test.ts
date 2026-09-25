@@ -38,16 +38,17 @@ describe('PresetManager', () => {
   it('内置最小预设：启用文本满足注入管线约束', () => {
     PSM.initDefaults();
     const mods = ((PSM.getPresets()[0] as unknown as { promptModules: Array<{ content: string; enabled: boolean; role: string }> }).promptModules);
-    // 启用 = 13 个系统模块 + 2 个「思考要求」尾部模块（2026-09-26 新增，role='user' 不进 system）
-    expect(mods.filter((m) => m.enabled)).toHaveLength(15);
+    // 启用 = 12 个系统模块 + 2 个「思维链」尾部模块（role='user' 不进 system；
+    // 系统侧那两条细则自 2026-09-26 合并起默认关闭）
+    expect(mods.filter((m) => m.enabled)).toHaveLength(14);
     expect(mods.filter((m) => m.enabled && m.role === 'user')).toHaveLength(2);
-    expect(mods.filter((m) => m.enabled && m.role !== 'user')).toHaveLength(13);
+    expect(mods.filter((m) => m.enabled && m.role !== 'user')).toHaveLength(12);
     // 进系统提示词的那部分：文本里的 user 会被 app 换成主角名，标签会诱导弹标签
     const sp = mods.filter((m) => m.enabled && m.role !== 'user').map((m) => m.content).join('\n\n');
     expect(sp).not.toContain('<thinking>');            // 原生推理模型会被诱导弹标签
     expect(sp).not.toMatch(/\$\{/);                    // 预设展开会剥壳
     expect(sp.replace(/\{\{user\}\}/g, '')).not.toMatch(/\buser\b/i); // app 会把任意 user 换成主角名
-    expect(/writing_process|<!--\s*梳理|梳理：/.test(sp)).toBe(true);  // 触发「预设要求先梳理」判定
+    // 合并后系统里不再有"梳理"字样 → 「预设要求先梳理」改由"有启用的思维链模块"触发（见 app.ts）
     // 尾部思考模块同样会被 _expandSTInMessages 展开，约束一致
     const tail = mods.filter((m) => m.enabled && m.role === 'user').map((m) => m.content).join('\n\n');
     expect(tail).not.toContain('<thinking>');
@@ -55,18 +56,45 @@ describe('PresetManager', () => {
     expect(tail.replace(/\{\{user\}\}/g, '')).not.toMatch(/\buser\b/i);
   });
 
-  // 防「在思考里先写一遍正文草稿、再审查后输出」（用户实测常见，浪费额度且成稿与草稿对不上）
-  it('思维链模块：明确禁止在思考里写正文', () => {
+  // 防「在思考里先写一遍正文草稿、再审查后输出」（用户实测常见，浪费额度且成稿与草稿对不上）。
+  // 2026-09-26 合并后这条规则只在尾部那条生效；系统侧两条默认关闭但文案保留（想分开用可开回来）。
+  it('思维链规则：只在尾部那条生效，系统侧两条默认关闭但文案保留', () => {
     PSM.initDefaults();
-    const mods = ((PSM.getPresets()[0] as unknown as { promptModules: Array<{ id: string; content: string; enabled: boolean }> }).promptModules);
+    const mods = ((PSM.getPresets()[0] as unknown as { promptModules: Array<{ id: string; content: string; enabled: boolean; slot?: string; role?: string }> }).promptModules);
+    const tail = mods.find((m) => m.id === 'min_25_think_tail_novel')!;
+    expect(tail.enabled).toBe(true);
+    expect(tail.slot).toBe('think');
+    expect(tail.role).toBe('user');
+    expect(tail.content).toContain('不抄对白原文');      // 文体级禁令（不写完整句子/不抄对白）
+    expect(tail.content).toContain('不要"先写一版再检查"');
+    expect(tail.content).toContain('不要写出那句话');    // 落点只写要点
+    expect(tail.content).toContain('只写一次');
+    // 系统侧两条：关闭但内容还在（用户可自行打开）
     const cot = mods.find((m) => m.id === 'min_18_cot_full')!;
-    expect(cot.enabled).toBe(true);
+    expect(cot.enabled).toBe(false);
     expect(cot.content).toContain('思考里禁止写正文');
     expect(cot.content).toContain('正文只写这一次');
-    expect(cot.content).toContain('不要写出那句话');   // 定结尾只写要点
-    expect(cot.content).not.toContain('写多长都可以');
     const short = mods.find((m) => m.id === 'min_19_cot_short')!;
+    expect(short.enabled).toBe(false);
     expect(short.content).toContain('不要在思考里写正文或对白');
+  });
+
+  // 合并迁移：设备上还开着的系统侧细则要被一次性关掉（只改开关，不动文案/名字）
+  it('合并迁移：一次性关停系统侧思维链细则', () => {
+    PSM.initDefaults();
+    const list = PSM.getPresets();
+    const p = list.find((x) => x.id === 'preset_minimal') as any;
+    p.promptModules.find((m: any) => m.id === 'min_18_cot_full').enabled = true;   // 模拟旧设备上还开着
+    PSM.savePresets(list);
+    sm().remove('minimalPresetForceDisableDone');
+    PSM.applyMinimalPresetForceDisable();
+    const q = (id: string) => (PSM.getPresets().find((x) => x.id === 'preset_minimal') as any).promptModules.find((m: any) => m.id === id);
+    expect(q('min_18_cot_full').enabled).toBe(false);
+    expect(q('min_18_cot_full').content).toContain('思考里禁止写正文');   // 文案保留
+    // 只处理一次：用户再开回来不会被关
+    q('min_18_cot_full').enabled = true;
+    PSM.applyMinimalPresetForceDisable();
+    expect(q('min_18_cot_full').enabled).toBe(true);
   });
 
   // 内置预设文案补丁：v1.5.75 首发版已写进设备，改源码不会自动生效，靠补丁在启动时同步
@@ -466,8 +494,10 @@ describe('尾部模块：位置/模式/思考标记', () => {
     // 两条都必须交代"停在哪儿"，这是止住长思考的关键（起止仪式）
     expect(novel.content).toContain('开始写');
     expect(chat.content).toContain('开始演');
-    // 续写版禁"在思考里写正文草稿"；演出版不能禁——它的思考要兼职排练气泡格式（引号/白行）
-    expect(novel.content).toContain('绝对禁止在思考里写正文草稿');
+    // 续写版禁"在思考里写文章"（文体级表述，避免"不许写正文"漏到输出上）；演出版不能禁——
+    // 它的思考要兼职排练气泡格式（引号/白行）
+    expect(novel.content).toContain('不抄对白原文');
+    expect(novel.content).toContain('写得像文章的部分一律删掉');
     expect(chat.content).toContain('格式过一遍');
   });
 
@@ -528,7 +558,11 @@ describe('尾部模块：位置/模式/思考标记', () => {
     [THINK_TAIL_FALLBACK.novel, THINK_TAIL_FALLBACK.chat].forEach((c) => {
       expect(c).not.toContain('思考强度');            // 强度归设置项，文案只说长度上限
       expect(c).not.toMatch(/[一二两三四五六七八九十]个字/);   // 「先看再写」是四个字，别再数了
-      expect(c).toContain('1500 字');                 // 预算仍然明确
+      expect(c).toContain('800 字');                  // 预算明确
+      // 预算必须写明"只是思考的上限"：只写"全程不超过 N 字"时，模型会把它当成整回合的上限、
+      // 想满就收工（实测出现过整轮正文为空）
+      expect(c).toContain('这只是思考的上限');
+      expect(c).toContain('想完还要接着写');
     });
     // 起止语仍在（止住长思考的关键），且首尾各只出现在指定位置
     expect(THINK_TAIL_FALLBACK.novel).toContain('思考的第一行只写：先看再写');
