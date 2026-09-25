@@ -1055,7 +1055,17 @@ label{font-size:13px;color:var(--text-secondary);display:block;margin-bottom:4px
 #tab-chat{display:none;flex-direction:column;height:100%;min-height:0;overflow:hidden}
 #tab-chat.active{display:flex}
 #chatStreamWrap{flex:1;min-height:0;display:flex;flex-direction:column;position:relative}
-#chatStream{flex:1;min-height:0;overflow-y:auto;padding:6px 12px 2px;-webkit-overflow-scrolling:touch}
+#chatStream{flex:1;min-height:0;overflow-y:auto;padding:6px 12px 2px;-webkit-overflow-scrolling:touch;position:relative;z-index:1}
+/* 封面背景（对话模式，2026-09-25 用户要求）：气泡自带底色、不会挡字；没有封面就不设。
+   背景层在气泡流**下面**（#chatStream 抬到 z-index:1），滚动时背景不动；垫层把封面压淡一层，
+   让旁白/时间分隔这类没有底色的文字在图上也能看清。 */
+#chatBg{position:absolute;inset:0;z-index:0;display:none;pointer-events:none;background-position:center;background-size:cover;background-repeat:no-repeat}
+#chatBg.on{display:block}
+#chatBgScrim{position:absolute;inset:0;background:var(--bg);opacity:.62}
+/* 开了背景时给旁白行一块底色（旁白本来只是淡色文字，没有底色） */
+.chat-has-bg .chat-narr{background:var(--bg-secondary);border-radius:9px;padding:5px 10px;border-left-color:transparent}
+.chat-has-bg .chat-warn,.chat-has-bg .chat-actions{text-shadow:0 1px 2px var(--bg)}
+.ghost-btn.on{color:var(--primary);border-color:var(--primary);background:var(--primary-light)}
 /* 比奇面板在对话模式下的宿主：撑满剩余高度、相对定位（面板 absolute + 顶边锚定 → 只压上半屏，输入区照常可见） */
 #chatBody{position:relative;flex:1;min-height:0;display:flex;flex-direction:column}
 #chatBody #biqiPanel{top:0}
@@ -1318,6 +1328,7 @@ label{font-size:13px;color:var(--text-secondary);display:block;margin-bottom:4px
           <div class="pg-head" style="padding:0 2px 10px;">
             <div class="pg-actions">
               <button class="ghost-btn" id="chatBiqiBtn" onclick="ChatMode.openBiqi()" title="和比奇讨论这本书的设定（对话模式有自己的一份临时世界书）" style="display:none;">比奇</button>
+              <button class="ghost-btn" id="chatBgBtn" onclick="ChatMode.toggleBg()" title="用这本书的封面做对话背景（点一下切换）" style="display:none;">背景：开</button>
               <button class="tool-btn danger" onclick="ChatMode.clearAll()" title="清空这本书的演出记录" aria-label="清空演出记录">
     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" style="display:block" aria-hidden="true">
                   <g stroke-width="1.3">
@@ -1353,6 +1364,9 @@ label{font-size:13px;color:var(--text-secondary);display:block;margin-bottom:4px
           <div id="chatBody">
             <!-- 气泡流外面套一层相对定位容器：跳到底部的按钮浮在气泡区右下角（不会盖住下面的输入条） -->
             <div id="chatStreamWrap">
+              <!-- 封面背景层（#chatBg）+ 垫层（#chatBgScrim）：在气泡流**下面**，由 ChatMode._applyBg 设置；
+                   垫层用主题背景色压一下，保证旁白/时间分隔这类没有底色的文字在图上也能看清 -->
+              <div id="chatBg" aria-hidden="true"><div id="chatBgScrim"></div></div>
               <div id="chatStream"></div>
               <button id="chatScrollBottom" onclick="ChatMode.scrollToBottomAnimated()" title="回到最下面" aria-label="回到最下面">
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">

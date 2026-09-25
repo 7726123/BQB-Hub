@@ -39,7 +39,8 @@ function makeEl(id: string): any {
 const els: Record<string, any> = {};
 function setupDom() {
   ['chatStream', 'chatInput', 'chatSendBtn', 'chatStopBtn', 'chatUndoBtn', 'chatStatus', 'chatScrollBottom',
-    'chatProfileModal', 'chatProfileBody', 'chatProfileTitle']
+    'chatProfileModal', 'chatProfileBody', 'chatProfileTitle',
+    'chatBg', 'chatStreamWrap', 'chatBgBtn']
     .forEach(id => { els[id] = makeEl(id); });
 }
 globalThis.document = {
@@ -980,6 +981,63 @@ describe('演出轮记进用量统计', () => {
 // 或者"同学a"这样的」——渲染层一直支持（名单外的名字照样开气泡、首字色块头像），这里守的是
 // 新加的三条链路：① 读写临时世界书时模式安全；② 龙套能登记成临时「角色」条目（进名单、能挂头像）
 // 且 inject=false 不占提示词；③ 同名条目即使类型不是「角色」也能挂上头像。
+// 用户 2026-09-25：把书的封面自动当对话背景（气泡有底色不挡字）；没封面就不设；顶部给个开关。
+describe('封面背景（2026-09-25）', () => {
+  it('默认开启；有封面才真正设背景，没封面就清掉', () => {
+    seedBooks(); setupPreset(null);
+    expect(ChatMode.bgEnabled()).toBe(true);                     // 默认开
+    expect(ChatMode.coverUrl()).toBe('');                        // 甲书的角色有头像，但书本身没封面
+    ChatMode.render();
+    expect(els['chatBg'].classList.contains('on')).toBe(false);
+    expect(els['chatBg'].style.backgroundImage).toBeFalsy();
+    expect(els['chatBgBtn'].style.display).toBe('none');          // 没封面不显示开关
+    // 给书设一张封面（书列表那边也叫 cover）
+    const SS2 = WBM as unknown as { setCover: (id: string, url: string) => void };
+    SS2.setCover(WBM.getActiveId()!, 'data:image/png;base64,AAAA');
+    ChatMode.render();
+    expect(String(els['chatBg'].style.backgroundImage)).toContain('data:image/png;base64,AAAA');
+    expect(els['chatBg'].classList.contains('on')).toBe(true);
+    expect(els['chatBgBtn'].style.display).toBe('');              // 有封面才显示
+    expect(els['chatBgBtn'].textContent).toBe('背景：开');
+    expect(els['chatStreamWrap'].classList.contains('chat-has-bg')).toBe(true);
+  });
+
+  it('开关：关掉后清掉背景并记住（切书/重画都不再设），再开回来恢复', () => {
+    seedBooks(); setupPreset(null);
+    (WBM as unknown as { setCover: (id: string, url: string) => void }).setCover(WBM.getActiveId()!, 'data:image/png;base64,BBBB');
+    ChatMode.render();
+    expect(els['chatBg'].classList.contains('on')).toBe(true);
+    ChatMode.toggleBg();                                          // 关
+    expect(ChatMode.bgEnabled()).toBe(false);
+    expect(els['chatBg'].classList.contains('on')).toBe(false);
+    expect(String(els['chatBg'].style.backgroundImage)).toBe('');
+    expect(els['chatBgBtn'].textContent).toBe('背景：关');
+    expect(els['chatStreamWrap'].classList.contains('chat-has-bg')).toBe(false);
+    ChatMode.render();                                            // 重画不会自己开回来
+    expect(els['chatBg'].classList.contains('on')).toBe(false);
+    ChatMode.toggleBg();                                          // 再开
+    expect(ChatMode.bgEnabled()).toBe(true);
+    expect(els['chatBg'].classList.contains('on')).toBe(true);
+  });
+
+  // 截图实测发现：同一角色的连续气泡合并后，模型"各自一行"的输出被挤到同一行
+  //（`林薇：她把手插回兜里。` + `林薇：「人家让我转交…」`）——合并时要在接缝处补一个分段。
+  it('同一角色连续气泡合并时保留换行（旁白与台词不挤在一行）', () => {
+    seedBooks(); setupPreset(null);
+    ChatMode.append('ai', '林薇：她把手插回兜里。\n林薇：「人家让我转交，我就转了。」', { words: 20 });
+    ChatMode.render();
+    const html = els['chatStream'].innerHTML;
+    expect((html.match(/class="chat-row/g) || []).length).toBe(1);                 // 还是一个气泡
+    expect(html.indexOf('她把手插回兜里。</span><br><span class="chat-say">')).toBeGreaterThan(-1);
+  });
+
+  it('只认图片 data URL（脏数据不当背景用）', () => {
+    seedBooks(); setupPreset(null);
+    (WBM as unknown as { setCover: (id: string, url: string) => void }).setCover(WBM.getActiveId()!, 'https://example.com/a.png');
+    expect(ChatMode.coverUrl()).toBe('');
+  });
+});
+
 describe('龙套角色（路人/同学A）：登记、名单与头像（2026-09-25）', () => {
   function stubSS(opts: { overlay?: any; effective?: (mode: string) => any[] }) {
     const SS = SettingSyncManager as any;

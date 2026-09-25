@@ -61,6 +61,8 @@ const uid = () => 'cmsg_' + Date.now() + '_' + Math.random().toString(36).slice(
 
 function sm(): any { return (globalThis as any).StorageManager; }
 function smGet<T>(k: string, d: T): T { try { return sm().get(k, d) as T; } catch (e) { return d; } }
+// 背景层当前已应用的封面（值不变就不重复设置，见 _applyBg）——模块级，跨实例共享一份
+let _chatBgApplied = '';
 function smSet(k: string, v: unknown): void { try { sm().set(k, v); } catch (e) { /* ignore */ } }
 
 export const ChatMode = {
@@ -363,6 +365,49 @@ export const ChatMode = {
     if (open && this._profileName) this.openProfile(this._profileName);   // 简介弹窗里那张大图也跟着换
   },
 
+  // ---------- 封面背景（气泡自带底色，背景不挡字） ----------
+  // 用户要求：把书的封面自动当对话背景；**没有封面就不设**；顶部（比奇旁边）给一个开关自己选。
+  // 开关是全局的（一本书一个封面，开关只管"要不要用封面当背景"），切书时背景跟着当前书换。
+  bgEnabled(): boolean {
+    return smGet<boolean>('chatCoverBg', true) !== false;   // 默认开（有封面才真正生效）
+  },
+  setBgEnabled(on: boolean): void {
+    smSet('chatCoverBg', !!on);
+    this.render();
+  },
+  toggleBg(): void {
+    const on = !this.bgEnabled();
+    this.setBgEnabled(on);
+    try { App.toast(on ? '已开启封面背景' : '已关闭封面背景'); } catch (e) { /* ignore */ }
+  },
+  // 当前书的封面（没设就是空串：书列表那边会退化成"一个字"的色块，不是图片）
+  coverUrl(): string {
+    try {
+      const wb = this.book();
+      const c = wb && (wb as any).cover ? String((wb as any).cover) : '';
+      return /^data:image\//.test(c) ? c : '';   // 只认图片 data URL（防脏数据）
+    } catch (e) { return ''; }
+  },
+  // 背景层（#chatBg）只在这里更新：流式渲染每 200ms 会重画一次气泡，
+  // 值没变就一个字节都不动（否则每帧都设一次几百 KB 的 data URL，等于每帧重新解码）
+  _applyBg(): void {
+    const host = document.getElementById('chatBg');
+    const wrap = document.getElementById('chatStreamWrap');
+    const cover = this.bgEnabled() ? this.coverUrl() : '';
+    if (!host) return;
+    if (_chatBgApplied === cover) return;
+    _chatBgApplied = cover;
+    if (!cover) {
+      host.classList.remove('on');
+      host.style.backgroundImage = '';
+      if (wrap) wrap.classList.remove('chat-has-bg');
+      return;
+    }
+    host.style.backgroundImage = 'url("' + cover.replace(/"/g, '%22') + '")';
+    host.classList.add('on');
+    if (wrap) wrap.classList.add('chat-has-bg');
+  },
+
   // ---------- 渲染 ----------
 
   render(): void {
@@ -373,6 +418,7 @@ export const ChatMode = {
     this._scrollOnce = false;
     if (this.bookId() !== this._loadedBookId) { this._loadedBookId = this.bookId(); this._window = RENDER_WINDOW; }
     this._renderHead();
+    this._applyBg();
     const all = this.log();
     const shown = all.slice(Math.max(0, all.length - this._window));
     const tail: ChatMsg | null = (this._sending && this._streamBookId === this.bookId())
@@ -463,6 +509,15 @@ export const ChatMode = {
       try { on = PluginManager.isEnabled('biqi'); } catch (e) { /* ignore */ }
       bb.style.display = on ? '' : 'none';
     }
+    // 封面背景开关：这本书有封面才显示（没封面没什么可开的），开着时按钮高亮
+    const bgBtn = document.getElementById('chatBgBtn');
+    if (bgBtn) {
+      const has = !!this.coverUrl();
+      bgBtn.style.display = has ? '' : 'none';
+      bgBtn.classList.toggle('on', has && this.bgEnabled());
+      bgBtn.textContent = this.bgEnabled() ? '背景：开' : '背景：关';
+      bgBtn.title = has ? '用这本书的封面做对话背景（点一下切换）' : '这本书还没有封面';
+    }
     const st = document.getElementById('chatStatus');
     if (st) st.textContent = this._status || '';
   },
@@ -503,8 +558,13 @@ export const ChatMode = {
     const merged: Bubble[] = [];
     bubbles.forEach(b => {
       const prev = merged[merged.length - 1];
-      if (prev && prev.speaker === b.speaker) prev.blocks = prev.blocks.concat(b.blocks);
-      else merged.push({ speaker: b.speaker, known: b.known, blocks: b.blocks.slice() });
+      if (prev && prev.speaker === b.speaker) {
+        // 合并的是模型**各自一行**的输出（每行都带「说话人：」）→ 之间要断行，
+        // 否则同一角色的旁白与台词会被挤在同一行（截图实测：`她把手插回兜里。 人家让我转交…`）
+        const add = b.blocks.slice();
+        if (add.length > 0 && !add[0].nlBefore) add[0] = { ...add[0], para: true };
+        prev.blocks = prev.blocks.concat(add);
+      } else merged.push({ speaker: b.speaker, known: b.known, blocks: b.blocks.slice() });
     });
     merged.forEach(b => {
       const speaker = b.speaker === null ? NARRATOR : b.speaker;
