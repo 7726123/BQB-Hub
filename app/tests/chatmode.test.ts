@@ -132,6 +132,23 @@ describe('按书隔离', () => {
     expect(ChatMode.log().map(m => m.raw)).toEqual(['甲书的第一轮']);
   });
 
+  // 用户 2026-09-25：清空后输入框里还留着上一句（旧实现只清演出记录），且用的系统 confirm、
+  // 跟小说模式「重置本书」的应用内确认框不一致。现在两者都对齐。
+  it('清空：演出记录 + 输入栏 + 当轮状态一起清（同款应用内确认框）', () => {
+    seedBooks();
+    ChatMode.append('ai', '第一轮演出');
+    ChatMode.append('author', '没发出去的一句', { hidden: true } as any);
+    els['chatInput'].value = '没发出去的一句';
+    ChatMode._acc = '半截流式缓冲';
+    ChatMode._status = '正在思考…';
+    ChatMode.clearAll();
+    expect(ChatMode.log()).toHaveLength(0);                     // 记录清掉
+    expect(els['chatInput'].value).toBe('');                    // 输入栏也清掉（本次修复的重点）
+    expect(ChatMode._acc).toBe('');
+    expect(ChatMode._status).toBe('');
+    expect(ChatMode._lastInstruction).toBe('');
+  });
+
   it('生成途中切书：结果落回开始的哪本书，不串台', () => {
     const { a, b } = seedBooks();
     ChatMode._appendToBook(a, 'ai', '属于甲书');

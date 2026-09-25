@@ -132,11 +132,37 @@ export const ChatMode = {
     this.render();
   },
 
+  // 清空：与小说模式「重置本书」同款交互（应用内确认框，不用系统弹窗）+ 同款收尾——
+  // 除了这本书的演出记录，**输入栏与当轮状态也一并清干净**（用户 2026-09-25：点了清空，输入框里
+  // 还留着上一句没发出去的话，像是没清干净）。世界书与正文一律不动。
   clearAll(): void {
-    if (!confirm('清空这本书的全部演出记录？清空后不可恢复（世界书和正文不受影响）。')) return;
-    this._saveLog([]);
-    this.render();
-    try { App.toast('已清空演出记录'); } catch (e) { /* ignore */ }
+    const self = this;
+    let bookName = '当前书';
+    try { const wb: any = this.book(); if (wb && wb.name) bookName = String(wb.name); } catch (e) { /* ignore */ }
+    const run = () => {
+      self._saveLog([]);
+      const ta: any = document.getElementById('chatInput');
+      if (ta) {
+        ta.value = '';
+        try { if (typeof App !== 'undefined' && App.resetChatInput) App.resetChatInput(ta); } catch (e) { /* ignore */ }
+      }
+      // 当轮遗留状态一起清掉（否则清完还挂着上一轮的状态文案/流式缓冲/撤回指令）
+      self._acc = '';
+      self._status = '';
+      self._lastInstruction = '';
+      self._reasoningChars = 0;
+      self._scrollOnce = true;
+      try { smSet(self._ctxFromKey(), 0); } catch (e) { /* 水位线归零失败不影响清空 */ }
+      self.render();
+      try { App.toast('已清空演出记录'); } catch (e) { /* ignore */ }
+    };
+    try {
+      if (typeof UIManager !== 'undefined' && UIManager && typeof UIManager.showConfirm === 'function') {
+        UIManager.showConfirm('清空《' + bookName + '》的全部演出记录？此操作不可恢复（世界书与正文不受影响，输入栏里的内容也会一起清掉）。', run);
+        return;
+      }
+    } catch (e) { /* 弹框失败退回系统确认 */ }
+    if (confirm('清空《' + bookName + '》的全部演出记录？清空后不可恢复（世界书和正文不受影响）。')) run();
   },
 
   // ---------- 名单 / 头像 / 简介 ----------
@@ -775,9 +801,11 @@ export const ChatMode = {
       const byId: Record<string, any> = {};
       orig.forEach((e: any) => { if (e && e.id) byId[e.id] = e; });
       let out = '';
-      // 改过的条目：带最终内容
+      // 改过的条目：带最终内容。原书里已经没有这条（被删掉、或改名后被重建）→ 这条临时修订是孤儿，
+      // 直接跳过——否则会拿内部 id 当条目名塞进提示词（2026-09-25 一致性检查发现）
       Object.keys(ov.modified || {}).forEach((id: string) => {
         const src = byId[id];
+        if (!src) return;
         const m = (ov.modified || {})[id] || {};
         const name = m.name || (src && src.name) || id;
         const type = m.type || (src && src.type) || '其他';
@@ -785,9 +813,10 @@ export const ChatMode = {
         if (!content) return;
         out += '### [' + type + '] ' + name + '\n' + content + '\n\n';
       });
-      // 停用：原文留在上面的稳定块里不动，这里只说明它失效
+      // 停用：原文留在上面的稳定块里不动，这里只说明它失效（原书里已没有这条 → 孤儿，跳过）
       (ov.disabled || []).forEach((id: string) => {
         const src = byId[id];
+        if (!src) return;
         out += '### [' + ((src && src.type) || '其他') + '] ' + ((src && src.name) || id) +
           '\n（本条已临时停用：视作不存在，不要再使用它的设定）\n\n';
       });
@@ -1044,13 +1073,23 @@ export const ChatMode = {
     const restore = (prev && (prev.kind === 'author' || prev.kind === 'director')) ? prev.raw : '';
     if (prev && (prev.kind === 'author' || prev.kind === 'director')) cut = idx - 1;
     const ta = document.getElementById('chatInput') as HTMLTextAreaElement | null;
+    const doUndo = () => {
+      this._saveLog(all.slice(0, cut));       // 本轮之前的所有记录保留
+      if (ta) { ta.value = restore; ta.style.height = 'auto'; ta.style.height = Math.min(140, ta.scrollHeight) + 'px'; }
+      this._scrollOnce = true;                 // 撤回是用户主动动作：贴到底看撤回后的尾部
+      this.render();
+    };
+    // 覆盖未发送内容时的确认：与清空/重置同款，用应用内确认框（系统 confirm 在 App 里很出戏）
     if (ta && String(ta.value || '').trim() && restore) {
+      try {
+        if (typeof UIManager !== 'undefined' && UIManager && typeof UIManager.showConfirm === 'function') {
+          UIManager.showConfirm('输入框里还有没发出去的内容，撤回会覆盖它，继续？', doUndo);
+          return;
+        }
+      } catch (e) { /* 退回系统确认 */ }
       if (!confirm('输入框里还有没发出去的内容，撤回会覆盖它，继续？')) return;
     }
-    this._saveLog(all.slice(0, cut));       // 本轮之前的所有记录保留
-    if (ta) { ta.value = restore; ta.style.height = 'auto'; ta.style.height = Math.min(140, ta.scrollHeight) + 'px'; }
-    this._scrollOnce = true;                 // 撤回是用户主动动作：贴到底看撤回后的尾部
-    this.render();
+    doUndo();
   },
 
   // ---------- 演出 → 连续正文文本（记忆/归档用；不提供界面入口）----------

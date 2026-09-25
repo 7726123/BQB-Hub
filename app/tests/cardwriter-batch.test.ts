@@ -730,3 +730,204 @@ describe('写卡工作副本 = 世界书镜像（以世界书为准）', () => {
   });
 
 });
+
+// 「对话模式注入的条目」与「世界书 / 写卡里的世界书」是不是同一份（用户 2026-09-25 要求检查）。
+// 结论断言：写卡工作副本 = 世界书条目；对话模式的稳定注入块 = 世界书里可注入的条目（逐字节相同）；
+// 写卡刚写进去的条目，对话模式下一轮就能看到同样的内容；inject:false / 初始 按各自规则处理。
+describe('对话注入 ↔ 世界书 ↔ 写卡：同一本书的三处视图', () => {
+  const Chat = (): any => (globalThis as any).ChatMode;
+
+  function seed(entries: any[]): void {
+    WB_BOOKS = [{ id: 'wb1', name: '一致性书', entries: entries }];
+    WB_ACTIVE = 'wb1';
+    const c = Cw();
+    c._getTargetId = () => 'wb1';
+    c._saveDraft = () => {};
+    c.renderDraft = () => {};
+    c._snapshotNow = () => {};
+    c._draft = { characters: [], entries: [], deleted: [] };
+  }
+
+  it('写卡写入的条目 → 世界书 → 对话注入：内容逐字节一致（含中文与换行）', async () => {
+    const { ChatMode: CM } = await import('../src/domain/chatmode');
+    seed([
+      { id: 'e1', type: '角色', name: '林薇', content: '说话直接。', inject: true },
+      { id: 'e2', type: '世界观', name: '学校', content: '市立三中。\n天台锁着。', inject: true },
+      { id: 'e3', type: '其他', name: '不注入的条目', content: '内部备注。', inject: false },
+      { id: 'e4', type: '初始', name: '初始状态', content: '开学第二周。', inject: true },
+    ]);
+    // 写卡侧：镜像拉取后写入一条新角色（等于在写卡里新增）
+    const c = Cw();
+    c._syncDraftFromWorldbook();
+    expect(c._draft.characters.map((x: any) => x.name)).toContain('林薇');
+    expect(c._draft.entries.map((x: any) => x.name)).toContain('学校');
+    c._executeTool({ name: 'apply_character', arguments: { name: '陈亦', content: '话少，会弹吉他。' } });
+    c._doWriteToWorldbook(true);
+    // 世界书里有了
+    const book = WB_BOOKS[0].entries;
+    expect(book.some((e: any) => e.name === '陈亦' && e.content === '话少，会弹吉他。')).toBe(true);
+    // 对话模式注入：可注入的都出现、内容一致；inject:false 与「初始」不进稳定块
+    const sys = CM.buildSystem();
+    expect(sys).toContain('### [角色] 林薇\n说话直接。');
+    expect(sys).toContain('### [角色] 陈亦\n话少，会弹吉他。');
+    expect(sys).toContain('### [世界观] 学校\n市立三中。\n天台锁着。');
+    expect(sys).not.toContain('不注入的条目');
+    // 「初始」不进稳定世界书块（它是开局状态，走下面那个专用段）：
+    // 取「世界书条目」段到「故事初始状态」段之间的内容来断言
+    const wbSec = sys.slice(sys.indexOf('## 世界书条目'), sys.indexOf('## 故事初始状态') >= 0 ? sys.indexOf('## 故事初始状态') : undefined);
+    expect(wbSec).not.toContain('初始状态');
+    expect(sys).toContain('## 故事初始状态');          // 演出记录与正文都空 → 开局状态注入一次
+    // 名单同样来自同一本书
+    expect(CM.roster()).toEqual(expect.arrayContaining(['林薇', '陈亦']));
+  });
+
+  it('「初始」条目：演出记录与正文都空时按整条注入（开局状态）', async () => {
+    const { ChatMode: CM } = await import('../src/domain/chatmode');
+    seed([
+      { id: 'e4', type: '初始', name: '初始状态', content: '开学第二周，还没开始写正文。', inject: true },
+      { id: 'e2', type: '世界观', name: '学校', content: '市立三中。', inject: true },
+    ]);
+    expect(CM.buildSystem()).toContain('## 故事初始状态');
+    expect(CM.buildSystem()).toContain('开学第二周，还没开始写正文。');
+  });
+
+  it('空名条目：写卡不写它、对话也不注入它（不会出现「### [其他] undefined」）', async () => {
+    const { ChatMode: CM } = await import('../src/domain/chatmode');
+    seed([
+      { id: 'e1', type: '角色', name: '林薇', content: '说话直接。', inject: true },
+      { id: 'e6', type: '其他', name: '', content: '导入卡里的空名条目', inject: true },
+    ]);
+    const sys = CM.buildSystem();
+    expect(sys).toContain('林薇');
+    expect(sys).not.toContain('undefined');
+    expect(sys).not.toContain('导入卡里的空名条目');
+    // 写卡侧也不会把它写进世界书（写入前按 name 过滤）
+    const c = Cw();
+    c._syncDraftFromWorldbook();
+    c._doWriteToWorldbook(true);
+    expect(WB_BOOKS[0].entries.some((e: any) => !String(e.name || '').trim())).toBe(false);
+  });
+
+  // 2026-09-25 查出的老 bug：_doWriteToWorldbook 之前是**原地改** old.content，而"无需写入"判据
+  // 又拿 old.content 跟新内容比 —— 比较永远相等 → 只改内容的编辑被判成"已是最新"，saveAll 都不调
+  // （于是改动只活在内存缓存里，可能永远不落盘）。现在改成复制旧对象再改，判据才准。
+  it('只改内容也必须真写并落盘（id 与注入开关保留）；原样重写才判「已是最新」', () => {
+    seed([
+      { id: 'e1', type: '角色', name: '林薇', content: '旧内容', inject: false },
+      { id: 'e2', type: '世界观', name: '学校', content: '市立三中。', inject: true },
+    ]);
+    const c = Cw();
+    c._syncDraftFromWorldbook();
+    const saves: number[] = [];
+    const orig = (WBM as any).saveAll;
+    (WBM as any).saveAll = (arr: any) => { saves.push(1); WB_BOOKS = arr; };
+    try {
+      c._draft.characters[0].content = '新内容，加长了。'.repeat(3);
+      const r = String(c._doWriteToWorldbook(true));
+      expect(r).toContain('已写入世界书');
+      expect(saves.length).toBe(1);                                   // 真的落盘了
+      const e1 = WB_BOOKS[0].entries.find((e: any) => e.id === 'e1');
+      expect(e1.content).toContain('新内容');
+      expect(e1.inject).toBe(false);                                  // 手动关掉的注入没被打开
+      expect(String(c._doWriteToWorldbook(true))).toContain('已是最新');  // 内容一致 → 不白写
+      expect(saves.length).toBe(1);
+    } finally { (WBM as any).saveAll = orig; }
+  });
+
+  it('世界书页删掉的条目 → 对话注入里也没有（三处同时消失）', async () => {
+    const { ChatMode: CM } = await import('../src/domain/chatmode');
+    seed([
+      { id: 'e1', type: '角色', name: '林薇', content: '说话直接。', inject: true },
+      { id: 'e5', type: '世界观', name: '要被删的', content: 'x', inject: true },
+    ]);
+    expect(CM.buildSystem()).toContain('要被删的');
+    // 世界书页删除（ui 走 WorldBookManager.deleteEntry → saveAll → 通知写卡对齐）
+    (WBM as any).deleteEntry('wb1', 'e5');
+    expect(CM.buildSystem()).not.toContain('要被删的');
+    const c = Cw();
+    c._syncDraftFromWorldbook();
+    expect(c._draft.entries.some((x: any) => x.name === '要被删的')).toBe(false);
+  });
+});
+
+// 比奇的「临时修订」与写卡/世界书的一致性（2026-09-25 一致性检查的第二轮）：
+// ① 写卡重写了某条 → 针对旧原文做的临时修订会被清掉（否则它会在对话模式里把新内容盖住）；
+// ② 原书里已被删/改名的条目，它的临时修订/停用标记不再塞进提示词（孤儿记录）。
+describe('比奇临时修订 ↔ 写卡写入：不再互相盖住', () => {
+  function seedBook(entries: any[]): void {
+    WB_BOOKS = [{ id: 'wb1', name: '一致性书', entries: entries }];
+    WB_ACTIVE = 'wb1';
+    const c = Cw();
+    c._getTargetId = () => 'wb1';
+    c._saveDraft = () => {};
+    c.renderDraft = () => {};
+    c._snapshotNow = () => {};
+    c._draft = { characters: [], entries: [], deleted: [] };
+  }
+  // 把临时世界书的存储层换成内存对象，才能同时用真实实现（dropModified / overlayCtx）
+  let getOv: () => any = () => ({ modified: {}, disabled: [], added: [] });
+  async function withOverlay(ov: any, fn: (SS: any) => void | Promise<void>) {
+    const SSmod = await import('../src/domain/settingsync');
+    const SS: any = SSmod.SettingSyncManager;
+    const orig = { isActive: SS.isActive, getOverlay: SS.getOverlay, saveOverlay: SS.saveOverlay, _saveOverlay: SS._saveOverlay };
+    let cur = ov;
+    getOv = () => cur;                      // 回调里读当前 overlay（不能直接用外部 const：TDZ）
+    SS.isActive = () => true;
+    SS.getOverlay = () => cur;
+    SS.saveOverlay = (o: any) => { cur = o; };
+    SS._saveOverlay = (o: any) => { cur = o; };
+    try { await fn(SS); } finally {
+      Object.keys(orig).forEach((k) => { SS[k] = (orig as any)[k]; });
+    }
+  }
+
+  it('写卡改动某条 → 该条的对话临时修订被清掉；内容没变则不动比奇的修订', async () => {
+    seedBook([
+      { id: 'e1', type: '世界观', name: '学校', content: '旧原文。', inject: true },
+      { id: 'e2', type: '角色', name: '林薇', content: '说话直接。', inject: true },
+    ]);
+    const { ChatMode: CM } = await import('../src/domain/chatmode');
+    await withOverlay(
+      { modified: { e1: { content: '比奇的临时修订。' }, e2: { content: '林薇的临时修订。' } }, disabled: [], added: [] },
+      (SS: any) => {
+        expect(CM.overlayCtx()).toContain('比奇的临时修订。');
+        const c = Cw();
+        c._syncDraftFromWorldbook();
+        // 只改「学校」这条（比奇对它的修订应被清掉）；「林薇」原样重写（修订保留）
+        const idx = c._draft.entries.findIndex((x: any) => x.name === '学校');
+        c._draft.entries[idx].content = '写卡写的新原文。';
+        const calls: any[] = [];
+        const realDrop = SS.dropModified;
+        SS.dropModified = (ids: any) => { calls.push(ids); return realDrop.call(SS, ids); };
+        const savedAt: number[] = [];
+        const origSaveAll = (WBM as any).saveAll;
+        (WBM as any).saveAll = (arr: any) => { savedAt.push(1); WB_BOOKS = arr; };
+        const wr = c._doWriteToWorldbook(true);
+        expect(String(wr)).toContain('已写入世界书');      // 只改内容也必须真的写（见下方的原地改 bug）
+        expect(calls.length).toBeGreaterThan(0);           // 并且把该条的临时修订清掉
+        SS.dropModified = realDrop;
+        (WBM as any).saveAll = origSaveAll;
+        expect(savedAt.length).toBeGreaterThan(0);          // 真的落盘了
+        expect(WB_BOOKS[0].entries.find((e: any) => e.id === 'e1').content).toBe('写卡写的新原文。');
+        expect(getOv().modified.e1).toBeUndefined();
+        expect(getOv().modified.e2).toBeTruthy();
+        expect(CM.overlayCtx()).not.toContain('比奇的临时修订。');
+        expect(CM.overlayCtx()).toContain('林薇的临时修订。');
+        expect(CM.buildSystem()).toContain('写卡写的新原文。');   // 稳定块里是新内容
+      });
+  });
+
+  it('原书里已不存在的条目：它的临时修订/停用标记不会以内部 id 当名字塞进提示词', async () => {
+    seedBook([{ id: 'e1', type: '世界观', name: '学校', content: '原文。', inject: true }]);
+    const { ChatMode: CM } = await import('../src/domain/chatmode');
+    await withOverlay(
+      { modified: { e1: { content: '有效修订。' }, e9: { content: '孤儿内容。' } }, disabled: ['e8'], added: [] },
+      () => {
+        const ovCtx = CM.overlayCtx();
+        expect(ovCtx).toContain('有效修订。');
+        expect(ovCtx).not.toContain('孤儿内容。');
+        expect(ovCtx).not.toContain('e9');
+        expect(ovCtx).not.toContain('e8');
+      });
+  });
+});

@@ -173,8 +173,11 @@ export const WorldBookManager = {
 export const WB_INJECT_MAX_CHARS = 100000;
 export interface WBInjectResult { kept: any[]; skipped: number; chars: number; budget: number }
 export function selectInjectableEntries(entries: any[], budgetChars: number): WBInjectResult {
+  // 没有名字的条目不注入：模型看不到名字就没法引用它，只会在提示词里留一行「### [其他] undefined」
+  // （2026-09-25 一致性检查：导入卡/手改数据里可能有空名条目，注入侧统一跳过）
   const list = (entries || []).filter(function (e: any) {
-    return e && e.inject !== false && e.type !== '变量' && e.type !== '前端' && e.type !== '初始';
+    return e && e.inject !== false && e.type !== '变量' && e.type !== '前端' && e.type !== '初始'
+      && String(e.name || '').trim().length > 0;
   });
   const sizeOf = function (e: any) { return String(e.content || '').length + String(e.name || '').length + 12; };
   const budget = Number(budgetChars) || 0;

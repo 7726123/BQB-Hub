@@ -282,6 +282,20 @@ export const SettingSyncManager = {
     return Object.keys(o.modified).length + o.disabled.length + o.added.length;
   },
 
+  /**
+   * 清掉指定条目的「临时修订」（modified）。写卡/世界书页重写了原书条目后调用：
+   * 临时修订是针对旧原文做的，用户刚把新内容写进原书，留着它只会在 prompt 里把新内容盖住。
+   * 返回清掉的条数（原样重写、内容没变时不会调用到这里）。
+   */
+  dropModified(ids: string[]): number {
+    const o = this.getOverlay();
+    let n = 0;
+    (ids || []).forEach(function (id) {
+      if (id && Object.prototype.hasOwnProperty.call(o.modified, id)) { delete o.modified[id]; n++; }
+    });
+    if (n > 0) this._saveOverlay(o);
+    return n;
+  },
   entryStatus(entryId: string): 'modified' | 'disabled' | 'added' | 'orig' {
     const o = this.getOverlay();
     if (o.disabled.indexOf(entryId) >= 0) return 'disabled';

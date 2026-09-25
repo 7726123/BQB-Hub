@@ -2,6 +2,7 @@ import { SM } from '../infra/gate';
 import { adaptTavernLorebook, type TavernPolicy } from './tavern-adapter';
 import { WorldBookManager } from './worldbook';
 import { CharacterManager } from './character';
+import { SettingSyncManager } from './settingsync';
 import { selectedRawText, rawOffsetOf, nodeAtRawOffset, roundIndexOf, collectRoundDeletes } from '../lib/msgslice';
 import { renderMdStrong } from '../lib/mdtext';
 
@@ -2341,15 +2342,18 @@ const CardWriterChat: CardWriterChatShape = {
       const ia = TYPE_ORDER.indexOf(a.type), ib = TYPE_ORDER.indexOf(b.type);
       return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib);
     });
+    const changedIds: string[] = [];   // 内容真变了的条目 id（用于清掉针对旧原文的临时修订）
     const newEntries = allItems.map(function (it) {
       const old = oldMap[it.type + ':' + it.name];
-      // 同名同类型：原地更新内容，保留 id/头像/注入开关 —— 直写是高频动作，
-      // 每次都换 id 会让世界书面板里的编辑/引用指空，也会把用户手动关掉的注入又打开
+      // 同名同类型：**复制**旧对象再改内容，保留 id/头像/注入开关 —— 直写是高频动作，
+      // 每次都换 id 会让世界书面板里的编辑/引用指空，也会把用户手动关掉的注入又打开。
+      // ⚠️ 必须复制而不是原地改 old：下面 _unchanged 要拿 old.content 跟新内容比，
+      // 原地改会让比较永远相等 → 只改内容的编辑被判成"无需写入"、saveAll 都不调（2026-09-25 查出）
       if (old && old.type === it.type) {
-        old.name = it.name;
-        old.content = it.content;
-        if (old.inject === undefined) old.inject = true;
-        return old;
+        if (old.id && (old.content || '') !== (it.content || '')) changedIds.push(String(old.id));
+        const next: any = Object.assign({}, old, { name: it.name, content: it.content });
+        if (next.inject === undefined) next.inject = true;
+        return next;
       }
       return { id: 'wbe_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6), type: it.type, name: it.name, content: it.content, inject: true };
     });
@@ -2367,6 +2371,18 @@ const CardWriterChat: CardWriterChatShape = {
     });
     wb.entries = newEntries;
     WorldBookManager.saveAll(WorldBookManager.getAll());
+    // 内容被重写的条目 → 清掉对话模式那份临时世界书里的同名修订：临时修订是针对旧原文做的，
+    // 留着它会在对话模式里把刚写的新内容盖住（2026-09-25 一致性检查：写卡/世界书改了，
+    // 对话注入却还是旧的临时版本）。只清"内容真的变了"的条目，原样重写不打扰比奇的修订。
+    if (changedIds.length > 0) {
+      try {
+        const SS: any = SettingSyncManager;
+        if (SS && typeof SS.dropModified === 'function') {
+          if (typeof SS.withMode === 'function') SS.withMode('chat', () => SS.dropModified(changedIds));
+          else SS.dropModified(changedIds);
+        }
+      } catch (e) { /* 清理失败不影响写入 */ }
+    }
     // 写入完成：世界书已与当前内容一致，删除墓碑不再需要
     this._draft.deleted = [];
     this._saveDraft();
