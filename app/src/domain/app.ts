@@ -1331,7 +1331,9 @@ const App: AppShape = {
         return (ch.content || '').replace(/<[^>]*>/g, '').trim().length > 0;
       });
       if (_bodyEmpty) {
-        var _initEntries = _origEntries.filter(function (e) { return e.type === '初始' && e.content; });
+        // inject !== false：世界书面板里关掉注入的条目一律不注入（2026-09-26 用户反馈：
+        // 关掉「初始」条目后仍在注入——这条独立路径以前只看 type，没看注入开关）
+        var _initEntries = _origEntries.filter(function (e) { return e.type === '初始' && e.content && e.inject !== false; });
         if (_initEntries.length > 0) {
           _stableCtx += '\n## 故事初始状态\n';
           _initEntries.forEach(function (e) {

@@ -778,7 +778,9 @@ export const ChatMode = {
     const logEmpty = this.log().length === 0;
     const bodyEmpty = !((wb && wb.chapters) || []).some((ch: any) => String(ch.content || '').replace(/<[^>]*>/g, '').trim().length > 0);
     if (logEmpty && bodyEmpty) {
-      const init = origEntries.filter((e: any) => e && e.type === '初始' && e.content);
+      // inject !== false：面板里关掉注入的「初始」条目不能注入（与小说模式同一条规则；
+      // 2026-09-26 用户反馈：关掉初始条目后两边都还在注入——这条独立路径以前只看 type）
+      const init = origEntries.filter((e: any) => e && e.type === '初始' && e.content && e.inject !== false);
       if (init.length > 0) {
         wbBlock += '## 故事初始状态\n';
         init.forEach((e: any) => { wbBlock += '### [' + e.type + '] ' + e.name + '\n' + e.content + '\n\n'; });

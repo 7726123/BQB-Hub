@@ -1308,3 +1308,23 @@ describe('尾部模块：思考要求插在【作者】之后、【格式】之�
     expect(user).not.toContain('绝对禁止在思考里写正文草稿');   // 那是续写版，演出版不能禁（会丢引号）
   });
 });
+
+// 2026-09-26 用户反馈：在世界书面板里关掉「初始」条目的注入后仍在注入。
+// 原因是初始条目走的是独立路径（`## 故事初始状态`），只筛了 type，没看 inject 开关。
+describe('初始条目：注入开关必须生效（与小说模式同一条规则）', () => {
+  it('inject:false 的初始条目不进系统提示词；inject:true 的照常进', () => {
+    const { a } = seedBooks();
+    const all = WBM.getAll();
+    all.find(w => w.id === a)!.entries = (all.find(w => w.id === a)!.entries || []).concat([
+      { id: 'ini_on', type: '初始', name: '开局A', content: '【应注入】故事从灰港的雨夜开始。', inject: true },
+      { id: 'ini_off', type: '初始', name: '开局B', content: '【不该注入】这条被关掉了。', inject: false },
+      { id: 'ini_def', type: '初始', name: '开局C', content: '【默认应注入】没写开关的条目。' },
+    ]);
+    WBM.saveAll(all);
+    const sys = ChatMode.buildSystem();
+    expect(sys).toContain('## 故事初始状态');
+    expect(sys).toContain('【应注入】');
+    expect(sys).toContain('【默认应注入】');
+    expect(sys).not.toContain('【不该注入】');
+  });
+});

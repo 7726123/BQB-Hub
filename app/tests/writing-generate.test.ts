@@ -578,3 +578,41 @@ describe('无原生思考通道的模型：靠"预设里有思维链模块"拿�
     expect(instr).toContain('先看再写');   // 思维链还是照发（走原生通道）
   });
 });
+
+// 同一件事的小说模式一侧：初始条目（`## 故事初始状态`）也要尊重注入开关
+describe('初始条目注入开关（小说模式）', () => {
+  it('inject:false 的初始条目不进请求；inject:true 的在', async () => {
+    const mem = new Map<string, string>();
+    G.StorageManager = {
+      get: (k: string, d?: any) => (mem.has(k) ? JSON.parse(mem.get(k)!) : d),
+      set: (k: string, v: any) => { mem.set(k, JSON.stringify(v)); },
+      remove: (k: string) => { mem.delete(k); },
+    };
+    const WBM = (await import('../src/domain/worldbook')).WorldBookManager as any;
+    WBM.saveAll([]);
+    const bk = WBM.createBook('初始开关测试');
+    // 注意：内存桩的 get 每次重新解析 → 必须"读一份、改这份、再存"（直接改 createBook 的返回值不会落盘）
+    const _all = WBM.getAll();
+    const _bkRef = _all.find((w: any) => w.id === bk.id);
+    _bkRef.entries = [
+      // 至少一条非初始条目：初始块被 `_wbEntries.length > 0` 这个外层判据管着（沿用既有行为）
+      { id: 'c1', type: '角色', name: '苏黎', content: '见习守夜人。' },
+      { id: 'ini_on', type: '初始', name: '开局A', content: '【应注入】从雨夜开始。', inject: true },
+      { id: 'ini_off', type: '初始', name: '开局B', content: '【不该注入】已关掉。', inject: false },
+    ];
+    WBM.saveAll(_all);
+    WBM.setActiveId(bk.id);
+    const calls: any[] = [];
+    G.APIHandler = {
+      _apiCalls: [], abort: () => {},
+      fetchCompletions: vi.fn(async (msgs: any, _onChunk: any, onDone: any) => { calls.push(msgs); onDone('', false, ''); }),
+    };
+    G.PresetManager = tolerant({ getActiveAPIConfig: () => ({ apiKey: 'k', model: 'test-model', endpoint: 'http://x/v1', temperature: 0.9 }), getCurrentPreset: () => null, getActiveSystemPrompt: () => 'x', tailText: () => '' });
+    App.isGenerating = false;
+    await App.generate('autoContinue');
+    const all = (calls[0] || []).map((m: any) => String(m.content)).join('\n');
+    expect(all).toContain('## 故事初始状态');
+    expect(all).toContain('【应注入】');
+    expect(all).not.toContain('【不该注入】');
+  });
+});
