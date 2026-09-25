@@ -244,6 +244,27 @@ describe('漂移兜底：台词分色与旁白另起（真机反馈）', () => {
     expect(b[0].blocks.map(x => x.text).join('').replace(/\n/g, '')).toBe('我点头。她哦了一声。');
   });
 
+  // 用户 2026-09-26 反馈：主角气泡里 `我在廊下站着，她就这么扫过去…` 整句被染成深色
+  //（同段只有 `她没赶我，也没理我。` 是对的）。主角=第一人称叙述者，它气泡里的"我…"长动作句
+  // 只要没有第二人称/疑问/语气词、也没有说话·心理类动词，就当叙述。
+  it('主角气泡里的第一人称长动作句是叙述（我在廊下站着…）；短回复与带说话动词的仍是台词', () => {
+    const N = { ...AI, narrator: '林叶' };
+    const b = parseBubbles('林叶：我在廊下站着，她就这么扫过去，扫到殿角那边，又扫回来，绕着我站的地方兜了半圈。\n她没赶我，也没理我。你叫什么来着。', N);
+    expect(b[0].blocks.map(x => x.type)).toEqual(['act', 'say']);
+    expect(b[0].blocks[0].text).toContain('我在廊下站着');
+    expect(b[0].blocks[1].text).toBe('你叫什么来着。');
+    // 边界：短回复 / 带说话·心理动词 / 带第二人称或疑问 → 仍是台词
+    for (const t of ['林叶：我知道。', '林叶：我还没拆。', '林叶：我其实早就知道这件事了。', '林叶：我这周末去找你，行不行。', '林叶：我说过这话吗。']) {
+      expect(parseBubbles(t, N)[0].blocks.map(x => x.type), t).toEqual(['say']);
+    }
+    // 没有 narrator 提示时不做这件事（只有对话模式知道谁是叙述者）：
+    // 同一条没有"站着"这类动作词的句子，不传 narrator 就是台词、传了才是叙述
+    expect(parseBubbles('林叶：我在门口等了半个钟头，她才慢慢腾腾地挪过来。', AI)[0].blocks.map(x => x.type)).toEqual(['say']);
+    expect(parseBubbles('林叶：我在门口等了半个钟头，她才慢慢腾腾地挪过来。', N)[0].blocks.map(x => x.type)).toEqual(['act']);
+    // 非主角气泡里第一人称照旧是台词（真机 fixture 的形态：林薇在说自己的事）
+    expect(parseBubbles('林薇 我去办公室拿名单，路过窗户。', N)[0].blocks.map(x => x.type)).toEqual(['say']);
+  });
+
   it('第一人称的身体动作/操作是叙述（我把信封翻过来。/ 我抬头。）', () => {
     expect(parseBubbles('林叶 我把信封翻过来。背面空的，封口用胶水粘的，边上有点毛。', AI)[0].blocks.map(x => x.type)).toEqual(['act']);
     expect(parseBubbles('林叶 我抬头。', AI)[0].blocks.map(x => x.type)).toEqual(['act']);

@@ -31,6 +31,7 @@ export interface ParseOpts {
   bareIsSay?: boolean;       // 裸文本算语言（作者输入 true；AI 输出 false）
   defaultSpeaker?: string | null;  // 无前缀时的归属（作者输入 = 主角名；AI 输出 = null → 白）
   aliases?: Record<string, string>; // 别名 → 规范名（如 { '我': 主角名 }：第一人称视角下模型会说「我」）
+  narrator?: string;         // 第一人称叙述者（主角）的名字：它的气泡里"我…"的长动作句按叙述着色（见 looksLikeSpeech）
 }
 
 export interface ParseReport {
@@ -219,17 +220,23 @@ const SPEECH_MARK = /[我你您咱]|[？！…]|[吧吗呢啊哦呀嘛](?:[。�
 // 那是说话（`你把信给我。` `别把这事说出去。`）。把台词判成淡色是用户报过的更严重的错，宁可漏判。
 const ACT_GUARD = /[你您咱]|[？！…～]|[吧吗呢啊哦呀嘛啦嘞]|别|请|喂|嗯|谢谢|对不[起住]/;
 const ACT_POSSESS = /把[^，。！？…]{1,14}/;
-const ACT_BODY = /(?:抬|低|回|点|摇|转)(?:起|下|过|了|着)?(?:了|一下)?(?:头|身|脸|眼)|伸出手|伸手|抬手|收回|掏出|塞回|塞进|捂住?|按住|拍|敲|踢|踩|拎|抱起?|搂|牵|背起|戴上|脱下|解开|系上|打开|关上|收起|翻开|翻到|合上|放下|拿起|抓起|捏住|推开|拉开|走进|走出|回到|停住|愣住|皱眉|叹气|抬眼|垂下|看向|盯着|瞥|(?:看|扫|望|瞄|瞟)了?(?:一眼|一下|两眼|几眼)/;
+const ACT_BODY = /(?:抬|低|回|点|摇|转)(?:起|下|过|了|着)?(?:了|一下)?(?:头|身|脸|眼)|伸出手|伸手|抬手|收回|掏出|塞回|塞进|捂住?|按住|拍|敲|踢|踩|拎|抱起?|搂|牵|背起|戴上|脱下|解开|系上|打开|关上|收起|翻开|翻到|合上|放下|拿起|抓起|捏住|推开|拉开|走进|走出|回到|停住|愣住|皱眉|叹气|抬眼|垂下|看向|盯着|瞥|站(?:着|在|起)|坐(?:着|在|下)|躺(?:着|在)|靠(?:着|在)|蹲(?:着|下)|(?:看|扫|望|瞄|瞟)了?(?:一眼|一下|两眼|几眼)/;
 // "指示代词主语 + 状态"的叙述句（`那一眼没什么表情。` `这声音很轻。`）——真机反馈里这类被当成了台词；
 // 要求同时出现状态标记（没什么/没有/很/…），比单看"那/这"开头安全（`那我先走了。` 仍是说话）。
 const NARR_DEMON = /^(?:那|这)(?:一|个|种|副|张|声|下|眼|脸|阵|丝|抹|道|片|只|双|口|句|次|回|条|把|点|番)[^，。！？…]{0,12}(?:没什么|没有|不是|不像|很|挺|太|有点|显得|透着|带着)/;
 // 程度补语句（`答得太快。` `走得比谁都快。`）是叙述，不是说话
 const NARR_DEGREE = /^[^，。！？…]{1,6}[得地](?:太|很|挺|有点|比|像|更|极|非常|特别)/;
+// 说话/心理类动词收尾过：句子里有它们，"我…"多半是在说话（`我其实早就知道这件事了。`）
+const SAY_VERB_ANY = /(?:说|问|答|道|想|知道|觉得|认为|明白|记得|忘|希望|打算|愿意|喜欢|讨厌|抱歉|对不[起住]|谢谢|懂)/;
 
 // 拟声/短音 + "了一声"（`哦了一声。` `应了一声。`）必定是叙述（谁发出了什么声音），不是台词
 const NARR_UTTER = /^[^，。！？…]{0,3}(?:了一声)/;
 
-function looksLikeSpeech(sentence: string): boolean {
+// narratorBubble = 这个气泡的说话人是**第一人称叙述者本人**（主角）。
+// 主角气泡里的"我…"长句：没有第二人称/疑问/语气词，也没有说话·心理类动词时，当叙述
+// （`我在廊下站着，她就这么扫过去…`——真机反馈里这种整句被染成了深色台词）。
+// 短回复（`我知道。` `我还没拆。`）与带说话动词的（`我其实早就知道…`）仍是台词。
+function looksLikeSpeech(sentence: string, narratorBubble = false): boolean {
   const s = sentence.trim();
   if (!s) return false;
   if (NARR_HEAD.test(s)) return false;
@@ -239,6 +246,9 @@ function looksLikeSpeech(sentence: string): boolean {
   const gc = s.replace(/[哦嗯啊诶欸噢唔喔]{1,2}了一声/g, '');
   if (!ACT_GUARD.test(gc) && (NARR_DEMON.test(s) || NARR_DEGREE.test(s))) return false;
   if (!ACT_GUARD.test(gc) && (ACT_POSSESS.test(s) || ACT_BODY.test(s))) return false;
+  if (narratorBubble && s.indexOf('我') >= 0 && Array.from(s).length >= 12
+    && !/[你您]|[？！…～]/.test(gc) && !/[吧吗呢啊哦呀嘛啦嘞](?:[。！？…]|$)/.test(s)
+    && !SAY_VERB_ANY.test(s)) return false;
   if (!SPEECH_MARK.test(s) && s.length >= 18) return false;   // 没有口语标记的长句 → 当叙述
   return true;
 }
@@ -261,7 +271,7 @@ function splitSentences(text: string): Array<{ text: string; nlBefore?: boolean 
   return out;
 }
 
-function speechifyAct(text: string, nlBefore?: boolean): BubbleBlock[] {
+function speechifyAct(text: string, nlBefore?: boolean, narratorBubble = false): BubbleBlock[] {
   const out: BubbleBlock[] = [];
   // 先接"折行"：换行后上一句还没有句末标点（`我点头。她\n哦\n了一声。`），说明模型只是把一句
   // 折成了几行——碎片（≤3 字且没有句末标点）也一并接回，否则「哦」会被当成一句短台词染深色
@@ -275,7 +285,7 @@ function speechifyAct(text: string, nlBefore?: boolean): BubbleBlock[] {
     else parts.push({ text: p.text, nlBefore: p.nlBefore });
   });
   parts.forEach((p, i) => {
-    const type: 'say' | 'act' = looksLikeSpeech(p.text) ? 'say' : 'act';
+    const type: 'say' | 'act' = looksLikeSpeech(p.text, narratorBubble) ? 'say' : 'act';
     const last = out[out.length - 1];
     const nl = i === 0 ? nlBefore : p.nlBefore;
     if (last && last.type === type) last.text += (nl ? '\n' : '') + p.text;
@@ -492,10 +502,12 @@ export function parseBubbles(raw: string, opts: ParseOpts = {}): Bubble[] {
     // 引号只在"有"的时候才说明模型在正常格式上，（）/* 造成的非语言块不动。
     const speechify = !bareIsSay && !!cur.speaker && cur.speaker !== NARRATOR
       && !/[「」『』“”"]/.test(body);
+    // 这个气泡的说话人就是第一人称叙述者（主角）吗？——决定"我…"的长句按叙述还是台词着色
+    const narrBubble = !!opts.narrator && cur.speaker === opts.narrator;
     const blocks: BubbleBlock[] = [];
     src.forEach(b => {
       const parts: BubbleBlock[] = (speechify && b.type === 'act' && b.fromBare)
-        ? speechifyAct(b.text, b.nlBefore)
+        ? speechifyAct(b.text, b.nlBefore, narrBubble)
         : [{ type: b.type, text: b.text, nlBefore: b.nlBefore }];
       parts.forEach(p => {
         const last = blocks[blocks.length - 1];

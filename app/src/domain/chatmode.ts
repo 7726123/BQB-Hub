@@ -183,8 +183,10 @@ export const ChatMode = {
     }
     return map;
   },
-  parseOpts(): { roster: string[]; aliases: Record<string, string> } {
-    return { roster: this.roster(), aliases: this.aliases() };
+  parseOpts(): { roster: string[]; aliases: Record<string, string>; narrator?: string } {
+    // narrator = 主角：它的气泡里"我…"的长动作句按叙述着色（模型整轮不写引号时的兜底，见 lib/bubble.ts）
+    const p = this.protagonistName();
+    return { roster: this.roster(), aliases: this.aliases(), narrator: p || undefined };
   },
 
   _entryByName(name: string): any | null {

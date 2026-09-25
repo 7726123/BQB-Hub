@@ -1001,6 +1001,12 @@ describe('龙套角色（路人/同学A）：登记、名单与头像（2026-09-
     return { calls, modeOf: () => mode, restore: () => { Object.keys(orig).forEach(k => { SS[k] = orig[k]; }); } };
   }
 
+  it('parseOpts 带上 narrator（主角名）：主角气泡里的第一人称长动作句才能按叙述着色', () => {
+    seedBooks(); setupPreset(null);
+    expect(ChatMode.parseOpts().narrator).toBe('林叶');
+    expect(ChatMode.parseOpts().roster).toContain('林薇');
+  });
+
   it('模式停在 novel 时，读名单/简介也走对话那份临时世界书（读完还原，不给小说留副作用）', () => {
     seedBooks(); setupPreset(null);
     const s = stubSS({ effective: (m) => (m === 'chat' ? [{ id: 'c1', type: '角色', name: '对话模式的龙套', content: 'x', inject: true }] : []) });
