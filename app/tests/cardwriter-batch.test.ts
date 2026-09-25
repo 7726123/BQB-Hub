@@ -72,7 +72,7 @@ function prime(): any {
 }
 
 function entry(name: string, type = '其他', content = '内容'): any {
-  return { type, name, content, status: 'confirmed', origin: 'user' };
+  return { type, name, content };
 }
 
 function okOf(jsonText: string): any {
@@ -480,5 +480,88 @@ describe('写卡上下文注入：每次都注入，无开关', () => {
     expect(html).toContain('id="cwHandgun"');
     expect(cw).toMatch(/SM\(\)\.get[^)]*cwNsfw/);
     expect(cw).toMatch(/SM\(\)\.get[^)]*cwHandgun/);
+  });
+});
+
+// 轮次门控（2026-09-25 用户）：「设计阶段只输出设计，不要多轮循环、也不要直接写入」。
+// 实现在前端：设计轮**完全不给工具**（模型无从调用 → 一轮结束），操作轮才给。
+// 另：「一按发送就显示正在写入」的状态文案已下线，只有真的执行写入时才提示。
+describe('轮次门控：设计轮不给工具、操作轮才给', () => {
+  function prime(c: any): void {
+    c._getTargetId = () => 'wb1';
+    c._saveDraft = () => {};
+    c.renderDraft = () => {};
+    c.renderMessages = () => {};
+    c._snapshotNow = () => {};
+    c._syncDraftFromWorldbook = () => {};
+    c._recentHistory = () => [];
+    c._save = () => {};
+    c.refreshContext = function () { (this as any)._context = { wb: { id: 'wb1' }, bookName: '测试书', charsText: '', charCount: 0, worldSetting: true, wbParts: [] }; };
+    c._draft = { characters: [], entries: [], deleted: [] };
+    els.set('cardwriterInput', Object.assign(el(), { value: '' }));
+  }
+  function stubApi(): any {
+    const box: any = { ov: null, msgs: null };
+    anyG.APIHandler = {
+      probeToolsSupport: () => Promise.resolve(true),
+      abort: () => undefined,
+      fetchCompletions: (msgs: any, _onChunk: any, onDone: any, _onErr: any, o: any) => {
+        box.msgs = msgs; box.ov = o;
+        onDone('回复', false, '');
+        return Promise.resolve();
+      },
+    };
+    return box;
+  }
+
+  it('意图判定：讨论/构思/征询 → 设计轮；写入/修改/整理/跑批 → 操作轮', () => {
+    const c = Cw();
+    const design = [
+      '帮我想想这个角色怎么样', '要不要给他加个妹妹？', '先看看现在的设定',
+      '我们讨论一下世界观的方向', '你觉得呢', '我想做一个新角色：女高中生，怕黑',
+      '目前已经定了林晚，下一步呢',
+    ];
+    const act = [
+      '写入吧', '就这样', '按这个改', '帮我构建好整套设定', '把林晚改成男高中生',
+      '整理一下这本书的条目', '继续', '适配这张酒馆卡', '把多余的条目删掉', '给陈默加个设定',
+    ];
+    design.forEach((t) => expect(c._hasWriteIntent(t), t).toBe(false));
+    act.forEach((t) => expect(c._hasWriteIntent(t), t).toBe(true));
+    // 「继续说说」带讨论词 → 仍是设计轮（大卡跑批的「继续」单独一句才是操作轮）
+    expect(c._hasWriteIntent('继续说说')).toBe(false);
+  });
+
+  it('设计轮：请求里没有 tools，末尾附「本轮：设计轮」；等待文案不是「正在写入…」', async () => {
+    const c = Cw();
+    prime(c);
+    const box = stubApi();
+    els.get('cardwriterInput').value = '帮我想想这个新角色怎么样';
+    await c.sendMessage();
+    expect(c._designTurn).toBe(true);
+    expect(c._statusText).not.toContain('正在写入');
+    expect(box.ov.tools).toBeUndefined();                       // 一个工具都不给
+    expect(String(box.msgs[box.msgs.length - 1].content)).toContain('【本轮：设计轮');
+    expect(box.msgs.filter((m: any) => m.role === 'assistant' && m.tool_calls).length).toBe(0);
+  });
+
+  it('操作轮：工具齐全、不附设计轮说明', async () => {
+    const c = Cw();
+    prime(c);
+    const box = stubApi();
+    els.get('cardwriterInput').value = '写入吧';
+    await c.sendMessage();
+    expect(c._designTurn).toBe(false);
+    expect(Array.isArray(box.ov.tools)).toBe(true);
+    expect(box.ov.tools.length).toBeGreaterThan(5);
+    expect(String(box.msgs[box.msgs.length - 1].content)).not.toContain('【本轮：设计轮');
+  });
+
+  it('变更工具的 schema 里不再有 status/origin 标记参数', () => {
+    const names = Cw()._tools().map((t: any) => t.function.name);
+    expect(names).toContain('apply_character');
+    expect(names).not.toContain('propose_setting');
+    const blob = JSON.stringify(Cw()._tools());
+    expect(blob).not.toContain("'origin'");
+    expect(blob).not.toContain('crossref');
   });
 });

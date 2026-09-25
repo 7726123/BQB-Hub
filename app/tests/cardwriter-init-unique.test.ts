@@ -72,7 +72,7 @@ describe('upsert_entry：初始条目唯一', () => {
     const r = c._executeTool({ name: 'upsert_entry', arguments: { type: '初始', name: '故事起始', content: '开头B' } });
     expect(String(r)).toBe('更新初始条目：故事起始');
     expect(c._draft.entries).toHaveLength(1);
-    expect(c._draft.entries[0]).toEqual({ type: '初始', name: '故事起始', content: '开头B', status: 'confirmed', origin: 'user' });
+    expect(c._draft.entries[0]).toEqual({ type: '初始', name: '故事起始', content: '开头B' });
   });
 
   it('已有初始条目但 AI 传了不同条目名 → 仍更新原条目，不新增第二条（本次 bug 场景）', () => {
@@ -81,7 +81,7 @@ describe('upsert_entry：初始条目唯一', () => {
     const r = c._executeTool({ name: 'upsert_entry', arguments: { type: '初始', name: '初始状态', content: '新内容' } });
     expect(String(r)).toBe('更新初始条目：初始状态');
     expect(countInit(c._draft.entries)).toBe(1);
-    expect(c._draft.entries[0]).toEqual({ type: '初始', name: '初始状态', content: '新内容', status: 'confirmed', origin: 'user' });
+    expect(c._draft.entries[0]).toEqual({ type: '初始', name: '初始状态', content: '新内容' });
   });
 
   it('草稿无初始条目 → 新增第一条', () => {
@@ -220,7 +220,7 @@ describe('直写：删除即时生效 / 无变化不重建', () => {
     c._draft = { characters: [], entries: [], deleted: [] };
     c._getTargetId = () => 'wb1';
     const r = c._doWriteToWorldbook();
-    expect(String(r)).toContain('没有可写入的已确认内容');
+    expect(String(r)).toContain('没有可写入的内容');
     expect(WB_BOOKS[0].entries).toHaveLength(0);
   });
 
@@ -236,18 +236,18 @@ describe('直写：删除即时生效 / 无变化不重建', () => {
   });
 });
 
-describe('写入前验收（status/origin 数据层）', () => {
-  it('proposed（讨论中）不写入：角色与条目都留在待办，只写 confirmed', () => {
+describe('写入即完全写入（没有中间态/标记）', () => {
+  it('草稿里的每一条都写入世界书：不再有「讨论中不写入」的过滤', () => {
     WB_BOOKS = [{ id: 'wb1', name: '测试书', entries: [] }];
     const c = Cw();
     c._draft = {
       characters: [
-        { name: '林晚', content: '正式人设…', status: 'confirmed', origin: 'user' },
-        { name: '构想角色', content: '讨论中的想法', status: 'proposed', origin: 'ai' },
+        { name: '林晚', content: '正式人设…' },
+        { name: '构想角色', content: '讨论中的想法' },
       ],
       entries: [
-        { type: '世界观', name: '世界背景', content: 'X', status: 'confirmed', origin: 'user' },
-        { type: '其他', name: '备用想法', content: 'Y', status: 'proposed', origin: 'ai' },
+        { type: '世界观', name: '世界背景', content: 'X' },
+        { type: '其他', name: '备用想法', content: 'Y' },
       ],
       deleted: [],
     };
@@ -257,15 +257,33 @@ describe('写入前验收（status/origin 数据层）', () => {
     c.refreshContext = () => {};
     const r = c._doWriteToWorldbook();
     expect(String(r)).toContain('已写入世界书');
-    expect(String(r)).toContain('2 条讨论中想法未写入');
+    expect(String(r)).not.toContain('未写入');           // 旧文案「N 条讨论中想法未写入」已下线
     const wbNames = WB_BOOKS[0].entries.map((e: any) => e.name);
-    expect(wbNames).toContain('林晚');
-    expect(wbNames).toContain('世界背景');
-    expect(wbNames).not.toContain('构想角色');
-    expect(wbNames).not.toContain('备用想法');
-    // 讨论中想法仍留在草稿
-    expect(c._draft.characters).toHaveLength(2);
-    expect(c._draft.entries).toHaveLength(2);
+    expect(wbNames).toEqual(expect.arrayContaining(['林晚', '构想角色', '世界背景', '备用想法']));
+  });
+
+  it('删掉旧数据里的 status/origin 标记：写入时不再按它过滤', () => {
+    WB_BOOKS = [{ id: 'wb1', name: '测试书', entries: [] }];
+    const c = Cw();
+    // 模拟老版本存在设备里的草稿：条目上还挂着 proposed/origin=ai
+    anyG.StorageManager = {
+      get: (k: string, d: unknown) => (k === c._draftKey() ? { characters: [{ name: '旧卡', content: '内容', status: 'proposed', origin: 'ai' }], entries: [], deleted: [] } : d),
+      set: () => undefined, remove: () => undefined,
+    };
+    c._loadDraft();
+    expect(c._draft.characters[0]).toEqual({ name: '旧卡', content: '内容' });   // 两个标记字段被清掉
+  });
+
+  it('propose_setting 工具已下线：schema 里没有它，调用也只回未知工具', () => {
+    const c = Cw();
+    c._draft = { characters: [], entries: [], deleted: [] };
+    expect(c._tools().map((t: any) => t.function.name)).not.toContain('propose_setting');
+    expect(c._tools().map((t: any) => t.function.name)).not.toContain('write_to_worldbook');
+    c._executeTool({ name: 'propose_setting', arguments: { type: '角色', name: '构想角色', content: '想法' } });
+    expect(c._draft.characters).toHaveLength(0);        // 不再产生任何「只记录不写入」的条目
+    // 变更工具的 schema 里也不再出现 origin 参数
+    const apply = c._tools().find((t: any) => t.function.name === 'apply_character');
+    expect(JSON.stringify(apply)).not.toContain('origin');
   });
 
   it('confirmed 范围重名 → 阻断写入，不写任何内容', () => {
@@ -273,8 +291,8 @@ describe('写入前验收（status/origin 数据层）', () => {
     const c = Cw();
     c._draft = {
       characters: [
-        { name: '林晚', content: '人设A', status: 'confirmed' },
-        { name: '林晚', content: '人设B', status: 'confirmed' },
+        { name: '林晚', content: '人设A' },
+        { name: '林晚', content: '人设B' },
       ],
       entries: [],
       deleted: [],
@@ -291,8 +309,8 @@ describe('写入前验收（status/origin 数据层）', () => {
     const c = Cw();
     c._draft = {
       characters: [
-        { name: '小不点', content: '很矮', status: 'confirmed' },
-        { name: '林晚', content: '这是一段足够长的人设内容，超过三十个字，包含性别年龄外貌性格背景关系完整主干', status: 'confirmed' },
+        { name: '小不点', content: '很矮' },
+        { name: '林晚', content: '这是一段足够长的人设内容，超过三十个字，包含性别年龄外貌性格背景关系完整主干' },
       ],
       entries: [],
       deleted: [],
@@ -305,51 +323,6 @@ describe('写入前验收（status/origin 数据层）', () => {
     expect(String(r)).toContain('已写入世界书');
     expect(String(r)).toContain('验收提示');
     expect(WB_BOOKS[0].entries).toHaveLength(2);
-  });
-
-  it('propose_setting 只记录不写入：proposed 条目不进入世界书', () => {
-    const c = Cw();
-    c._draft = { characters: [], entries: [], deleted: [] };
-    const r = c._executeTool({ name: 'propose_setting', arguments: { type: '角色', name: '构想角色', content: '讨论中的想法' } });
-    expect(String(r)).toContain('未写入');
-    expect(c._draft.characters[0].status).toBe('proposed');
-    // 手动编辑讨论中条目 = 用户认可 → 提升为 confirmed
-    c.editDraftName(0, '构想角色');
-    expect(c._draft.characters[0].status).toBe('confirmed');
-    expect(c._draft.characters[0].origin).toBe('user');
-  });
-
-  it('自主构建轮：写入工具未显式传 origin → 默认标 ai（程序兜底）', () => {
-    const c = Cw();
-    c._draft = { characters: [], entries: [], deleted: [] };
-    c._autoBuildTurn = true; // 用户说「帮我构建好…」时 sendMessage 会置位
-    let r = c._executeTool({ name: 'apply_character', arguments: { name: '林晚', content: '人设' } });
-    expect(String(r)).toContain('新增角色');
-    expect(c._draft.characters[0].origin).toBe('ai');
-    expect(c._draft.characters[0].status).toBe('confirmed');
-    r = c._executeTool({ name: 'upsert_entry', arguments: { type: '世界观', name: '世界背景', content: 'X' } });
-    expect(c._draft.entries[0].origin).toBe('ai');
-    // 显式传 origin=user 则尊重用户指定
-    c._executeTool({ name: 'apply_character', arguments: { name: '沈夜', content: '人设', origin: 'user' } });
-    expect(c._draft.characters[1].origin).toBe('user');
-  });
-
-  it('propose crossref 想法 → 用户认可转 confirmed 时保留 crossref（不误标 user）', () => {
-    const c = Cw();
-    c._draft = { characters: [], entries: [], deleted: [] };
-    c._executeTool({ name: 'propose_setting', arguments: { type: '角色', name: '构想角色', content: '参考其他书的想法', origin: 'crossref' } });
-    expect(c._draft.characters[0].origin).toBe('crossref');
-    // 用户认可 → apply_character 转 confirmed（未传 origin，应保留 crossref）
-    c._executeTool({ name: 'apply_character', arguments: { name: '构想角色', content: '正式人设' } });
-    expect(c._draft.characters[0].status).toBe('confirmed');
-    expect(c._draft.characters[0].origin).toBe('crossref');
-    // 自主构建轮下迁移也保留来源（不误标 ai/user）
-    c._autoBuildTurn = true;
-    c._draft.entries.push({ type: '世界观', name: '地理', content: '参考设定', origin: 'crossref', status: 'confirmed' });
-    c._executeTool({ name: 'set_entry_type', arguments: { name: '地理', type: '角色' } });
-    const migrated = c._draft.characters.find((x: any) => x.name === '地理');
-    expect(migrated.origin).toBe('crossref');
-    expect(migrated.status).toBe('confirmed');
   });
 
   it('_recentHistory 40 轮窗口：超长历史只带最近 40 轮，不足则全量', () => {

@@ -452,10 +452,6 @@ label{font-size:13px;color:var(--text-secondary);display:block;margin-bottom:4px
 .cw-draft-char textarea{width:100%;font-size:13.5px;min-height:100px;resize:vertical;padding:7px 8px;border:1px solid var(--border);border-radius:4px;background:var(--bg);color:inherit;box-sizing:border-box}
 .cw-draft-char .cw-del{position:absolute;top:6px;right:6px;width:20px;height:20px;padding:0;font-size:11px;line-height:1;border-radius:4px;background:transparent;color:var(--text-muted);border:none;cursor:pointer}
 .cw-draft-char .cw-del:hover{color:var(--danger,#e74c3c)}
-.cw-draft-char .cw-tag{font-size:10px;padding:1px 6px;border-radius:4px;margin-right:4px;display:inline-block;vertical-align:middle}
-.cw-draft-char .cw-tag-proposed{background:#f39c12;color:#fff}
-.cw-draft-char .cw-tag-ai{background:#8e44ad;color:#fff}
-.cw-draft-char .cw-tag-ref{background:#3498db;color:#fff}
 #tab-usageassist{display:none;flex-direction:column;height:100%}
 #tab-usageassist.active{display:flex}
 #assistantMessages{flex:1;overflow-y:auto;padding:12px;display:flex;flex-direction:column;gap:10px;min-height:0}
@@ -1665,7 +1661,7 @@ label{font-size:13px;color:var(--text-secondary);display:block;margin-bottom:4px
             </div>
           </div>
           <div id="cardwriterMessages">
-            <div class="chat-empty">在这里和 AI 讨论角色卡设计（只讨论，不自动生成）。<br>💡 新建卡：直接说「我想做一个新角色：……」AI 会从零引导你讨论。<br>💡 改已有卡：直接说「看看我已有的卡，帮我想想怎么改」AI 会基于已有卡讨论。<br>讨论内容不会写入正文。</div>
+            <div class="chat-empty">在这里和 AI 讨论并直接改这张卡。<br>💡 设计阶段（提问、构思、让它出方案）：只输出设计，不动世界书，一轮说完。<br>💡 想落地时说一句「写入吧 / 就这样 / 按这个改」：提交的内容立即写入世界书、立即生效。<br>💡 改已有卡：直接说「看看我已有的卡，帮我想想怎么改」。讨论内容不会写入正文。</div>
           </div>
           <!-- 预设编辑弹层 -->
           <div class="modal-overlay" id="cwPresetModal">

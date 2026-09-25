@@ -80,7 +80,7 @@ const CardWriterChat: CardWriterChatShape = {
   _draft: null, // 世界书工作副本（世界书当前内容的模型；改动即时写回真实世界书，见 _doWriteToWorldbook）
   _draftTimer: null,
   _summarizing: false,
-  _autoBuildTurn: false, // 自主构建轮标记：本轮用户授权 AI 直接搭建整套设定时，写入工具未显式传 origin 默认标 ai
+  _designTurn: false, // 本轮是设计轮（用户没给写入/操作指令）：不提供任何工具、不写入，只输出设计
   // 断线可续跑：本轮被系统中断（切后台/锁屏）时保留"重发这一轮"的闭包。
   // 已执行的工具调用是即时写库的、且工具调用只在整轮流完后才执行，所以重发同一轮是幂等的。
   _pausedResume: null,
@@ -113,13 +113,13 @@ const CardWriterChat: CardWriterChatShape = {
     if (!Array.isArray(this._draft.characters)) this._draft.characters = [];
     if (!Array.isArray(this._draft.entries)) this._draft.entries = [];
     if (!Array.isArray(this._draft.deleted)) this._draft.deleted = [];
-    // 设定状态/来源归一（v15 数据层）：旧草稿条目没有 status/origin → 视为已确认/用户来源
-    // status: confirmed=已拍板（会写入世界书）/ proposed=讨论中（不写入）；origin: user=用户指定 / ai=AI 自主补全 / crossref=参考其他书
+    // 设定状态/来源归一（已下线）：草稿条目以前带 status（confirmed/proposed）与 origin
+    // （user/ai/crossref）两个标记，现在写入即完全写入、没有中间态，旧数据里的这两个字段直接删掉
     [this._draft.characters, this._draft.entries].forEach(function (list: any) {
       (list || []).forEach(function (it: any) {
         if (it && typeof it === 'object') {
-          if (!it.status) it.status = 'confirmed';
-          if (!it.origin) it.origin = 'user';
+          if ('status' in it) delete it.status;
+          if ('origin' in it) delete it.origin;
         }
       });
     });
@@ -127,7 +127,7 @@ const CardWriterChat: CardWriterChatShape = {
     if (typeof this._draft.worldview === 'string' && this._draft.worldview.trim()) {
       const wv = this._draft.worldview.trim();
       if (!this._draft.entries.some(function (e: any) { return e.type === '世界观' && e.name === '世界观'; })) {
-        this._draft.entries.unshift({ type: '世界观', name: '世界观', content: wv, status: 'confirmed', origin: 'user' });
+        this._draft.entries.unshift({ type: '世界观', name: '世界观', content: wv });
       }
       this._draft.worldview = '';
     }
@@ -138,7 +138,7 @@ const CardWriterChat: CardWriterChatShape = {
       this._draft.entries = this._draft.entries.filter(function (e: any) {
         if (e.type !== '角色') return true;
         if (e.name && !chars.some(function (c: any) { return c.name === e.name; })) {
-          chars.push({ name: e.name, content: e.content || '', status: 'confirmed', origin: 'user' });
+          chars.push({ name: e.name, content: e.content || '' });
         }
         return false;
       });
@@ -450,9 +450,10 @@ const CardWriterChat: CardWriterChatShape = {
     const input = document.getElementById('cardwriterInput');
     const text = input!.value.trim();
     if (!text) return;
-    // 自主构建轮标记：本轮若处于自主构建模式（用户授权 AI 直接搭建完整设定），
-    // 写入工具未显式传 origin 时默认标 ai（程序兜底，不依赖模型逐条填）
-    this._autoBuildTurn = this._hasAutoBuildIntent(text);
+    // 轮次模式：用户这一条给了写入/操作指令 → 操作轮（提供工具，可多轮提交变更）；
+    // 否则 = 设计轮（讨论/构思/征询）：**不提供任何工具**，一轮出设计就停。
+    // （2026-09-25 用户要求：设计阶段不要多轮循环、不要直接写入，那样又慢又容易被擅自改书）
+    this._designTurn = !this._hasWriteIntent(text);
     input!.value = '';
     if (typeof App !== 'undefined' && App.resetChatInput) App.resetChatInput(input!);
     this._toolsHandled = false; // 本轮是否已通过工具提交变更（防止重复解析文字清单）
@@ -460,8 +461,10 @@ const CardWriterChat: CardWriterChatShape = {
     this._fixCount = 0; // 完成声明一致性纠正次数（最多 1 次，防死循环）
     this._repeatKey = null; // 重复调用守卫：上一轮工具调用链（相同工具+相同参数连续重复计数）
     this._repeatCount = 0;
-    // 状态提示：确认/写入语 → "正在写入…"，否则（讨论/构思）→ "正在思考…"
-    this._statusText = this._hasConfirmIntent(text) ? '正在写入…' : '正在思考…';
+    // 状态提示：一律「正在思考…」。以前按"这句话像不像确认语"预先显示「正在写入…」，
+    // 用户（2026-09-25）看到的感受是"一按发送就说正在写入"——那时候一个字都还没提交，
+    // 真正的写入只在工具执行时提示（「正在应用第 N 轮…」/「正在写入世界书…」）。
+    this._statusText = '正在思考…';
     this.messages.push({ role: 'user', content: text });
     this._save();
     this.renderMessages();
@@ -523,6 +526,17 @@ const CardWriterChat: CardWriterChatShape = {
     const historyMsgs = this._recentHistory();
     for (let i = 0; i < historyMsgs.length; i++) messages.push(historyMsgs[i]);
 
+    // 设计轮（用户没给写入/操作指令）：本轮不提供工具，模型只能出设计、一轮就结束。
+    // 指令贴在历史之后 = 模型最后看到的话；同时 system 与历史的前缀不动（不拖累缓存命中）。
+    if (this._designTurn) {
+      messages.push({
+        role: 'system', content: '【本轮：设计轮（没有写入授权）】用户这一条没有让你写入/修改世界书。'
+          + '本轮**没有任何工具可用**：不要调用工具、不要声称「已写入/已修改/已保存」，回复里也不要出现 status/origin 这类内部标记。'
+          + '只输出设计本身——设定草案、角色人设文字稿、方案要点、建议与需要用户拍板的问题——把这一轮说透就停，不要连环追问。'
+          + '用户明确说「写入吧/就这样/按这个改/继续」之后，下一轮才提交。'
+      });
+    }
+
     // 流式占位
     this.messages.push({ role: 'assistant', content: '' });
     this.renderMessages();
@@ -562,7 +576,7 @@ const CardWriterChat: CardWriterChatShape = {
           this._clearPausedMarker(); // 轮数用尽也算本轮收尾：不留「待继续」按钮（提示里已让用户发「继续」）
           this._save();
           this.renderMessages();
-          if (this._hasConfirmIntent(userText) && !this._toolsOk) {
+          if (!this._designTurn && !this._toolsOk) {
             App.toast('AI 未能通过工具提交变更，可再发一次确认');
           }
           return;
@@ -655,8 +669,9 @@ const CardWriterChat: CardWriterChatShape = {
             onApiError,
             {
               temperature: 0.8, callLabel: 'cardwriter',
-              // 始终提供工具（不做授权门控）；未确认时模型若调用工具，onTools 会不执行并终止循环
-              tools: this._tools(),
+              // 工具只在操作轮提供：设计轮一律不提供（模型无从调用 → 一轮出设计就结束，
+              // 不会多轮循环、也不会擅自写入；见 _designTurn）
+              ...(this._designTurn ? {} : { tools: this._tools() }),
               // 总超时 300s；空闲超时 120s。写卡 system prompt 最大且网关（如 opencode.ai）是思考型
     // 模型转发：实测长思考期间可静默 66s+ 才继续吐流（idle 45s 会误杀报「请求失败」）
     timeout: 300000, idleTimeout: 120000,
@@ -863,24 +878,21 @@ const CardWriterChat: CardWriterChatShape = {
 
   // ==================== 确认应用（直接从对话 AI 输出提取，原样进草稿） ====================
 
-  // 自主构建模式检测：用户明确授权 AI 直接搭建整套设定（「帮我构建好/创建好/搭好/做好/搞定」等）。
-  // 不带「好」的「帮我构建/帮我创建」是中性请求（先出方案再确认），不算自主构建。
-  _hasAutoBuildIntent(text: any) {
-    if (!text) return false;
-    return /帮我构建好|帮我创建好|帮我搭好|帮我做好|帮我搞定|帮我设计好|帮我建好|帮我写好|帮我补好|直接建|直接做/.test(text);
-  },
+  // ==================== 轮次意图（操作轮 / 设计轮） ====================
 
-  // 意图检测：用户是否明确表态（确认/修改/拒绝）——只有明确表态才允许本次回复后更新草稿；
-  // 纯讨论/征询（问句、求建议、商量、犹豫）不算表态，AI 的提议默认只留在对话里，不动草稿
-  _hasConfirmIntent(text: any) {
+  // 用户这一条消息是不是"让我动手"（写入/修改/整理/继续跑批）？
+  // 是 → 操作轮：提供工具、允许 agent 多轮提交；否 → 设计轮：**不提供任何工具**，一轮出设计。
+  // 2026-09-25 用户要求：设计阶段（讨论/构思）就该只输出设计，不要多轮循环、不要直接写入——
+  // 又慢又容易擅自改书。工具能否调用不再只靠提示词约束，前端直接不给。
+  // 判据两层：① 征询/讨论语气优先 → 一律不算操作（宁可不给工具）；② 剩下的话里要有明确动作词。
+  // 边界：错判成设计轮 = 这轮不写、下一句「写入吧」就补上；错判成操作轮 = 可能擅自改用户的书，
+  // 所以动作词只收明确的（不含"你来定/你决定/自由发挥/你看着办"这类构思授权词）。
+  _hasWriteIntent(text: any) {
     if (!text) return false;
-    // 征询/讨论语气优先判定：带问号或求建议、商量、犹豫、构思 → 不是明确表态
-    if (/[？?]|怎么|怎么样|如何|要不要|是否|你觉得|你们觉得|帮我想|给点建议|有什么想法|可以吗|行吗|好吗|好不好|说说|聊聊|商量|讨论|考虑|再想想|再看看|大概|可能|或许|应该|构思|思路|想想|方向|方案|规划|建议|出个方案|给几个方向|先看看|简单聊聊/.test(text)) return false;
-    // 明确表态：确认 / 采纳 / 写入 / 明确执行授权 / 修改 / 删除 / 拒绝。
-    // 注意：不含"你来定/你决定/自由发挥/你看着办"等构思授权词——它们常被用于
-    // "让 AI 发挥构思"的讨论场景，误判为执行会导致强制循环多轮回答
-    if (/可以|没问题|就这样|就按|就照|就这|定了|采纳|同意|好的|好吧|行了|行吧|^好$|^行$|不错|很好|可以用|就用|写入|写吧|写进去|写下来|保存|存吧|存进去|记下|记录|加进去|加入|入库|收录|落实|就这么写|就这么办|按这个|听你的|没错|帮我构建好|帮我创建好|帮我搭好|帮我做好|帮我搞定|帮我设计好|直接写|直接建|直接做|改成|改为|换成|修改|调整|更新|删掉|删除|去掉|移除|不要|别要|取消|重写|重新写/.test(text)) return true;
-    return false;
+    // ① 征询/讨论/构思语气优先判定 → 不是操作指令
+    if (/[？?]|怎么|怎么样|如何|要不要|是否|你觉得|你们觉得|帮我想|给点建议|有什么想法|可以吗|行吗|好吗|好不好|说说|聊聊|商量|讨论|考虑|再想想|再看看|大概|可能|或许|应该|构思|思路|想想|方向|方案|规划|建议|出个方案|给几个方向|先看看|简单聊聊|下一步|接下来呢|然后呢|还有呢/.test(text)) return false;
+    // ② 明确动作词：确认/采纳 / 写入保存 / 增删改 / 整理改造类任务 / 继续跑批
+    return /可以|没问题|就这样|就按|就照|就这|定了|采纳|同意|好的|好吧|行了|行吧|^好$|^行$|不错|很好|可以用|就用|写入|写吧|写进去|写下来|保存|存吧|存进去|记下|记录|加进去|加入|加个|加一个|新增|补一个|补上|补全|加上|入库|收录|落实|就这么写|就这么办|按这个|听你的|没错|帮我构建好|帮我创建好|帮我搭好|帮我做好|帮我搞定|帮我设计好|帮我建好|帮我写好|帮我补好|直接写|直接建|直接做|改成|改为|换成|修改|调整|更新|改一下|调一下|优化|删掉|删除|去掉|移除|不要|别要|取消|重写|重新写|整理|清洗|适配|改造|转换|导入|重建|梳理|归类|去重|查重|合并|拆分|扫一遍|过一遍|继续处理|接着处理|接着做|接着跑|继续跑|^继续$|^接着$/.test(text);
   },
 
   // ==================== 工具调用（ZCode 模式：AI 主动提交结构化变更） ====================
@@ -888,11 +900,10 @@ const CardWriterChat: CardWriterChatShape = {
   // 工具 schema：模型通过 function calling 提交变更，前端执行后回传结果，形成 agent 循环
   _tools() {
     return [
-      { type: 'function', function: { name: 'apply_character', description: '新增或更新角色卡（同名角色=更新覆盖，不同名=新增；写入后该角色 status=confirmed）。**批量整理/改造大卡时用 items 数组一次提交多个角色（单次上限 10 个），不要一个角色一次调用磨轮数**。**调用时机：仅在用户明确确认（写入吧/可以/就这样/直接写入/帮我构建好）或明确要求创建/修改角色时调用；构思/讨论/征询（你觉得/怎么样/帮我想想）时严禁调用；没有明确写入指令时严禁调用**。只提交用户已明确确定的设定，讨论中尚未拍板的内容一律不要写入；content 必须完整最终版（以「姓名：xxx」开头，含性别/年龄/外貌/性格/背景/关系；配过示例台词的加「说话方式·例句」一行），不要省略。', parameters: { type: 'object', properties: { name: { type: 'string', description: '角色名（单条）' }, content: { type: 'string', description: '完整人设内容，以「姓名：xxx」开头，含性别/年龄/外貌/性格/背景/关系（配过示例台词的加「说话方式·例句」）' }, origin: { type: 'string', enum: ['user', 'ai', 'crossref'], description: '来源：user=用户明确指定（默认）；ai=自主构建模式下 AI 自主补全（必须标 ai）；crossref=参考其他书的设定（需用户认可）。不填默认 user' }, items: { type: 'array', description: '批量：一次提交多个角色，每项 {name, content, origin}（与 name/content 二选一；单次上限 10 个，超过拆多次调用）', items: { type: 'object', properties: { name: { type: 'string' }, content: { type: 'string' }, origin: { type: 'string', enum: ['user', 'ai', 'crossref'] } } } } }, required: [] } } },
+      { type: 'function', function: { name: 'apply_character', description: '新增或更新角色卡（同名角色=更新覆盖，不同名=新增）。**批量整理/改造大卡时用 items 数组一次提交多个角色（单次上限 10 个），不要一个角色一次调用磨轮数**。**调用时机：仅在用户明确确认（写入吧/可以/就这样/直接写入/帮我构建好）或明确要求创建/修改角色时调用；构思/讨论/征询（你觉得/怎么样/帮我想想）时严禁调用；没有明确写入指令时严禁调用**。只提交用户已明确确定的设定，讨论中尚未拍板的内容一律不要写入；content 必须完整最终版（以「姓名：xxx」开头，含性别/年龄/外貌/性格/背景/关系；配过示例台词的加「说话方式·例句」一行），不要省略。', parameters: { type: 'object', properties: { name: { type: 'string', description: '角色名（单条）' }, content: { type: 'string', description: '完整人设内容，以「姓名：xxx」开头，含性别/年龄/外貌/性格/背景/关系（配过示例台词的加「说话方式·例句」）' }, items: { type: 'array', description: '批量：一次提交多个角色，每项 {name, content}（与 name/content 二选一；单次上限 10 个，超过拆多次调用）', items: { type: 'object', properties: { name: { type: 'string' }, content: { type: 'string' } } } } }, required: [] } } },
       { type: 'function', function: { name: 'delete_character', description: '删除角色。**批量清理大卡用 names 数组一次传多个角色名（单次上限 50 个），不要一条一条磨轮数**。**调用时机：仅当用户明确要求删除（删掉/删除/不要这个角色）时调用；构思/讨论时严禁调用；没有明确写入指令时严禁调用**。', parameters: { type: 'object', properties: { name: { type: 'string', description: '要删除的角色名（单条）' }, names: { type: 'array', items: { type: 'string' }, description: '批量：一次删除多个角色名，单次上限 50 个（超过拆多次调用）' } }, required: [] } } },
-      { type: 'function', function: { name: 'update_worldview', description: '创建或更新世界观条目（type=世界观）。世界观可以拆成多条细分条目（如：世界背景、力量体系、国家地理、种族文明），每条一个方向。**批量删除世界观条目用 names 数组 + delete:true（单次上限 50 个）**。**调用时机：仅在用户确认或明确要求设定世界观时调用；构思/讨论时严禁调用；没有明确写入指令时严禁调用**。只提交用户明确确定的内容。', parameters: { type: 'object', properties: { name: { type: 'string', description: '世界观条目名（方向名），如"世界背景""力量体系""国家地理"；不填默认"世界观"' }, content: { type: 'string', description: '该方向的世界观内容' }, delete: { type: 'boolean', description: 'true=删除该世界观条目（批量删除必须显式传 true）' }, names: { type: 'array', items: { type: 'string' }, description: '批量删除：一次删多个世界观条目名（必须同时传 delete:true；单次上限 50 个）' }, origin: { type: 'string', enum: ['user', 'ai', 'crossref'], description: '来源（同上，默认 user）' } } } } },
-      { type: 'function', function: { name: 'upsert_entry', description: '新增或更新其他条目（同类型同名=更新）。**批量整理/改造大卡时用 items 数组一次提交多个条目（单次上限 10 个），不要一条一条磨轮数**。**调用时机：仅在用户确认或明确要求添加/修改条目时调用；构思/讨论时严禁调用；没有明确写入指令时严禁调用**。支持「世界观」「其他」「初始」三种类型：「初始」用于说明故事开头处于什么时期、已经发生了什么、还没发生什么（仅在正文为空、尚未开始写作时注入一次）。**「初始」类型每本书只有一条：若草稿已存在初始条目，无论本次传入的 name 是否与它同名，都会直接更新原条目（不会新增第二条）**。注意：条目类型只支持「世界观」「其他」「初始」。', parameters: { type: 'object', properties: { type: { type: 'string', enum: ['其他', '世界观', '初始'] }, name: { type: 'string', description: '条目名（单条）' }, content: { type: 'string', description: '条目内容' }, origin: { type: 'string', enum: ['user', 'ai', 'crossref'], description: '来源（同上，默认 user）' }, items: { type: 'array', description: '批量：一次提交多个条目，每项 {type, name, content, origin}（与 type/name/content 二选一；单次上限 10 个，超过拆多次调用）', items: { type: 'object', properties: { type: { type: 'string', enum: ['其他', '世界观', '初始'] }, name: { type: 'string' }, content: { type: 'string' }, origin: { type: 'string', enum: ['user', 'ai', 'crossref'] } } } } }, required: [] } } },
-      { type: 'function', function: { name: 'propose_setting', description: '把讨论中尚未拍板的设定提议记下（status=proposed，**不写入世界书、仅作备忘**）。**调用时机：讨论/构思模式中，用户明确说「记一下/先记着/先存着/这个想法留着」或讨论产出了值得留存的提议时调用——propose 不需要用户拍板（只是记录想法，不改变正式设定），因此不受「无明确指令不调工具」铁律约束；但严禁用 propose_setting 代替 apply_character/upsert_entry 提交已确认内容（已确认的用后者提交并转为 confirmed）**。', parameters: { type: 'object', properties: { type: { type: 'string', enum: ['角色', '世界观', '其他', '初始'], description: '提议类型' }, name: { type: 'string', description: '角色名或条目名' }, content: { type: 'string', description: '提议内容（讨论中产出的设定想法，不要求完整最终版）' } }, required: ['type', 'name', 'content'] } } },
+      { type: 'function', function: { name: 'update_worldview', description: '创建或更新世界观条目（type=世界观）。世界观可以拆成多条细分条目（如：世界背景、力量体系、国家地理、种族文明），每条一个方向。**批量删除世界观条目用 names 数组 + delete:true（单次上限 50 个）**。**调用时机：仅在用户确认或明确要求设定世界观时调用；构思/讨论时严禁调用；没有明确写入指令时严禁调用**。只提交用户明确确定的内容。', parameters: { type: 'object', properties: { name: { type: 'string', description: '世界观条目名（方向名），如"世界背景""力量体系""国家地理"；不填默认"世界观"' }, content: { type: 'string', description: '该方向的世界观内容' }, delete: { type: 'boolean', description: 'true=删除该世界观条目（批量删除必须显式传 true）' }, names: { type: 'array', items: { type: 'string' }, description: '批量删除：一次删多个世界观条目名（必须同时传 delete:true；单次上限 50 个）' } } } } },
+      { type: 'function', function: { name: 'upsert_entry', description: '新增或更新其他条目（同类型同名=更新）。**批量整理/改造大卡时用 items 数组一次提交多个条目（单次上限 10 个），不要一条一条磨轮数**。**调用时机：仅在用户确认或明确要求添加/修改条目时调用；构思/讨论时严禁调用；没有明确写入指令时严禁调用**。支持「世界观」「其他」「初始」三种类型：「初始」用于说明故事开头处于什么时期、已经发生了什么、还没发生什么（仅在正文为空、尚未开始写作时注入一次）。**「初始」类型每本书只有一条：若草稿已存在初始条目，无论本次传入的 name 是否与它同名，都会直接更新原条目（不会新增第二条）**。注意：条目类型只支持「世界观」「其他」「初始」。', parameters: { type: 'object', properties: { type: { type: 'string', enum: ['其他', '世界观', '初始'] }, name: { type: 'string', description: '条目名（单条）' }, content: { type: 'string', description: '条目内容' }, items: { type: 'array', description: '批量：一次提交多个条目，每项 {type, name, content}（与 type/name/content 二选一；单次上限 10 个，超过拆多次调用）', items: { type: 'object', properties: { type: { type: 'string', enum: ['其他', '世界观', '初始'] }, name: { type: 'string' }, content: { type: 'string' } } } } }, required: [] } } },
       { type: 'function', function: { name: 'delete_entry', description: '删除其他条目（含世界观等各类条目）。**批量清理大卡用 names 数组一次传多个条目名（单次上限 50 个），不要一条一条磨轮数**。**调用时机：仅当用户明确要求删除时调用；构思/讨论时严禁调用；没有明确写入指令时严禁调用**。', parameters: { type: 'object', properties: { name: { type: 'string', description: '条目名（单条）' }, names: { type: 'array', items: { type: 'string' }, description: '批量：一次删除多个条目名，单次上限 50 个（超过拆多次调用）' }, type: { type: 'string', enum: ['世界观', '其他', '初始', '角色'], description: '可选：只删该类型的同名条目（不填=该名字的所有条目都删）' } }, required: [] } } },
       { type: 'function', function: { name: 'set_entry_type', description: '修改已有条目的类型（角色/世界观/其他/初始）。**批量调整用 items 数组一次传多项（单次上限 10 个）**。**调用时机：仅在用户明确要求修改条目类型时调用**（如"把林晚改成角色""这个改成世界观"），常用于调整导入/适配后类型不对的条目。**改为「角色」会迁移为角色卡（人设），改出「角色」会迁回普通条目**；同名多条时用 from_type 指定当前类型。', parameters: { type: 'object', properties: { name: { type: 'string', description: '条目名（单条）' }, type: { type: 'string', enum: ['角色', '世界观', '其他', '初始'], description: '目标类型' }, from_type: { type: 'string', description: '可选：条目当前类型（同名多条时精确定位）' }, items: { type: 'array', description: '批量：每项 {name, type, from_type}（与 name/type 二选一；单次上限 10 个）', items: { type: 'object', properties: { name: { type: 'string' }, type: { type: 'string', enum: ['角色', '世界观', '其他', '初始'] }, from_type: { type: 'string' } } } } }, required: [] } } },
       { type: 'function', function: { name: 'lookup_book', description: '**只读参考工具**：查看其他世界书的角色卡/条目内容（用于参考设定、借鉴风格、避免冲突）。**调用时机：仅当用户提到其他书（书名/内容）、或明确要求参考其他书/其他设定时调用；不要无故拉取**。book_name 部分匹配书名即可；name 填要查的具体角色/条目名，不填返回全书概要。不影响任何写入。', parameters: { type: 'object', properties: { book_name: { type: 'string', description: '要参考的书名（支持部分匹配）' }, name: { type: 'string', description: '可选：要查的具体角色或条目名；不填返回全书概要' } }, required: ['book_name'] } } },
@@ -912,10 +923,10 @@ const CardWriterChat: CardWriterChatShape = {
       const idx = (draft.characters || []).findIndex((x: any) => x.name === a.name);
       if (idx >= 0) {
         const old = draft.characters[idx] || {};
-        draft.characters[idx] = { name: a.name, content: a.content || '', status: 'confirmed', origin: a.origin || old.origin || 'user' };
+        draft.characters[idx] = { name: a.name, content: a.content || ''};
         return '更新角色：' + a.name;
       }
-      draft.characters.push({ name: a.name, content: a.content || '', status: 'confirmed', origin: a.origin || (this._autoBuildTurn ? 'ai' : 'user') });
+      draft.characters.push({ name: a.name, content: a.content || ''});
       return '新增角色：' + a.name;
     }
     if (t.name === 'delete_character') {
@@ -934,10 +945,10 @@ const CardWriterChat: CardWriterChatShape = {
       if (!a.content) return '工具调用参数无效：世界观内容为空，请重写输入后重新调用';
       const idx = entries.findIndex((x: any) => x.type === '世界观' && x.name === name);
       if (idx >= 0) {
-        entries[idx] = { type: '世界观', name: name, content: a.content, status: 'confirmed', origin: a.origin || entries[idx].origin || 'user' };
+        entries[idx] = { type: '世界观', name: name, content: a.content};
         return '更新世界观条目：' + name;
       }
-      entries.push({ type: '世界观', name: name, content: a.content, status: 'confirmed', origin: a.origin || (this._autoBuildTurn ? 'ai' : 'user') });
+      entries.push({ type: '世界观', name: name, content: a.content});
       return '新增世界观条目：' + name;
     }
     if (t.name === 'upsert_entry') {
@@ -949,50 +960,19 @@ const CardWriterChat: CardWriterChatShape = {
         // 防止 AI 换个条目名就新增第二条（两条初始会在正文为空时重复注入）
         const initIdx = entryList.findIndex((x: any) => x.type === '初始');
         if (initIdx >= 0) {
-          entryList[initIdx] = { type: '初始', name: a.name, content: a.content || '', status: 'confirmed', origin: a.origin || entryList[initIdx].origin || 'user' };
+          entryList[initIdx] = { type: '初始', name: a.name, content: a.content || ''};
           return '更新初始条目：' + a.name;
         }
-        entryList.push({ type: '初始', name: a.name, content: a.content || '', status: 'confirmed', origin: a.origin || (this._autoBuildTurn ? 'ai' : 'user') });
+        entryList.push({ type: '初始', name: a.name, content: a.content || ''});
         return '新增初始条目：' + a.name;
       }
       const idx = entryList.findIndex((x: any) => x.type === type && x.name === a.name);
       if (idx >= 0) {
-        entryList[idx] = { type: type, name: a.name, content: a.content || '', status: 'confirmed', origin: a.origin || entryList[idx].origin || 'user' };
+        entryList[idx] = { type: type, name: a.name, content: a.content || ''};
         return '更新条目：' + a.name;
       }
-      entryList.push({ type: type, name: a.name, content: a.content || '', status: 'confirmed', origin: a.origin || (this._autoBuildTurn ? 'ai' : 'user') });
+      entryList.push({ type: type, name: a.name, content: a.content || ''});
       return '新增条目：' + a.name;
-    }
-    // 讨论模式专用：只记录想法（status=proposed），不写入世界书、不生效。
-    // 同名已确认条目绝不降级（否则会漏掉正式设定）；只更新已存在的 proposed，
-    // 同名 confirmed 一律提示用 apply/upsert 提交。
-    if (t.name === 'propose_setting') {
-      const type = a.type || '其他';
-      if (!a.name || !a.content) return '工具调用参数无效：propose_setting 需要 type/name/content，请重写输入后重新调用';
-      if (type === '角色') {
-        const idx = (draft.characters || []).findIndex((x: any) => x.name === a.name);
-        if (idx >= 0) {
-          if (draft.characters[idx].status === 'confirmed') {
-            return '「' + a.name + '」已是正式角色卡（confirmed）。修改正式设定请用 apply_character 提交；propose_setting 只用于尚未确认的新想法';
-          }
-          const old = draft.characters[idx] || {};
-          draft.characters[idx] = { name: a.name, content: a.content, status: 'proposed', origin: a.origin || old.origin || 'user' };
-          return '更新讨论想法（未写入）：角色 ' + a.name;
-        }
-        draft.characters.push({ name: a.name, content: a.content, status: 'proposed', origin: a.origin || 'user' });
-        return '已记录讨论想法（未写入）：角色 ' + a.name;
-      }
-      const entryList = draft.entries || [];
-      const idx = entryList.findIndex((x: any) => x.type === type && x.name === a.name);
-      if (idx >= 0) {
-        if (entryList[idx].status === 'confirmed') {
-          return '「' + a.name + '」已是正式条目（confirmed）。修改正式设定请用 upsert_entry 提交；propose_setting 只用于尚未确认的新想法';
-        }
-        entryList[idx] = { type: type, name: a.name, content: a.content, status: 'proposed', origin: a.origin || entryList[idx].origin || 'user' };
-        return '更新讨论想法（未写入）：[' + type + '] ' + a.name;
-      }
-      entryList.push({ type: type, name: a.name, content: a.content, status: 'proposed', origin: a.origin || 'user' });
-      return '已记录讨论想法（未写入）：[' + type + '] ' + a.name;
     }
     if (t.name === 'delete_entry') {
       const idx = (draft.entries || []).findIndex((x: any) => x.name === a.name);
@@ -1143,8 +1123,7 @@ const CardWriterChat: CardWriterChatShape = {
       if (entIdx < 0) return '未找到条目：' + name;
       const e = entries[entIdx];
       entries.splice(entIdx, 1);
-      // 迁移保留来源（不误标 user）：crossref/ai 的条目迁成角色卡后 origin 不变
-      chars.push({ name: e.name, content: e.content || '', status: e.status || 'confirmed', origin: e.origin || (this._autoBuildTurn ? 'ai' : 'user') });
+      chars.push({ name: e.name, content: e.content || '' });
       return '已将「' + name + '」从「' + (e.type || '其他') + '」改为「角色」（迁移为角色卡）';
     }
 
@@ -1158,7 +1137,7 @@ const CardWriterChat: CardWriterChatShape = {
           if (entries[i].type === '初始') entries.splice(i, 1);
         }
       }
-      entries.push({ type: toType, name: c.name, content: c.content || '', status: c.status || 'confirmed', origin: c.origin || 'user' });
+      entries.push({ type: toType, name: c.name, content: c.content || '' });
       return '已将「' + name + '」从「角色」改为「' + toType + '」（迁回普通条目）';
     }
 
@@ -1254,7 +1233,7 @@ const CardWriterChat: CardWriterChatShape = {
     const container = document.getElementById('cardwriterMessages');
     if (!container) return;
     if (this.messages.length === 0) {
-      container.innerHTML = '<div class="chat-empty">在这里和 AI 讨论角色卡设计（只讨论，不自动生成）。<br>💡 新建卡：直接说「我想做一个新角色：……」AI 会从零引导你讨论。<br>💡 改已有卡：直接说「看看我已有的卡，帮我想想怎么改」AI 会基于已有卡讨论。<br>讨论内容不会写入正文。</div>';
+      container.innerHTML = '<div class="chat-empty">在这里和 AI 讨论并直接改这张卡。<br>💡 设计阶段（提问、构思、让它出方案）：只输出设计，不动世界书，一轮说完。<br>💡 想落地时说一句「写入吧 / 就这样 / 按这个改」：提交的内容立即写入世界书、立即生效。<br>💡 改已有卡：直接说「看看我已有的卡，帮我想想怎么改」。讨论内容不会写入正文。</div>';
       return;
     }
     const isAtBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 60;
@@ -1659,14 +1638,13 @@ const CardWriterChat: CardWriterChatShape = {
     const listEl = document.getElementById('cwDraftChars');
     if (!listEl) return;
     if (this._draft.characters.length === 0) {
-      listEl.innerHTML = '<div style="font-size:12px;color:var(--text-muted);text-align:center;padding:8px;">讨论产出的角色会自动汇总到这里，也可以手动添加</div>';
+      listEl.innerHTML = '<div style="font-size:12px;color:var(--text-muted);text-align:center;padding:8px;">这里是这本书的世界书内容（改哪个字段都即时写入）；也可以手动添加</div>';
     } else {
       listEl.innerHTML = this._draft.characters.map(function (c: any, idx: any) {
         return '<div class="cw-draft-char">' +
           '<input class="cw-draft-name" value="' + htmlEscape(c.name || '') + '" placeholder="角色名" oninput="CardWriterChat.editDraftName(' + idx + ', this.value)" onchange="CardWriterChat.editDraftName(' + idx + ', this.value)">' +
           '<textarea placeholder="角色人设…" oninput="CardWriterChat.editDraftContent(' + idx + ', this.value)">' + htmlEscape(c.content || '') + '</textarea>' +
           '<span class="cw-type-tag">角色</span>' +
-          (c.status === 'proposed' ? '<span class="cw-tag cw-tag-proposed">讨论中·未写入</span>' : '') +
           '<button class="cw-del" title="删除该角色卡" onclick="CardWriterChat.removeDraftChar(' + idx + ')">✕</button>' +
         '</div>';
       }).join('');
@@ -1689,7 +1667,6 @@ const CardWriterChat: CardWriterChatShape = {
             '<input class="cw-draft-name" value="' + htmlEscape(e.name || '') + '" placeholder="条目名" oninput="CardWriterChat.editDraftEntryName(' + idx + ', this.value)" onchange="CardWriterChat.editDraftEntryName(' + idx + ', this.value)">' +
             '<textarea placeholder="内容…" oninput="CardWriterChat.editDraftEntryContent(' + idx + ', this.value)">' + htmlEscape(e.content || '') + '</textarea>' +
             '<span class="cw-type-tag">' + (e.type || '其他') + '</span>' +
-            (e.status === 'proposed' ? '<span class="cw-tag cw-tag-proposed">讨论中·未写入</span>' : '') +
             '<button class="cw-del" title="删除该条目" onclick="CardWriterChat.removeDraftEntry(' + idx + ')">✕</button>' +
           '</div>';
         }).join('');
@@ -1701,25 +1678,15 @@ const CardWriterChat: CardWriterChatShape = {
   editDraftEntryName(idx: any, val: any) {
     if (!this._draft || !this._draft.entries || !this._draft.entries[idx]) return;
     this._draft.entries[idx].name = val;
-    this._promoteIfProposed(this._draft.entries[idx]); // 手动编辑讨论中条目 = 用户认可
     this._debounceSaveDraft();
   },
 
   editDraftEntryContent(idx: any, val: any) {
     if (!this._draft || !this._draft.entries || !this._draft.entries[idx]) return;
     this._draft.entries[idx].content = val;
-    this._promoteIfProposed(this._draft.entries[idx]);
     this._debounceSaveDraft();
   },
 
-  // 手动编辑讨论中（proposed）条目 = 用户认可该内容 → 提升为 confirmed（可写入）
-  _promoteIfProposed(item: any) {
-    if (!item) return;
-    if (item.status === 'proposed') {
-      item.status = 'confirmed';
-      if (!item.origin) item.origin = 'user';
-    }
-  },
 
   removeDraftEntry(idx: any) {
     if (!this._draft || !this._draft.entries || !this._draft.entries[idx]) return;
@@ -1735,7 +1702,7 @@ const CardWriterChat: CardWriterChatShape = {
     if (!this._draft) return;
     const typeEl = document.getElementById('cwDraftAddType');
     const type = typeEl ? typeEl.value : '其他';
-    this._draft.entries.push({ type: type, name: '', content: '', status: 'confirmed', origin: 'user' });
+    this._draft.entries.push({ type: type, name: '', content: ''});
     this._saveDraft();
     // 名为空的新条目不会写进世界书（写入侧按 name 过滤），填完名字即自动写入
     try { this._doWriteToWorldbook(true); } catch (err) { console.warn('[CardWriter] write-through failed:', err); }
@@ -1802,14 +1769,14 @@ const CardWriterChat: CardWriterChatShape = {
       } else {
         const has2 = (this._draft.entries || []).some((x: any) => x.type === e.type && x.name === e.name);
         if (!has2 && e.name) {
-          this._draft.entries.push({ type: e.type, name: e.name, content: e.content || '', status: 'confirmed', origin: 'user' });
+          this._draft.entries.push({ type: e.type, name: e.name, content: e.content || ''});
           changed = true;
         }
       }
     });
     // 兼容：已入库的小说背景（worldSetting 字段，旧数据）→ 补成「世界观」条目
     if ((wb.worldSetting || '').trim() && !(this._draft.entries || []).some((x: any) => x.type === '世界观' && x.name === '世界观')) {
-      this._draft.entries.unshift({ type: '世界观', name: '世界观', content: wb.worldSetting, status: 'confirmed', origin: 'user' });
+      this._draft.entries.unshift({ type: '世界观', name: '世界观', content: wb.worldSetting});
       changed = true;
     }
     // 记录本次同步时的角色集（用于汇总后识别"被移除的角色"）
@@ -1858,6 +1825,7 @@ const CardWriterChat: CardWriterChatShape = {
         + '- 拿不准 → 不调用。宁可少执行一次（用户再说一句「写入吧」就能补上），绝不擅自写入。\n'
         + '- **铁律**：本规则凌驾于其他一切规则之上。即使你认为"用户应该想要这个设定""设定还不完整""主动帮忙更好"，只要用户没有明确命令写入，就**禁止**调用任何工具。未经明确指令就调用工具 = 擅自篡改用户的作品，是用户最不能接受的行为，一旦发生用户将不再信任你。宁可什么都不做，也绝不可擅自写入。\n'
         + '【工作模式】根据用户语气自动切换（调用时机一律服从【授权判断】铁律）：\n'
+        + '0. 轮次由系统判定：用户这一条给了写入/操作指令 → 操作轮（系统给你工具，可多轮提交）；没给 → **设计轮**（系统不给你任何工具，你只能文字）。设计轮就老老实实把设计讲透、一轮说完，不要假装调用工具、不要声称已写入。\n'
         + '1. 讨论模式（默认）：用户征询/商量（带问号、你觉得呢、要不要、怎么样、帮我想想）→ 纯文字建议，不调用工具、不输出卡片格式；\n'
         + '2. 确认模式：用户明确说写入/保存/应用/就这样/按这个 → 把讨论中已确定的内容用工具提交，工具提交即写入世界书、立即生效；\n'
         + '3. 自主构建模式：用户**明确表达执行意图**（「直接写入」「直接建」「帮我构建好/创建好/搭好/做好/搞定」）→ 视为授权你**自主完成整个任务**：自行规划并直接创建一组完整基础设定（世界观条目拆成多条：世界背景/力量体系/国家地理/种族文明/核心冲突；角色按需创建；另外用 upsert_entry 创建一条「初始」类型条目，说明故事开始时处于什么时期、已经发生了什么、还没发生什么——该条目仅在正文为空、尚未开始写作时注入一次），用工具批量创建，**工具调用即写入世界书、立即生效（不需要额外操作）**，然后简短汇报创建了哪些内容并询问调整方向（汇报末尾可以顺手按【对话示例】给主要角色 2~3 组候选台词请用户挑一个——可选，用户不接就作罢）。用户给了具体设定就严格照做，没给的基于常见模板合理创作（可在汇报时说明哪些是自主补全的）。\n'
@@ -1897,17 +1865,16 @@ const CardWriterChat: CardWriterChatShape = {
         + '- 讨论模式中每轮只推进一个与当前话题相邻的方向；其他新方向（哪怕相关）记一句「稍后再说」，不展开讨论；\n'
         + '- 一次回复最多抛出 2~3 个新设定建议或问题，报完就停，等用户拍板，不连环追问；\n'
         + '- 连续两轮都没有新的已确认设定 → 主动收束：「目前已经定了 X、Y，要不要先写进去？」（用户确认后按确认模式提交）。\n'
-        + '【设定状态与来源】\n'
-        + '- 每条设定带两个属性：status（confirmed=已拍板（会写入世界书）/ proposed=讨论中（不写入））与 origin（user=用户明确指定 / ai=AI 自主补全 / crossref=参考其他书）。\n'
-        + '- 用户明确拍板的内容用工具提交为 confirmed；你自主补全的模板内容在 apply_character/upsert_entry 调用中标注 origin=ai，且用户未逐条认可前不要作为正式设定提交；\n'
-        + '- 讨论中值得留存的提议可用 propose_setting 记下（status=proposed，不写入世界书、仅作备忘），用户认可后再用 apply_character/upsert_entry 提交并转为 confirmed；propose_setting 不需要用户拍板即可调用（记录想法不等于修改正式设定），但严禁用 propose_setting 代替 apply_character/upsert_entry 提交已确认内容；\n'
-        + '- 只有 confirmed 会写入世界书，proposed（讨论中想法）不写入；汇报里说明「N 条讨论中想法未写入」。\n'
+        + '【写入即完全写入（没有中间态）】\n'
+        + '- 本项目**没有草稿/待确认/讨论中未写入这类中间状态**：调用变更工具 = 内容立即原样写入世界书、立即生效；没调用 = 什么都没发生（讨论内容只留在对话里，你不需要为它做任何记录）。\n'
+        + '- 因此不要输出 status/origin/来源 之类的内部标记，也不要说「已记录为讨论稿」「等确认后再写入」——要么用工具提交，要么就只是文字讨论。\n'
+        + '- 设计轮（用户还在构思/征询）系统**不会给你任何工具**：这一轮只把设计讲清楚，等用户说「写入吧/就这样/按这个改/继续」再提交。\n'
         + '【写入前验收清单（每次调用变更工具前逐项过一遍，检查结果在回复中汇报）】\n'
         + '- 重名：角色/条目名称全库唯一（改名或新增前先查重）；\n'
         + '- 冲突：同类型条目之间设定互斥（尤其两条世界观条目不得对同一件事自相矛盾）；\n'
         + '- 指代：角色一律用全名，禁止「他/她/那个人」；\n'
-        + '- 完整性：已确认角色卡主干无缺（性别/年龄/外貌/性格/背景/关系；关系=与卡内其他角色的关系，不是「与主角」），缺的补齐或明确标注；配过示例台词的，例句要按用户原话写入（见【对话示例】）；\n'
-        + '- 无残留：proposed 条目没有被当 confirmed 提交。',
+        + '- 完整性：角色卡主干无缺（性别/年龄/外貌/性格/背景/关系；关系=与卡内其他角色的关系，不是「与主角」），缺的补齐或明确标注；配过示例台词的，例句要按用户原话写入（见【对话示例】）；\n'
+        + '- 成稿：本次提交的每一条都是完整最终版（不留占位、不留「待补」）。',
       method: '【写卡方法论】\n'
         + '1. 性格调色盘：性格由底色、主色调、点缀和衍生构成，不要贴单一标签；引导用户用「在什么情境下会做什么」的衍生行为来定义性格。\n'
         + '2. 三面性（可选）：同一角色在不同压力环境下可能有根本性的行为切换，用不同运作模式描述。\n'
@@ -1941,7 +1908,8 @@ const CardWriterChat: CardWriterChatShape = {
       // 预设版本：默认规则升级时递增；_loadBlocks 检测到旧版自动升级
       // v21：新增【对话示例（可选）】——AI 先给候选台词让用户挑，选定的写进角色卡「说话方式·例句」
       // v22：新增【主角 / user：从零写卡不需要，不要主动引入】——从零写卡不设主角，{{user}} 只在改造卡里保留
-      __version: 22
+      // v23：写入即完全写入（下线 status/origin 标记与 propose_setting）+ 轮次说明（设计轮不给工具）
+      __version: 23
     };
   },
 
@@ -2070,14 +2038,12 @@ const CardWriterChat: CardWriterChatShape = {
   editDraftName(idx: any, val: any) {
     if (!this._draft || !this._draft.characters[idx]) return;
     this._draft.characters[idx].name = val;
-    this._promoteIfProposed(this._draft.characters[idx]); // 手动编辑讨论中条目 = 用户认可
     this._debounceSaveDraft();
   },
 
   editDraftContent(idx: any, val: any) {
     if (!this._draft || !this._draft.characters[idx]) return;
     this._draft.characters[idx].content = val;
-    this._promoteIfProposed(this._draft.characters[idx]);
     this._debounceSaveDraft();
   },
 
@@ -2093,7 +2059,7 @@ const CardWriterChat: CardWriterChatShape = {
 
   addDraftChar() {
     if (!this._draft) return;
-    this._draft.characters.push({ name: '', content: '', status: 'confirmed', origin: 'user' });
+    this._draft.characters.push({ name: '', content: ''});
     this._saveDraft();
     try { this._doWriteToWorldbook(true); } catch (err) { console.warn('[CardWriter] write-through failed:', err); }
     this.renderDraft();
@@ -2112,19 +2078,18 @@ const CardWriterChat: CardWriterChatShape = {
     if (!wb) return '没有可写入的书';
     const namedChars = (this._draft.characters || []).filter((c: any) => c.name && c.name.trim());
     const namedEntries = (this._draft.entries || []).filter((e: any) => e.name && e.name.trim());
-    // 写入前验收（程序化）：只写 confirmed，proposed（讨论中想法）不写入
-    const draftChars = namedChars.filter((c: any) => c.status !== 'proposed');
-    const draftEntries = namedEntries.filter((e: any) => e.status !== 'proposed');
-    const proposedCount = (namedChars.length - draftChars.length) + (namedEntries.length - draftEntries.length);
+    // 草稿里的每一条都会被写入（写入即完全写入，没有「讨论中/未写入」的中间态）
+    const draftChars = namedChars;
+    const draftEntries = namedEntries;
     if (draftChars.length === 0 && draftEntries.length === 0) {
       // 副本空 + 世界书也空 = 无事可做；副本空但世界书有内容 = 用户把条目都删了，
       // 必须继续往下走（重建为空 = 清掉世界书里的条目），否则删除永远不生效
       const _bookHasContent = (wb.entries || []).some(function (e: any) { return e.name; });
       if (!_bookHasContent) {
-        return '没有可写入的已确认内容' + (proposedCount > 0 ? '（现有 ' + proposedCount + ' 条讨论中想法未确认，确认后再写入）' : '（世界书为空）');
+        return '没有可写入的内容（世界书为空）';
       }
     }
-    // 重名检查（confirmed 范围）：角色同名 / 条目 类型+名称 同名 → 阻断写入
+    // 重名检查：角色同名 / 条目 类型+名称 同名 → 阻断写入
     const dupChars = draftChars.filter((c: any, i: any) => draftChars.findIndex((x: any) => x.name === c.name) !== i);
     const dupEntries = draftEntries.filter((e: any, i: any) => draftEntries.findIndex((x: any) => x.type === e.type && x.name === e.name) !== i);
     if (dupChars.length > 0 || dupEntries.length > 0) {
@@ -2179,7 +2144,7 @@ const CardWriterChat: CardWriterChatShape = {
         return !!old && (old.content || '') === (it.content || '');
       });
     if (_unchanged) {
-      return '世界书已是最新（无需写入）' + (proposedCount > 0 ? '；' + proposedCount + ' 条讨论中想法未写入' : '');
+      return '世界书已是最新（无需写入）';
     }
     // （「开头」类型已废弃：不再保留/重建任何开头条目）
     (wb.entries || []).forEach(function (e: any) {
@@ -2196,11 +2161,10 @@ const CardWriterChat: CardWriterChatShape = {
     try { UIManager.renderWorldBooks(); } catch (e) {}
     const wvCount = allItems.filter(function (it) { return it.type === '世界观'; }).length;
     if (!silent) {
-      App.toast('已写入世界书' + (proposedCount > 0 ? '（' + proposedCount + ' 条讨论中想法未写入）' : '') + (shortChars.length > 0 ? '（验收提示：' + shortChars.length + ' 条角色卡过短）' : ''));
+      App.toast('已写入世界书' + (shortChars.length > 0 ? '（验收提示：' + shortChars.length + ' 条角色卡过短）' : ''));
     }
     return '已写入世界书：' + draftChars.length + ' 个角色，' + allItems.length + ' 条条目（世界观 ' + wvCount + ' 条）'
-      + (proposedCount > 0 ? '；' + proposedCount + ' 条讨论中想法未写入' : '')
-      + (shortChars.length > 0 ? '；验收提示：' + shortChars.length + ' 条已确认角色卡内容过短（<30字），建议补全' : '')
+      + (shortChars.length > 0 ? '；验收提示：' + shortChars.length + ' 条角色卡内容过短（<30字），建议补全' : '')
       + '（写入验收：重名检查通过）';
   },
 
