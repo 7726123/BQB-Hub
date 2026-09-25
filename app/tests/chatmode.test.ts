@@ -580,6 +580,9 @@ describe('落库与诊断', () => {
     ChatMode._finish('林薇：「你怎么才来。」\n林叶：我把笔帽扣上。', false, 'stop');
     last = ChatMode.log().slice(-1)[0];
     expect(last.drift).toBe(false);
+    // 诊断不显示给用户（2026-09-25 用户要求去掉「这一轮的格式没走对…」那条提示）
+    ChatMode.render();
+    expect(els['chatStream'].innerHTML).not.toContain('格式没走对');
     expect(last.reasoning).toBe(undefined);
   });
 });
