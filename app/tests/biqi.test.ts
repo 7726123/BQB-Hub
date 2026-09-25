@@ -128,6 +128,16 @@ describe('比奇：读取工具与开关', () => {
     expect(BiqiAgent._historyKey()).toBe('biqiHistory_' + BOOK_ID);
   });
 
+  // 用户 2026-09-25（对话模式龙套/新角色追问的连带修复）：比奇新增人物若不传 type，
+  // 条目是「其他」——对话模式的名单只收「角色」，那些人物就进不了名单、头像也挂不上。
+  it('add_entry 的工具描述要求"人物一律用角色"类型（默认其他会把角色挡在名单外）', () => {
+    const tools = BiqiAgent._tools() as any[];
+    const add = tools.map((t: any) => t && t.function).find((f: any) => f && f.name === 'add_entry');
+    expect(add).toBeTruthy();
+    expect(String(add.parameters.properties.type.description)).toContain('人物/角色一律用「角色」');
+    expect(String(add.parameters.properties.type.description)).toContain('进不了名单');
+  });
+
   it('换书切会话：旧书对话存回旧键，新书读自己的（不串台）', () => {
     PluginSyncEnable();
     BiqiAgent.messages = [{ role: 'user', content: 'A 书的问题' }];

@@ -3,8 +3,10 @@
 // 三条硬约束（改动前先读）：
 //   ① **按书独立**：聊天记录挂在世界书对象上（`wb.chatLog`，与 chapters 同级，不进正文、不影响编辑器），
 //      流式缓冲也按书 id 归属——切书不会串台，A 书正在跑的那一轮不会画进 B 书。
-//   ② **世界书同一份**：只用原书条目注入（与小说模式同一份世界书）。**不读 SettingSyncManager 的临时
-//      overlay**——按用户要求两种模式的临时改动各存各的；将来对话模式接比奇时，overlay 键带 `_chat` 后缀。
+//   ② **世界书同一份**：只用原书条目注入（与小说模式同一份世界书）；临时改动各存各的——只有
+//      **对话模式自己那份**临时世界书（overlay 键带 `_chat` 后缀，由比奇/龙套登记维护）参与，
+//      小说模式那份不读。读之前显式切模式（SettingSyncManager.withMode），否则小说生成后
+//      模式停在 novel，会读到小说那份（见 _entries 注释）。
 //   ③ **存原文、渲染时解析**：chatLog 里是模型原样输出；气泡、样式、头像都在渲染层由 lib/bubble.ts 解析。
 //      解析失败只影响样式，绝不丢字。
 //
@@ -139,14 +141,17 @@ export const ChatMode = {
 
   // 生效条目：对话模式自己的临时世界书（settingOverlay_<书ID>_chat）叠在原书之上；
   // 小说模式那份 overlay 与这里完全无关（用户要求：两种模式各存各的）。
-  // 不在这里改模式——模式由视图切换与本轮生成设置，getter 保持无副作用。
+  // 读之前显式把模式切到 chat 并还原：小说的生成会把模式设成 novel，切回对话视图时模式还停在
+  // novel，那时 getEffectiveEntries 读的是小说那份（症状：临时角色/头像在对话模式里时有时无）。
   _entries(): any[] {
     const wb = this.book();
     const orig = (wb && wb.entries) || [];
     try {
       const SS = SettingSyncManager;
       if (SS && typeof SS.isActive === "function" && SS.isActive() && typeof SS.getEffectiveEntries === "function") {
-        const eff = SS.getEffectiveEntries();
+        const eff = (typeof SS.withMode === 'function')
+          ? SS.withMode('chat', () => SS.getEffectiveEntries())
+          : SS.getEffectiveEntries();
         if (Array.isArray(eff) && eff.length > 0) return eff;
       }
     } catch (e) { /* 回落原书条目 */ }
@@ -183,13 +188,65 @@ export const ChatMode = {
   },
 
   _entryByName(name: string): any | null {
-    const wb = this.book();
     const list = this._entries();
-    const hit = list.filter((e: any) => e && e.type === '角色' && String(e.name || '') === name);
-    if (hit.length > 0) return hit[0];
     const strip = (s: string) => s.replace(/(小姐|先生|女士|老师|大人|同学|哥哥|姐姐|弟弟|妹妹|大叔|阿姨|夫人|殿下)$/, '');
     const n = strip(name);
-    return list.find((e: any) => e && e.type === '角色' && strip(String(e.name || '')) === n) || null;
+    // ① 先找「角色」条目（头像、简介都按它）
+    const hit = list.filter((e: any) => e && e.type === '角色' && String(e.name || '') === name);
+    if (hit.length > 0) return hit[0];
+    const fuzzy = list.find((e: any) => e && e.type === '角色' && strip(String(e.name || '')) === n);
+    if (fuzzy) return fuzzy;
+    // ② 兜底：同名的其他类型条目（比奇新增时 type 默认「其他」，角色名却落在那种条目上——
+    //    不兜底的话，简介里看得到设定、头像却永远挂不上）
+    const anyType = list.find((e: any) => e && String(e.name || '') === name);
+    if (anyType) return anyType;
+    return list.find((e: any) => e && strip(String(e.name || '')) === n) || null;
+  },
+
+  // 龙套登记落在**比奇的临时世界书**里，所以比奇关着就没法登记：那份 overlay 由比奇开关门控
+  // （关掉比奇 = 临时世界书整体不参与，读了也看不到）。关着时明确说清楚，不做"写了却看不到"的静默失败。
+  _tempCharAvailable(): boolean {
+    try {
+      if (typeof PluginManager === 'undefined' || typeof PluginManager.isEnabled !== 'function') return true;
+      return !!PluginManager.isEnabled('biqi');
+    } catch (e) { return false; }
+  },
+
+  // 临时角色登记：路人/同学A 这类名字要能长期复用同一个称呼、要点开有简介、要能给头像，
+  // 就得在**对话模式自己的临时世界书**里有一条同名「角色」条目（原书不动）。已存在则复用。
+  // 登记条的 inject=false：它只为"头像与名单"服务，不进提示词（名单由 chatRoster 直接读条目，
+  // 不看 inject，所以名字照样进名单）；想给它写正式设定就在比奇页编辑并勾上注入。
+  ensureTempCharacter(name: string): string | null {
+    const n = String(name || '').trim();
+    if (!n || n === NARRATOR) return null;
+    if (!this._tempCharAvailable()) return null;
+    try {
+      const strip = (s: string) => s.replace(/(小姐|先生|女士|老师|大人|同学|哥哥|姐姐|弟弟|妹妹|大叔|阿姨|夫人|殿下)$/, '');
+      const base = strip(n);
+      const hit = this._entries().find((e: any) => e && e.type === '角色' &&
+        (String(e.name || '') === n || strip(String(e.name || '')) === base));
+      if (hit && hit.id) return String(hit.id);      // 已有（原书或临时）→ 直接用它的 id
+      return SettingSyncManager.withMode('chat', () => SettingSyncManager.addTempEntry({
+        type: '角色', name: n, inject: false,
+        content: '（对话模式临时登记的角色：只为头像、简介与说话人名单。要给它固定设定，就在这里补充并勾上注入。）',
+      }));
+    } catch (e) { return null; }
+  },
+
+  // 简介弹窗里给「世界书里没有的角色」设头像：先登记成临时角色，再走统一的世界书头像选择器
+  // （UIManager.onAvatarPicked 会认出临时条目并把头像写进 overlay；重置临时设定后头像一起消失）。
+  pickAvatarFor(name: string): void {
+    try {
+      if (!this._tempCharAvailable()) {
+        App.toast('临时角色存在比奇的临时世界书里：请先在「插件」页开启比奇');
+        return;
+      }
+      const id = this.ensureTempCharacter(name);
+      if (!id) { App.toast('这个名字没法登记'); return; }
+      UIManager.pickAvatar('wb', id);
+    } catch (e) {
+      try { App.toast('设头像失败：' + String((e as any)?.message || e)); } catch (e2) { /* ignore */ }
+    }
   },
 
   // 主角的气泡靠右（微信里"自己的消息"那一侧）：设了主角按主角名，没设主角时第一人称的「我」也算
@@ -228,6 +285,16 @@ export const ChatMode = {
     return exact.concat(fuzzy).map((e: any) => ({ id: e.id, name: e.name, type: e.type || '', content: e.content || '', inject: e.inject !== false }));
   },
 
+  // 临时标记按**对话模式那份** overlay 判定：模式可能停在 novel（小说的生成设的），
+  // 不切模式就会查小说那份，临时标记忽有忽无（与 _entries 同一类坑）。
+  _entryStatusChat(id: string): 'modified' | 'disabled' | 'added' | 'orig' {
+    try {
+      return (typeof SettingSyncManager.withMode === 'function')
+        ? SettingSyncManager.withMode('chat', () => SettingSyncManager.entryStatus(id))
+        : SettingSyncManager.entryStatus(id);
+    } catch (e) { return 'orig'; }
+  },
+
   openProfile(name: string): void {
     const box = document.getElementById('chatProfileModal');
     const body = document.getElementById('chatProfileBody');
@@ -244,11 +311,19 @@ export const ChatMode = {
       '<div><div style="font-weight:600;font-size:15px;">' + esc(name) + '</div>' +
       '<div style="font-size:12px;color:var(--text-muted);margin-top:2px;">' + (rows.length ? rows.length + ' 条相关设定' : '世界书里还没这个角色的条目') + '</div></div></div>';
     if (rows.length === 0) {
-      html += '<div style="font-size:12px;color:var(--text-muted);line-height:1.8;">在世界书里给「角色」条目起成这个名字（或在条目里写上这个名字），这里就能显示它的设定与头像。</div>';
+      html += '<div style="font-size:12px;color:var(--text-muted);line-height:1.8;">世界书里还没有这个角色的条目（临时出场的路人/同学A 这类角色通常也没有）。' +
+        '给它设个头像，就会在临时世界书里登记一条同名「角色」条目：原书不动，重置临时设定后一起消失。</div>' +
+        '<div style="margin-top:8px;"><button class="ghost-btn" onclick="ChatMode.pickAvatarFor(\'' + esc(name) + '\')">给 TA 设头像</button>' +
+        '<button class="ghost-btn" onclick="ChatMode.closeProfile()" style="margin-left:6px;">知道了</button></div>';
     } else {
       rows.forEach(r => {
+        // 临时标记：让用户知道这条是"临时修订/临时新增"，重置临时设定就没了
+        let tempChip = '';
+        const st = this._entryStatusChat(r.id);
+        if (st === 'added') tempChip = '<span class="type-chip">临时新增</span>';
+        else if (st === 'modified') tempChip = '<span class="type-chip">临时修改</span>';
         html += '<div class="card" style="margin-top:8px;">' +
-          '<div style="display:flex;align-items:center;gap:6px;"><span class="type-chip">' + esc(r.type) + '</span><b style="font-size:13px;">' + esc(r.name) + '</b></div>' +
+          '<div style="display:flex;align-items:center;gap:6px;"><span class="type-chip">' + esc(r.type) + '</span>' + tempChip + '<b style="font-size:13px;">' + esc(r.name) + '</b></div>' +
           '<div style="font-size:13px;line-height:1.8;margin-top:6px;white-space:pre-wrap;">' + esc(r.content) + '</div>' +
           '<div style="margin-top:6px;"><button class="ghost-btn" onclick="ChatMode.closeProfile()">知道了</button>' +
           '<button class="ghost-btn" onclick="UIManager.pickAvatar(\'wb\',\'' + esc(r.id) + '\')" style="margin-left:6px;">换头像</button></div>' +
@@ -636,6 +711,7 @@ export const ChatMode = {
       // 新增条目
       (ov.added || []).forEach((e: any) => {
         if (!e || !e.content) return;
+        if (e.inject === false) return;    // 只为登记头像/名单的临时角色（inject=false）：不进提示词
         out += '### [' + (e.type || '其他') + '] ' + (e.name || '（未命名）') + '\n' + e.content + '\n\n';
       });
       if (!out) return '';

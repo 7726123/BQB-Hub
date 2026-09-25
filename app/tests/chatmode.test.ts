@@ -10,6 +10,7 @@ import { WorldBookManager as WBM } from '../src/domain/worldbook';
 import { PresetManager } from '../src/domain/preset';
 import { APIHandler } from '../src/domain/api';
 import { SettingSyncManager } from '../src/domain/settingsync';
+import { PluginManager } from '../src/domain/plugins';
 import { parseBubbles } from '../src/lib/bubble';
 import { UsageStats } from '../src/lib/usage';
 import { ChatMode } from '../src/domain/chatmode';
@@ -972,5 +973,133 @@ describe('演出轮记进用量统计', () => {
     els['chatInput'].value = '我自己正在打的字';
     await ChatMode.generate('另一句要求');
     expect(els['chatInput'].value).toBe('我自己正在打的字');   // 不覆盖用户正在写的内容
+  });
+});
+
+// 用户 2026-09-25：「如果当前也希望让一些不存在世界书的角色说话，比如可能会引入一些路人，
+// 或者"同学a"这样的」——渲染层一直支持（名单外的名字照样开气泡、首字色块头像），这里守的是
+// 新加的三条链路：① 读写临时世界书时模式安全；② 龙套能登记成临时「角色」条目（进名单、能挂头像）
+// 且 inject=false 不占提示词；③ 同名条目即使类型不是「角色」也能挂上头像。
+describe('龙套角色（路人/同学A）：登记、名单与头像（2026-09-25）', () => {
+  function stubSS(opts: { overlay?: any; effective?: (mode: string) => any[] }) {
+    const SS = SettingSyncManager as any;
+    const orig: Record<string, any> = {};
+    ['isActive', 'mode', 'setMode', 'getEffectiveEntries', 'getOverlay', 'withMode', 'addTempEntry', 'setTempAvatar']
+      .forEach(k => { orig[k] = SS[k]; });
+    let mode = 'novel';                        // 小说生成之后模式就停在这里（app.generate 开头设置）
+    const calls: any[] = [];
+    const blank = { modified: {}, disabled: [], added: [] };
+    SS.isActive = () => true;
+    SS.mode = () => mode;
+    SS.setMode = (m: string) => { mode = m; };
+    SS.withMode = (m: string, fn: any) => { const prev = mode; mode = m; try { return fn(); } finally { mode = prev; } };
+    SS.getOverlay = () => ((mode === 'chat' && opts.overlay) ? opts.overlay : blank);
+    SS.getEffectiveEntries = () => (opts.effective
+      ? opts.effective(mode)
+      : (mode === 'chat' && opts.overlay ? opts.overlay.added : []));
+    SS.addTempEntry = (e: any) => { calls.push({ e, mode }); return 'tmp_id'; };
+    return { calls, modeOf: () => mode, restore: () => { Object.keys(orig).forEach(k => { SS[k] = orig[k]; }); } };
+  }
+
+  it('模式停在 novel 时，读名单/简介也走对话那份临时世界书（读完还原，不给小说留副作用）', () => {
+    seedBooks(); setupPreset(null);
+    const s = stubSS({ effective: (m) => (m === 'chat' ? [{ id: 'c1', type: '角色', name: '对话模式的龙套', content: 'x', inject: true }] : []) });
+    try {
+      expect(ChatMode.roster()).toContain('对话模式的龙套');
+      expect(s.modeOf()).toBe('novel');
+    } finally { s.restore(); }
+  });
+
+  it('临时登记的龙套进名单、能挂头像；inject=false 的那条不进提示词', () => {
+    seedBooks(); setupPreset(1500);
+    const overlay = {
+      modified: {}, disabled: [], added: [
+        { id: 'x1', type: '角色', name: '同学A', content: '（临时登记，只为头像）', inject: false },
+        { id: 'x2', type: '角色', name: '书店老板', content: '书店老板，话少。', inject: true },
+      ],
+    };
+    const s = stubSS({ overlay });
+    try {
+      expect(ChatMode.roster()).toContain('同学A');
+      expect(ChatMode.roster()).toContain('书店老板');
+      const user = ChatMode.buildUser('接着演');
+      expect(user.indexOf('（临时登记，只为头像）')).toBe(-1);          // 只为头像登记的不占提示词
+      expect(user.indexOf('书店老板，话少。')).toBeGreaterThan(-1);      // 有内容的照常进「临时修订」块
+    } finally { s.restore(); }
+  });
+
+  it('ensureTempCharacter：同名「角色」条目直接复用；没有才登记（角色类型、inject=false、chat 模式）', () => {
+    seedBooks(); setupPreset(null);
+    PluginManager.setEnabled('biqi', true);          // 临时世界书由比奇门控
+    const s = stubSS({});
+    try {
+      expect(ChatMode.ensureTempCharacter('林薇')).toBe('e1');     // 原书已有 → 复用它的 id
+      expect(s.calls).toHaveLength(0);
+      expect(ChatMode.ensureTempCharacter('同学A')).toBe('tmp_id');
+      expect(s.calls[0].mode).toBe('chat');
+      expect(s.calls[0].e.type).toBe('角色');
+      expect(s.calls[0].e.inject).toBe(false);
+      expect(ChatMode.ensureTempCharacter('白')).toBe(null);       // 旁白不是角色，不给登记
+    } finally { s.restore(); }
+  });
+
+  it('比奇关着时：不静默写一个看不到的条目，而是明确提示去开比奇', () => {
+    seedBooks(); setupPreset(null);
+    PluginManager.setEnabled('biqi', false);
+    const s = stubSS({});
+    const ui = g.UIManager as any;
+    const origPick = ui.pickAvatar;
+    const toast = vi.fn();
+    const origToast = g.App.toast;
+    ui.pickAvatar = vi.fn();
+    g.App.toast = toast;
+    try {
+      ChatMode.pickAvatarFor('同学A');
+      expect(ui.pickAvatar).not.toHaveBeenCalled();            // 不写看不到的东西
+      expect(s.calls).toHaveLength(0);
+      expect(String(toast.mock.calls.map((c: any[]) => c[0]).join(' '))).toContain('开启比奇');
+      expect(ChatMode.ensureTempCharacter('同学A')).toBe(null);
+    } finally { ui.pickAvatar = origPick; g.App.toast = origToast; s.restore(); }
+  });
+
+  it('pickAvatarFor：先登记成临时角色，再开世界书头像选择器（写到那个 id 上）', () => {
+    seedBooks(); setupPreset(null);
+    PluginManager.setEnabled('biqi', true);
+    const s = stubSS({});
+    const ui = g.UIManager as any;
+    const origPick = ui.pickAvatar;
+    const picked: any[] = [];
+    ui.pickAvatar = (type: string, id: string) => { picked.push({ type, id }); };
+    try {
+      ChatMode.pickAvatarFor('同学A');
+      expect(picked).toEqual([{ type: 'wb', id: 'tmp_id' }]);
+    } finally { ui.pickAvatar = origPick; s.restore(); }
+  });
+
+  it('简介弹窗：世界书里没有的龙套给「给 TA 设头像」入口；临时条目带「临时新增」标记', () => {
+    seedBooks(); setupPreset(null);
+    const overlay = { modified: {}, disabled: [], added: [{ id: 'x1', type: '角色', name: '同学A', content: '同班。', inject: false }] };
+    const s = stubSS({ overlay });
+    try {
+      // ① 完全没条目的名字：给出登记入口（点了才会建临时角色，不是自动建）
+      ChatMode.openProfile('路过的邻居');
+      let html = els['chatProfileBody'].innerHTML;
+      expect(html).toContain('给 TA 设头像');
+      expect(html).toContain('临时世界书');
+      // ② 临时新增的条目：标出来"这是临时的"，换头像按钮照旧在
+      ChatMode.openProfile('同学A');
+      html = els['chatProfileBody'].innerHTML;
+      expect(html).toContain('临时新增');
+      expect(html).toContain("UIManager.pickAvatar('wb','x1')");
+    } finally { s.restore(); }
+  });
+
+  it('同名条目是「其他」类型时，头像也能挂上（不再只有简介有内容、头像空着）', () => {
+    seedBooks(); setupPreset(null);
+    const s = stubSS({ effective: () => [{ id: 't1', type: '其他', name: '同学A', content: '同班。', avatar: 'data:image/jpeg;base64,AAAA', inject: true }] });
+    try {
+      expect(String(ChatMode.avatar('同学A').src).startsWith('blob:')).toBe(true);
+      expect(ChatMode.profile('同学A').map(e => e.name)).toEqual(['同学A']);
+    } finally { s.restore(); }
   });
 });

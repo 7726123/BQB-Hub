@@ -73,6 +73,17 @@ describe('气泡解析：说话人前缀的三种写法', () => {
     expect(b[0].known).toBe(true);
   });
 
+  // 用户 2026-09-25：允许路人/同学A 这类"名单外的龙套"说话——名字形状对得上就照常开气泡
+  it('龙套（路人甲 / 同学A / 店员）照样开气泡，只是 known=false（首字色块头像）', () => {
+    const b = parseBubbles('路人甲：「同学，借过一下。」\n同学A：「他谁啊。」\n店员：「欢迎光临。」', AI);
+    expect(b.map(x => x.speaker)).toEqual(['路人甲', '同学A', '店员']);
+    expect(b.map(x => x.known)).toEqual([false, false, false]);
+    expect(b[0].blocks.map(x => x.type)).toEqual(['say']);
+    // 名字里有「的」的说法（隔壁桌的男生）不算说话人——那和叙述句没法区分，别开假气泡
+    const c = parseBubbles('隔壁桌的男生：「借过。」', AI);
+    expect(c[0].speaker).toBe(null);
+  });
+
   it('名字带称呼后缀也能对上（薇薇姐 → 林薇）', () => {
     const b = parseBubbles('林薇小姐：「请。」', { roster: ROSTER });
     expect(b[0].speaker).toBe('林薇');
@@ -380,6 +391,19 @@ describe('格式块：名单/主角/字数渲染', () => {
     expect(blk).toContain('不要跟在某个角色的台词后面');   // 白行独立（用户报的"旁白挂在角色话尾"）
     expect(blk).toContain('作者的输入不会显示给读者');
     expect(blk).not.toContain('不要复述同一句话');          // 旧规则（作者输入已经显示过）已作废
+  });
+
+  // 用户 2026-09-25：「希望让一些不存在世界书的角色说话，比如路人，或者"同学a"这样的」
+  it('格式块：允许临时龙套说话，给通用称呼 + 克制要求；名单角色仍必须用名单名', () => {
+    const blk = chatFormatBlock({ roster: ROSTER, protagonist: '林叶', lengthWords: 2500 });
+    expect(blk).toContain('【临时龙套');
+    expect(blk).toContain('路人甲');
+    expect(blk).toContain('同学A');
+    expect(blk).toContain('不要起有姓有名的正式人名');       // 通用称呼才认得出（也不误导读者）
+    expect(blk).toContain('最多 2 个龙套');
+    expect(blk).toContain('不写龙套的心理活动');
+    expect(blk).toContain('必须用名单上的名字');             // 名单里的角色不许改名/起绰号
+    expect(blk).toContain('名单之外只允许【临时龙套】');
   });
 
   it('主角在名单里带「作者本人·主角」标记，且写明主角=作者、不许分身', () => {    const blk = chatFormatBlock({ roster: ROSTER, protagonist: '林叶', lengthWords: 2500 });

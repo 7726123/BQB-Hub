@@ -482,7 +482,7 @@ export const BiqiAgent: {
             properties: {
               name: { type: 'string', description: '条目名（角色名/设定名）' },
               content: { type: 'string', description: '条目完整内容' },
-              type: { type: 'string', enum: ['世界观', '角色', '其他'], description: '条目类型，默认其他' },
+              type: { type: 'string', enum: ['世界观', '角色', '其他'], description: '条目类型：人物/角色一律用「角色」（对话模式按角色名单分气泡，其他类型进不了名单、头像也挂不上）；世界设定/规则/势力用「世界观」；其余用「其他」' },
               reason: { type: 'string', description: '一句话说明为什么加' },
             },
             required: ['name', 'content'],

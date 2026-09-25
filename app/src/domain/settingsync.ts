@@ -344,6 +344,49 @@ export const SettingSyncManager = {
     return added.find(function (e) { return String(e.name || '').trim() === t; }) || null;
   },
 
+  // ---- 模式安全的读写（临时世界书按 小说/对话 两套键隔离）----
+  // 小说的生成会把模式设成 novel（app.generate 开头），之后用户切回对话视图时模式还停在 novel——
+  // 那时读写 overlay 会落到**小说那份**上（症状：临时角色/头像在对话模式里时有时无）。
+  // 这里同步切模式、用完还原，不产生跨视图的串台。
+  withMode<T>(m: 'novel' | 'chat', fn: () => T): T {
+    const prev = this.mode();
+    this.setMode(m);
+    try { return fn(); } finally { this.setMode(prev); }
+  },
+
+  /** 在临时世界书里新增一条（比奇之外的入口：对话模式给龙套登记角色用）。同名幂等，返回条目 id。 */
+  addTempEntry(entry: { type?: string; name: string; content?: string; inject?: boolean }): string | null {
+    try {
+      const name = String((entry && entry.name) || '').trim();
+      if (!name) return null;
+      const o = this.getOverlay();
+      const dup = o.added.find(function (e) { return String(e.name || '').trim() === name; });
+      if (dup) return String(dup.id);
+      const id = newEntryId();
+      o.added.push({
+        id,
+        type: (entry.type && ['世界观', '角色', '初始', '其他'].indexOf(entry.type) >= 0) ? entry.type : '角色',
+        name,
+        content: String(entry.content || ''),
+        inject: entry.inject !== false,
+      });
+      this._saveOverlay(o);
+      return id;
+    } catch (e) { return null; }
+  },
+
+  /** 给**临时新增**条目写头像（原书条目走世界书那条路）。返回是否写入成功。 */
+  setTempAvatar(entryId: string, dataUrl: string): boolean {
+    try {
+      const o = this.getOverlay();
+      const idx = o.added.findIndex(function (e) { return e.id === entryId; });
+      if (idx < 0) return false;
+      o.added[idx] = { ...o.added[idx], avatar: dataUrl };
+      this._saveOverlay(o);
+      return true;
+    } catch (e) { return false; }
+  },
+
   // ---- 落盘（快照/回滚，比奇落盘前会自动存一份）----
   _snapshotNow(label: string): void {
     const key = this._snapsKey();

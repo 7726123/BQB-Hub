@@ -333,3 +333,54 @@ describe('历史待裁决清理（cleanupLegacyPending）', () => {
     expect(SettingSyncManager.getPending()).toHaveLength(0);
   });
 });
+
+// 对话模式的龙套（路人/同学A）要能长期复用同一个名字、要有简介与头像 —— 靠"临时登记一条同名
+// 「角色」条目"。这里守住三个入口的语义：withMode（模式安全的读写）、addTempEntry、setTempAvatar。
+describe('临时角色登记与头像（对话模式龙套用，2026-09-25）', () => {
+  it('withMode：同步切模式、返回结果、用完还原', () => {
+    const m0 = SettingSyncManager.mode();
+    const seen: string[] = [];
+    const r = SettingSyncManager.withMode('chat', () => { seen.push(SettingSyncManager.mode()); return 42; });
+    expect(r).toBe(42);
+    expect(seen).toEqual(['chat']);
+    expect(SettingSyncManager.mode()).toBe(m0);       // 还原，不污染调用方
+  });
+
+  it('addTempEntry：默认「角色」类型、同名幂等、inject 可关；写的是当前模式那一份', () => {
+    seedBook();
+    const id1 = SettingSyncManager.addTempEntry({ name: '同学A', inject: false });
+    expect(String(id1).length).toBeGreaterThan(0);
+    const o = SettingSyncManager.getOverlay();
+    expect(o.added).toHaveLength(1);
+    expect(o.added[0].type).toBe('角色');
+    expect(o.added[0].inject).toBe(false);
+    expect(SettingSyncManager.addTempEntry({ name: '同学A' })).toBe(id1);       // 幂等
+    expect(SettingSyncManager.getOverlay().added).toHaveLength(1);
+    // 当前是 novel 模式 → 上面写进的是小说那份；chat 那份仍然是空的（两种模式各存各的）
+    expect(SettingSyncManager.withMode('chat', () => SettingSyncManager.getOverlay().added)).toHaveLength(0);
+    const chatId = SettingSyncManager.withMode('chat', () => SettingSyncManager.addTempEntry({ name: '同学A', inject: false }));
+    expect(String(chatId)).not.toBe(String(id1));
+    expect(SettingSyncManager.getOverlay().added).toHaveLength(1);              // 小说那份没被污染
+  });
+
+  it('setTempAvatar：只给临时新增条目写头像；未知 id 返回 false；能与 addTempEntry 叠加', () => {
+    seedBook();
+    const id = SettingSyncManager.addTempEntry({ name: '路人甲', inject: false });
+    expect(SettingSyncManager.setTempAvatar(String(id), 'data:image/png;base64,QQ==')).toBe(true);
+    const added = SettingSyncManager.getOverlay().added[0];
+    expect(added.avatar).toBe('data:image/png;base64,QQ==');
+    expect(added.name).toBe('路人甲');
+    expect(SettingSyncManager.setTempAvatar('不存在的 id', 'data:image/png;base64,QQ==')).toBe(false);
+  });
+
+  it('登记条进「生效条目」（名单/头像查它），重置临时设定后一起消失', () => {
+    seedBook();
+    const id = SettingSyncManager.addTempEntry({ name: '店员', inject: false });
+    SettingSyncManager.setTempAvatar(String(id), 'data:image/png;base64,QQ==');
+    const eff = SettingSyncManager.getEffectiveEntries();
+    expect(eff.map(e => e.name)).toContain('店员');                 // 名单/头像都能找到它
+    expect(SettingSyncManager.entryStatus(String(id))).toBe('added');
+    SettingSyncManager.resetAll();
+    expect(SettingSyncManager.getEffectiveEntries().map(e => e.name)).not.toContain('店员');
+  });
+});

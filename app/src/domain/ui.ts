@@ -1318,6 +1318,23 @@ const UIManager: UIManagerShape = {
     input!.click();
   },
 
+  // 临时世界书里**新增**的条目不在原书里，头像只能写进 overlay 的 added（原书那条路找不到它）。
+  // 属于临时设定：重置临时设定 / 回滚后头像一起消失（用户确认过这个取舍）。
+  // 读写都在 chat 模式下进行——小说的生成会把模式设成 novel，不切就会写到小说那份 overlay 上。
+  _saveTempAvatar(entryId: any, dataUrl: any): boolean {
+    try {
+      if (typeof SettingSyncManager === 'undefined' || typeof SettingSyncManager.setTempAvatar !== 'function') return false;
+      var id = String(entryId || '');
+      var ok = (typeof SettingSyncManager.withMode === 'function')
+        ? SettingSyncManager.withMode('chat', function () { return SettingSyncManager.setTempAvatar(id, dataUrl); })
+        : SettingSyncManager.setTempAvatar(id, dataUrl);
+      if (!ok) return false;
+      try { this.renderAgentPage(); } catch (e) { /* 比奇页没开也不影响 */ }
+      try { this.renderWBEntries(); } catch (e) { /* ignore */ }
+      return true;
+    } catch (e) { return false; }
+  },
+
   onAvatarPicked(input: any) {
     var file = input.files && input.files[0];
     var target = this._avatarTarget;
@@ -1333,15 +1350,20 @@ const UIManager: UIManagerShape = {
       if (target.type === 'wb') {
         var all = WorldBookManager.getAll();
         var wb = WorldBookManager.getActive();
-        if (wb && wb.entries) {
-          var entry = wb.entries.find(function (e) { return e.id === target.id; });
-          if (entry) {
-            entry.avatar = dataUrl;
-            WorldBookManager.saveAll(all);
-            self.renderWBEntries();
-            App.toast('头像已更新');
-            refreshChat();
-          }
+        var entry = (wb && wb.entries) ? wb.entries.find(function (e: any) { return e.id === target.id; }) : null;
+        if (entry) {
+          entry.avatar = dataUrl;
+          WorldBookManager.saveAll(all);
+          self.renderWBEntries();
+          App.toast('头像已更新');
+          refreshChat();
+        } else if (self._saveTempAvatar(target.id, dataUrl)) {
+          // 临时新增条目（比奇/对话模式登记的角色）：头像写进 overlay，属于临时设定
+          App.toast('头像已更新（临时角色：重置临时设定后会消失）');
+          refreshChat();
+        } else {
+          // 以前这里什么都不做（用户点了换头像毫无反应）——现在至少说清为什么
+          App.toast('找不到这个条目（可能已被重置或已写入原书）');
         }
       } else {
         // 数据库角色档案：头像写回世界书同名字条条目（若存在），否则存到角色档案记录自身
@@ -1594,6 +1616,10 @@ const UIManager: UIManagerShape = {
             '<div style="display:flex;align-items:center;gap:6px;">' +
               '<span style="font-size:11px;color:var(--text-muted);">[' + htmlEscape(e.type || '其他') + ']</span>' +
               '<span style="font-weight:700;font-size:13px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + htmlEscape(e.name || '（未命名）') + '</span>' + badge +
+              ((e.type === '角色') ? (e.avatar
+                ? '<img class="wb-avatar" src="' + htmlEscape(avatarUrl(e.avatar) || '') + '" onclick="UIManager.viewAvatar(this.src)" alt="">'
+                : '<span class="wb-avatar-empty">👤</span>') +
+                '<button class="ghost-btn" style="padding:4px 8px;" onclick="UIManager.pickAvatar(\'wb\',\'' + e.id + '\')">换头像</button>' : '') +
               '<button class="ghost-btn" style="padding:4px 8px;" onclick="UIManager.editAgentEntry(\'' + e.id + '\')">编辑</button>' +
             '</div>' +
             self._agentBodyHtml(e.id, e.content, 160) +
@@ -1650,12 +1676,16 @@ const UIManager: UIManagerShape = {
     var name = nameEl ? String(nameEl.value || '').trim() : '';
     var content = contentEl ? String(contentEl.value || '').trim() : '';
     var type = typeEl ? String(typeEl.value || '其他') : '其他';
+    var injectEl = document.getElementById('wbEntryInject') as any;
+    var inject = injectEl ? !!injectEl.checked : true;
     if (!name) { App.toast('请输入条目名称'); return; }
     var overlay = SettingSyncManager.getOverlay();
     var idx = overlay.added.findIndex(function (e: any) { return e.id === id; });
     if (idx >= 0) {
-      overlay.added[idx] = { ...overlay.added[idx], name, content, type };
+      // 临时新增条目：注入开关能改（对话模式登记的龙套默认不注入，想让它进提示词就在这里勾上）
+      overlay.added[idx] = { ...overlay.added[idx], name, content, type, inject };
     } else {
+      // 临时修改：overlay.modified 的结构只承载 name/content/type（注入状态仍由原书条目决定）
       overlay.modified[id] = { name, content, type };
       // 若该条曾被停用，编辑即视为重新启用
       var di = overlay.disabled.indexOf(id);
