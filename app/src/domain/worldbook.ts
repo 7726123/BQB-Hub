@@ -3,9 +3,20 @@
 // 注入模型见 ADR-0001：条目单一 inject 开关，默认注入；「初始」在正文为空时单独注入一次。
 import { SM } from '../infra/gate';
 
+// 世界书内容变了 → 通知写卡页的工作副本重新对齐（写卡与世界书维护的是**同一本书**，两边必须一致：
+// 世界书页改了条目/删了条目/改了类型/换过顺序、导入了酒馆卡……写卡这边立即跟随；反向由写卡的直写负责）。
+// 用全局查找而不是 import：worldbook 是底层模块，反向依赖 domain/cardwriter 会成依赖环；
+// 写卡模块没加载（或测试环境没挂）时静默跳过。对齐本身幂等：内容一致时是纯比较、零副作用。
+function _notifyCardWriterChanged() {
+  try {
+    const cw: any = (globalThis as any).CardWriterChat;
+    if (cw && typeof cw._onWorldbookChanged === 'function') cw._onWorldbookChanged();
+  } catch (e) { /* 通知失败不影响世界书写入 */ }
+}
+
 export const WorldBookManager = {
   getAll(): WorldBookGlobal[] { return SM().get<WorldBookGlobal[]>('worldBooks', []) ?? []; },
-  saveAll(arr: WorldBookGlobal[]): void { SM().set('worldBooks', arr); },
+  saveAll(arr: WorldBookGlobal[]): void { SM().set('worldBooks', arr); _notifyCardWriterChanged(); },
   getActiveId(): string | null { return SM().get<string>('activeWorldBookId', null); },
   setActiveId(id: string | null): void { SM().set('activeWorldBookId', id); },
   getActive(): WorldBookGlobal | null {

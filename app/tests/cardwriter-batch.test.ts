@@ -40,6 +40,9 @@ function el(): any {
 
 beforeAll(async () => {
   await import('../src/domain/cardwriter'); // 顶层 init() 会读全局桩
+  // 原始实现快照：本文件早先的用例会把单例的 _syncDraftFromWorldbook 覆盖成 no-op 桩，
+  // 镜像同步自己的用例需要先还原（与 cardwriter-init-unique 的 _realRefreshContext 同款做法）
+  (anyG as { _realSyncDraft?: unknown })._realSyncDraft = (anyG.CardWriterChat as { _syncDraftFromWorldbook: unknown })._syncDraftFromWorldbook;
 });
 
 const els = new Map<string, any>();
@@ -564,4 +567,141 @@ describe('轮次门控：设计轮不给工具、操作轮才给', () => {
     expect(blob).not.toContain("'origin'");
     expect(blob).not.toContain('crossref');
   });
+});
+
+// 长按选择（2026-09-25 用户）：550ms 阈值太短，慢速滑动/按住看内容就误弹「复制/删除/多选」；
+// 而且长按会同时冒出**原生**的选区+复制菜单。现在：800ms + 位移 12px + 列表滚动即取消；
+// 消息区不可选（CSS）+ 不再程序化创建原生选区（改 .cw-sel 描边做视觉反馈）。
+describe('长按选择：阈值/取消/不出原生选区', () => {
+  function prime(c: any): void {
+    c._isSending = false;
+    c._multiMode = false;
+    c._selIdx = -1;
+    c._pressTimer = null;
+    c._positionSelBar = () => {};     // 只测长按判定，不测定位
+    c.messages = [{ role: 'assistant', content: '一二三四五' }];
+  }
+
+  it('800ms 才选中：550ms 仍是未决，800ms 后出浮条且只做描边、不建原生选区', () => {
+    vi.useFakeTimers();
+    try {
+      const c = Cw();
+      prime(c);
+      let selCalls = 0;
+      const getSel = vi.fn(() => null);
+      (globalThis as any).window = { getSelection: getSel, innerWidth: 360, innerHeight: 640 };
+      const toggles: any[] = [];
+      const row = { classList: { toggle: (k: string, v: any) => toggles.push([k, v]) } };
+      els.set('cardwriterMessages', { querySelector: () => row });
+      const orig = c.selectMessage;
+      c.selectMessage = (i: any) => { selCalls++; orig.call(c, i); };
+      c.msgPressStart({ clientX: 10, clientY: 10, target: { closest: () => null } }, 0);
+      vi.advanceTimersByTime(550);
+      expect(selCalls, '550ms 不该触发').toBe(0);
+      vi.advanceTimersByTime(250);
+      expect(selCalls, '800ms 应触发').toBe(1);
+      expect(getSel, '不应程序化创建原生选区').not.toHaveBeenCalled();
+      expect(toggles).toEqual([['cw-sel', true]]);
+      c._hideSelBar();
+      expect(toggles).toEqual([['cw-sel', true], ['cw-sel', false]]);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('滑动（位移 >12px）与列表滚动都会取消未决长按', () => {
+    vi.useFakeTimers();
+    try {
+      const c = Cw();
+      prime(c);
+      c.msgPressStart({ clientX: 100, clientY: 100, target: { closest: () => null } }, 0);
+      c.msgPressMove({ clientX: 106, clientY: 104 });      // 小幅抖动不取消
+      expect(c._pressTimer == null).toBe(false);
+      c.msgPressMove({ clientX: 113, clientY: 100 });      // 13px → 取消
+      vi.advanceTimersByTime(1000);
+      expect(c._selIdx).toBe(-1);
+      // 滚动取消：即使手指没动，列表一滚也不该弹
+      c._selIdx = -1;
+      c.msgPressStart({ clientX: 10, clientY: 10, target: { closest: () => null } }, 0);
+      c.msgPressCancel();
+      vi.advanceTimersByTime(1000);
+      expect(c._selIdx).toBe(-1);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('页面里的消息区不可选、且滚动会取消长按（防回归）', () => {
+    const fs = require('node:fs');
+    const path = require('node:path');
+    const html = fs.readFileSync(path.resolve(__dirname, '..', '..', 'web', 'index.html'), 'utf8');
+    expect(html).toMatch(/#cardwriterMessages\{[^}]*user-select:none/);
+    expect(html).toContain('id="cardwriterMessages" onscroll="CardWriterChat.msgPressCancel()"');
+    expect(html).toMatch(/\.cw-msg-text\{[^}]*user-select:none/);
+    expect(html).not.toMatch(/\.cw-msg-text\{[^}]*user-select:text/);
+  });
+});
+
+// 写卡 ↔ 世界书：两边维护同一本书（2026-09-25 用户：改了世界书，写卡这边还是旧内容；
+// 改了写卡，世界书也没跟着变——应该完全共同维护一本）。写卡这侧改成**镜像拉取**：
+// 名字/内容/类型/顺序全部以世界书为准（含"世界书里删掉的条目"），世界书一变就对齐。
+describe('写卡工作副本 = 世界书镜像（以世界书为准）', () => {
+  function prime(c: any): void {
+    const real = (anyG as { _realSyncDraft?: any })._realSyncDraft;
+    if (real) c._syncDraftFromWorldbook = real;   // 还原被前面用例覆盖掉的实现
+    c._getTargetId = () => 'wb1';
+    c._saveDraft = () => {};
+    c.renderDraft = () => {};
+    c._snapshotNow = () => {};
+  }
+
+  it('世界书改过内容/删过条目/改过类型 → 副本整份对齐（旧实现只补缺，改与删都不同步）', () => {
+    const c = Cw();
+    prime(c);
+    const saves: number[] = [];
+    c._saveDraft = () => saves.push(1);
+    WB_BOOKS = [{
+      id: 'wb1', name: '测试书', entries: [
+        { id: 'e1', type: '角色', name: '林薇', content: '【世界书里改过的新内容】' },
+        { id: 'e2', type: '世界观', name: '学校', content: '市立三中。' },
+        { id: 'e3', type: '其他', name: '旧条目', content: 'x' },
+      ],
+    }];
+    c._draft = {
+      characters: [{ name: '林薇', content: '旧内容' }, { name: '已被删掉的角色', content: 'y' }],
+      entries: [{ type: '其他', name: '旧条目', content: 'x' }, { type: '世界观', name: '已删条目', content: 'z' }],
+      deleted: [{ type: '其他', name: '墓碑' }],
+    };
+    c._syncDraftFromWorldbook();
+    expect(c._draft.characters).toEqual([{ name: '林薇', content: '【世界书里改过的新内容】' }]);
+    expect(c._draft.entries).toEqual([
+      { type: '世界观', name: '学校', content: '市立三中。' },
+      { type: '其他', name: '旧条目', content: 'x' },
+    ]);
+    expect(c._draft.deleted).toEqual([]);            // 墓碑清掉（同步以世界书为准）
+    expect(saves.length).toBe(1);
+  });
+
+  it('内容一致时是纯比较：不落盘、不重绘（直写会触发本函数，不能成环）', () => {
+    const c = Cw();
+    prime(c);
+    let saves = 0, renders = 0;
+    c._saveDraft = () => { saves++; };
+    c.renderDraft = () => { renders++; };
+    WB_BOOKS = [{ id: 'wb1', name: '测试书', entries: [
+      { id: 'e1', type: '角色', name: '林薇', content: 'A' },
+      { id: 'e2', type: '其他', name: '乙', content: 'B' },
+    ] }];
+    c._draft = { characters: [{ name: '林薇', content: 'A' }], entries: [{ type: '其他', name: '乙', content: 'B' }], deleted: [] };
+    c._syncDraftFromWorldbook();
+    c._syncDraftFromWorldbook();
+    expect(saves).toBe(0);
+    expect(renders).toBe(0);
+  });
+
+  it('副本里正在新加的"无名空行"保留（还没写进世界书是正常的）', () => {
+    const c = Cw();
+    prime(c);
+    WB_BOOKS = [{ id: 'wb1', name: '测试书', entries: [{ id: 'e1', type: '其他', name: '甲', content: 'A' }] }];
+    c._draft = { characters: [], entries: [{ type: '其他', name: '甲', content: 'A' }, { type: '其他', name: '', content: '' }], deleted: [] };
+    c._syncDraftFromWorldbook();
+    expect(c._draft.entries).toEqual([{ type: '其他', name: '甲', content: 'A' }, { type: '其他', name: '', content: '' }]);
+  });
+
 });

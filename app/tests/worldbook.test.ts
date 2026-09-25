@@ -115,3 +115,31 @@ describe('开头条目类型已废弃（v1.5.81）', () => {
     expect(WBM.filterRelevantEntries().map(e => e.id)).toEqual(['p']);
   });
 });
+
+// 写卡页的工作副本要跟世界书对齐（两边维护同一本书）：世界书一改就通知写卡重新镜像。
+// 通知走全局查找（底层模块不反向 import 写卡模块），写卡没挂/回调抛错都不能影响世界书写入。
+describe('世界书变更 → 通知写卡页对齐', () => {
+  it('saveAll/addEntry/updateEntry/deleteEntry 都会通知；写卡没挂或回调抛错都不影响写入', () => {
+    const g = globalThis as unknown as Record<string, any>;
+    const hits: string[] = [];
+    g.CardWriterChat = { _onWorldbookChanged: () => hits.push('sync') };
+    try {
+      const wb = WBM.createBook('通知书');                 // createBook → saveAll
+      WBM.addEntry(wb.id, { type: '其他', name: '甲', content: 'A' });
+      const entry = WBM.getAll().find(w => w.id === wb.id)!.entries[0];
+      WBM.updateEntry(wb.id, entry.id, { content: 'B' });
+      WBM.deleteEntry(wb.id, entry.id);
+      expect(hits.length).toBeGreaterThanOrEqual(4);
+      // 写卡模块没挂（没进过写卡页/测试环境）→ 静默跳过
+      g.CardWriterChat = undefined;
+      const before = hits.length;
+      WBM.addEntry(wb.id, { type: '其他', name: '乙', content: 'C' });
+      expect(hits.length).toBe(before);
+      expect(WBM.getAll().find(w => w.id === wb.id)!.entries.some((e: any) => e.name === '乙')).toBe(true);
+      // 回调自己抛错也不能影响世界书写入
+      g.CardWriterChat = { _onWorldbookChanged: () => { throw new Error('boom'); } };
+      WBM.addEntry(wb.id, { type: '其他', name: '丙', content: 'D' });
+      expect(WBM.getAll().find(w => w.id === wb.id)!.entries.some((e: any) => e.name === '丙')).toBe(true);
+    } finally { g.CardWriterChat = undefined; }
+  });
+});

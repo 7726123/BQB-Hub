@@ -172,6 +172,8 @@ const CardWriterChat: CardWriterChatShape = {
     // 草稿/渲染分开兜底：任何一步异常都不拖垮换书与对话显示，且必须让用户看到原因
     try {
       this._loadDraft();
+      // 进面板/换书：工作副本与世界书对齐（以世界书为准；别处改过/删过的条目在这里体现）
+      this._syncDraftFromWorldbook();
     } catch (e: any) {
       const msg = (e && e.message) ? e.message : String(e);
       try { window.__recordErr && window.__recordErr('写卡草稿', msg, false); } catch (_e) { /* ignore */ }
@@ -1391,9 +1393,11 @@ const CardWriterChat: CardWriterChatShape = {
 
   // ==================== 长按选择 / 复制 / 删除 / 多选 ====================
 
-  // 按住 550ms 且手指未移动（滚动/拖动）→ 选中这条消息的全部文字 + 浮出操作条。
+  // 按住 800ms 且手指未移动（滚动/拖动）→ 选中这条消息 + 浮出操作条。
   // 全程不重建列表：旧实现把菜单塞进气泡并重刷 innerHTML，气泡变高 + 选区被清掉，
   // 导致"想复制某一段很难"，也顺便让下面的消息整体位移。
+  // 时长/位移阈值（2026-09-25 用户反馈）：550ms 太短，慢速滑动或按住看内容时会误触，
+  // 放到 800ms、位移阈值 12px，并且**列表一滚动就取消**（见 msgPressCancel + 容器的 onscroll）。
   msgPressStart(e: any, i: any) {
     if (e.target && e.target.closest && e.target.closest('button, .cw-sel-bar, .cw-multi-bar')) return; // 点在按钮/浮条上不触发
     if (this._isSending) return; // AI 回复中不响应长按
@@ -1407,16 +1411,21 @@ const CardWriterChat: CardWriterChatShape = {
       self._pressTimer = null;
       if (self._pressMoved || self._isSending) return;
       self.selectMessage(i);
-    }, 550);
+    }, 800);
   },
   msgPressMove(e: any) {
     if (this._pressTimer == null) return;
     const dx = Math.abs(e.clientX - this._pressStartX), dy = Math.abs(e.clientY - this._pressStartY);
-    if (dx > 10 || dy > 10) { this._pressMoved = true; clearTimeout(this._pressTimer); this._pressTimer = null; }
+    if (dx > 12 || dy > 12) { this._pressMoved = true; clearTimeout(this._pressTimer); this._pressTimer = null; }
   },
   msgPressEnd() {
-    // 松手时定时器还在 = 短点击：取消长按判定（文本选择/点击不受影响）
+    // 松手时定时器还在 = 短点击：取消长按判定（点击不受影响）
     if (this._pressTimer != null) { clearTimeout(this._pressTimer); this._pressTimer = null; }
+  },
+  // 列表滚动（手指在气泡上滑动、或惯性滚动）→ 立即取消未决的长按：滑动绝不该弹出复制/删除
+  msgPressCancel() {
+    if (this._pressTimer != null) { clearTimeout(this._pressTimer); this._pressTimer = null; }
+    this._pressMoved = true;
   },
 
   // 消息文本节点（选区只落在正文层：思维链不在其中，因此不会被选中/复制）
@@ -1430,26 +1439,29 @@ const CardWriterChat: CardWriterChatShape = {
     return String((m && m.content) || '');
   },
 
-  // 长按入口：程序化选中整条正文（原生选区 → 原生两头句柄可拖动调整范围）
+  // 长按入口：选中整条正文 → 出浮条（复制 = 整条）。
+  // 2026-09-25 用户要求：不要再冒**原生**的选区/复制菜单（长按会同时弹出系统那套 + 我们这条浮条）。
+  // 做法：消息区 CSS user-select:none（见 index.html）+ 这里不再程序化创建原生选区，
+  // 视觉反馈改用 .cw-sel 描边。代价：不能用系统手柄拖选片段（复制=整条；多选可整轮处理）。
   selectMessage(i: any) {
-    const el: any = this._msgTextEl(i);
-    if (!el) return;
-    try {
-      const sel = window.getSelection && window.getSelection();
-      const doc: any = document;
-      if (sel && doc.createRange) {
-        const range = doc.createRange();
-        range.selectNodeContents(el);
-        sel.removeAllRanges();
-        sel.addRange(range);
-      }
-    } catch (e) { /* 选区失败不致命：下面仍会显示浮条（复制走整条兜底） */ }
+    if (this._selIdx >= 0 && this._selIdx !== i) this._markSelRow(this._selIdx, false);
     this._selIdx = i;
     this._selText = this._msgRaw(i);
+    this._markSelRow(i, true);
     this._positionSelBar();
   },
+  _selRowEl(i: any) {
+    const box = document.getElementById('cardwriterMessages');
+    if (!box || !box.querySelector) return null;
+    return box.querySelector('.chat-msg[data-i="' + i + '"]');
+  },
+  _markSelRow(i: any, on: any) {
+    const el: any = this._selRowEl(i);
+    if (el && el.classList && el.classList.toggle) el.classList.toggle('cw-sel', !!on);
+  },
 
-  // 原生选区变化回调：用户自己长按拖选（原生抢到了手势）时同样出浮条
+  // 原生选区变化回调：正常路径已不会触发（消息区不可选），保留作为兜底——
+  // 万一某处仍产生了选区（例如桌面浏览器里拖选），同样出浮条。
   onSelectionChange() {
     if (this._multiMode) return;
     const sel = window.getSelection && window.getSelection();
@@ -1472,6 +1484,7 @@ const CardWriterChat: CardWriterChatShape = {
   },
 
   _hideSelBar() {
+    if (this._selIdx >= 0) this._markSelRow(this._selIdx, false);
     this._selIdx = -1;
     this._selText = '';
     const bar = document.getElementById('cwSelBar');
@@ -1551,8 +1564,8 @@ const CardWriterChat: CardWriterChatShape = {
       ta.select();
       const ok = (document as any).execCommand && (document as any).execCommand('copy');
       document.body.removeChild(ta);
-      App.toast(ok ? '已复制' : '复制失败，请长按文字手动复制');
-    } catch (e) { App.toast('复制失败，请长按文字手动复制'); }
+      App.toast(ok ? '已复制' : '复制失败，请重试');
+    } catch (e) { App.toast('复制失败，请重试'); }
   },
 
   // ---------- 多选删除（勾选整轮）----------
@@ -1752,42 +1765,55 @@ const CardWriterChat: CardWriterChatShape = {
     if (m) m.classList.remove('show');
   },
 
-  // 工作副本按世界书同步：世界书里有、副本里没有的角色/条目补进来（弹层显示的就是真实内容）
+  // 工作副本 = **世界书镜像**（以世界书为准）：两处维护的是同一本书，写卡这边必须跟世界书完全一致。
+  // 旧实现只"补缺"（世界书有、副本没有 → 补进来）：世界书页改过的内容、删掉的条目、改掉的类型
+  // 都不同步，于是写卡这边还是旧内容，下一次写入（工具/手动编辑都直写）又会把世界书的改动覆盖回去
+  // ——用户 2026-09-25 报的「两边都没有相互修改」就是这个。
+  // 现在整份重建：角色（type=角色）进 characters、其余类型进 entries，名字/内容/类型/顺序全部以
+  // 世界书为准；只在**真要变**的时候才落盘 + 重绘（写入直写会触发本函数，内容一致时是纯比较、零副作用）。
+  // 例外：副本里"还没起名字"的空行（用户正在新加）保留——它在世界书里不存在是正常的。
   _syncDraftFromWorldbook() {
     const wb = this._getTargetBook();
     if (!wb || !this._draft) return;
-    const entries = wb.entries || [];
-    let changed = false;
-    // 以世界书为准：世界书里有、副本里没有的 → 补进来（弹层显示的就是真实内容）
-    entries.forEach((e: any) => {
-      if (e.type === '角色') {
-        const has = (this._draft.characters || []).some((c: any) => c.name === e.name);
-        if (!has && e.name) {
-          this._draft.characters.push({ name: e.name, content: e.content || '' });
-          changed = true;
-        }
-      } else {
-        const has2 = (this._draft.entries || []).some((x: any) => x.type === e.type && x.name === e.name);
-        if (!has2 && e.name) {
-          this._draft.entries.push({ type: e.type, name: e.name, content: e.content || ''});
-          changed = true;
-        }
-      }
+    const entries = (wb.entries || []).filter(function (e: any) { return e && e.name; });
+    const chars: Array<{ name: string; content: string }> = [];
+    const others: Array<{ type: string; name: string; content: string }> = [];
+    entries.forEach(function (e: any) {
+      if (e.type === '角色') chars.push({ name: e.name, content: e.content || '' });
+      else others.push({ type: e.type || '其他', name: e.name, content: e.content || '' });
     });
-    // 兼容：已入库的小说背景（worldSetting 字段，旧数据）→ 补成「世界观」条目
-    if ((wb.worldSetting || '').trim() && !(this._draft.entries || []).some((x: any) => x.type === '世界观' && x.name === '世界观')) {
-      this._draft.entries.unshift({ type: '世界观', name: '世界观', content: wb.worldSetting});
-      changed = true;
+    // 旧数据兼容：已入库的小说背景（worldSetting 字段）→ 当一条「世界观」条目
+    if (String(wb.worldSetting || '').trim() && !others.some(function (x: any) { return x.type === '世界观' && x.name === '世界观'; })) {
+      others.unshift({ type: '世界观', name: '世界观', content: String(wb.worldSetting) });
     }
+    // 副本里的无名空行（正在新加的角色/条目）保留在末尾
+    const keepBlank = (list: any[], out: any[]) => {
+      (list || []).forEach(function (x: any) { if (x && !String(x.name || '').trim()) out.push(x); });
+    };
+    keepBlank(this._draft.characters, chars);
+    keepBlank(this._draft.entries, others);
+    // 比较按**集合**（同名同内容同类型即可）：写入直写会把条目按 世界观→角色→其他→初始 重排，
+    // 顺序差异不该被当成"变了"（否则每次直写都要多一次落盘 + 重绘）。
+    const keyOf = (x: any) => (x.type || '') + '\u0001' + x.name + '\u0001' + (x.content || '');
+    const bag = (list: any[]) => list.filter(function (x: any) { return String(x && x.name || '').trim(); }).map(keyOf).sort();
+    const beforeC = bag(this._draft.characters || []), afterC = bag(chars);
+    const beforeE = bag(this._draft.entries || []), afterE = bag(others);
+    const changed = beforeC.length !== afterC.length || beforeE.length !== afterE.length
+      || beforeC.some((k, i) => k !== afterC[i]) || beforeE.some((k, i) => k !== afterE[i]);
+    this._draft.characters = chars;
+    this._draft.entries = others;
     // 记录本次同步时的角色集（用于汇总后识别"被移除的角色"）
-    this._draft.lastSyncedChars = (wb.entries || []).filter((e: any) => e.type === '角色').map((e: any) => e.name);
-    // 删除墓碑已无意义（删除会立即写进世界书，同步以世界书为准）：清掉存量墓碑，
-    // 否则旧版本「删了但没写进世界书」的条目会被墓碑永久挡在弹层外
-    if (Array.isArray(this._draft.deleted) && this._draft.deleted.length > 0) {
-      this._draft.deleted = [];
-      changed = true;
-    }
-    if (changed) { this._saveDraft(); this.renderDraft(); }
+    this._draft.lastSyncedChars = chars.map(function (c: any) { return c.name; });
+    // 删除墓碑已无意义（删除会立即写进世界书，同步以世界书为准）：清掉存量墓碑
+    const hadTomb = Array.isArray(this._draft.deleted) && this._draft.deleted.length > 0;
+    if (hadTomb) this._draft.deleted = [];
+    if (changed || hadTomb) { this._saveDraft(); this.renderDraft(); }
+  },
+
+  // 世界书内容变了（世界书页编辑/删除/换序、导入卡、又或是别处直写）→ 工作副本重新对齐。
+  // 由 WorldBookManager.saveAll 通过全局 CardWriterChat 回调（底层模块不反向 import 写卡模块）。
+  _onWorldbookChanged() {
+    try { this._syncDraftFromWorldbook(); } catch (e) { console.warn('[CardWriter] sync draft failed:', e); }
   },
 
   // 记录删除墓碑：同步时不再补回该条目
