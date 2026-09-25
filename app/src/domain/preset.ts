@@ -303,7 +303,7 @@ const MINIMAL_PRESET_MODULES: Array<{ id: string; name: string; content: string;
 - 篇幅够长，要有层次的推进：起、承、转各写足，避免中段注水。`
   },
   {
-    id: 'min_18_cot_full', name: '思维链·标准', enabled: true, role: 'system', order: 22,
+    id: 'min_18_cot_full', name: '思维链细则（系统）', enabled: true, role: 'system', order: 22,
     content: `# 动笔前的梳理
 
 梳理：动笔前把下面六步走完，每步只写结论。思考写成要点、短语、箭头，不写成句子。
@@ -345,7 +345,7 @@ const MINIMAL_PRESET_MODULES: Array<{ id: string; name: string; content: string;
 梳理结束后立刻开始写正文，正文只写这一次。正文里不留任何梳理痕迹：不出现步骤名，不出现「一、二、三」编号，不出现对剧情的分析或自查。正文从第一个字起就是小说。`
   },
   {
-    id: 'min_19_cot_short', name: '思维链·简版', enabled: false, role: 'system', order: 23,
+    id: 'min_19_cot_short', name: '思维链细则·简版（系统）', enabled: false, role: 'system', order: 23,
     content: `# 动笔前的梳理（简版）
 
 梳理：三步走完，每步一两句话就够。只写要点，不要在思考里写正文或对白。
@@ -364,33 +364,33 @@ const MINIMAL_PRESET_MODULES: Array<{ id: string; name: string; content: string;
   // 这两条就是出厂文案，用户可改、可关、可删；任何预设只要自带一条启用的「思考要求」尾部模块，
   // 软件就不再插自己的兜底（见 PresetManager.tailText）。
   {
-    id: 'min_25_think_tail_novel', name: '思考要求·续写（尾部）', enabled: true, role: 'user', slot: 'think', mode: 'novel', order: 24,
-    content: `【思考要求（硬性要求，逐条执行）】
-- 思考强度：低。全程不超过 1500 字，写完立刻停。
-- 思考的第一行只写这五个字：先看再写
-- 只允许按下面四步思考，不做发散性思考：不反复考据同一条设定，不推翻重来，不自我复述，不做多套方案的对比推演。
-- 绝对禁止在思考里写正文草稿（重点强调项）：不写完整句子，不写对白原文，不写成段场景或心理描写。思考里出现的任何一句话都不允许直接粘进正文；一旦写出，立刻删掉、只留结论。取舍用 ✓/✗ 记，不要把候选句子重抄一遍再比对。
-一、现状 → 时间、地点、在场的人、上一个动作停在哪儿（各三五个词）。
+    id: 'min_25_think_tail_novel', name: '思维链·续写', enabled: true, role: 'user', slot: 'think', mode: 'novel', order: 24,
+    content: `【思维链要求（硬性要求，逐条执行）】
+- 全程不超过 1500 字。写完立刻停，不长篇考据、不磨。
+- 思考的第一行只写：先看再写
+- 只按下面四步走，不额外发散：不反复考据同一条设定，不推翻重来，不自我复述。
+- 绝对禁止在思考里写正文草稿（重点强调项）：不写完整句子，不写对白原文，不写成段场景或心理描写。思考里出现的任何一句话都不允许直接粘进正文；一旦写出，立刻删掉、只留结论。取舍用 ✓/✗ 记，不要把候选句子重抄一遍。
+一、现状 → 时间、地点、在场的人、上一个动作停在哪儿。
 二、人物 → 一人一行：此刻想要什么／知道什么（守住信息差）／说话是什么味道。
-三、方向 → 列两条走向，每条推两步因果；选一条并写明为什么选它。
+三、方向 → 两条走向各推两步因果，选一条，写明为什么选它。
 四、落点 → 这一段停在哪个动作或哪句话上（只写要点，不要写出那句话）。
-- 思考的最后一行只写这三个字：开始写
-写下这三个字就立刻停止思考、直接输出正文；正文只写一次，正文里不留任何思考痕迹。`
+- 思考的最后一行只写：开始写
+写完这一行立刻停止思考、直接输出正文；正文只写一次，正文里不留任何思考痕迹。`
   },
   {
     // 对话模式**不能**照抄上面那条：它的思考还兼职"把气泡的引号/说话人格式排练一遍"。
     // 实测（同一批实验，各 2~8 次）：按续写版禁掉"写对白草稿"并把思考压到 200 字 →
     // 27 轮里 9 轮整场台词丢引号（分色退回按内容猜）；改成"只压长度、保留一步格式排练 +
     // 思考块放在【格式】之前 + 只用正向措辞"→ 3/18 轮漂移，与现状 2/12 持平，思考中位 283 字。
-    id: 'min_26_think_tail_chat', name: '思考要求·演出（尾部）', enabled: true, role: 'user', slot: 'think', mode: 'chat', order: 25,
-    content: `【思考要求（硬性要求）】
-- 思考不超过 1500 字，写完立刻停。
+    id: 'min_26_think_tail_chat', name: '思维链·演出', enabled: true, role: 'user', slot: 'think', mode: 'chat', order: 25,
+    content: `【思维链要求（硬性要求）】
+- 全程不超过 1500 字。写完立刻停。
 - 想完就动手：不推翻重来，不反复考据同一条设定，不自我复述，同一段不要写两遍。
 一、在场与关系 → 这一轮在场的人、各自想要什么、知道什么（守住信息差）。
 二、这一轮怎么走 → 二到三个来回怎么推进，停在哪个动作或哪句话上。
 三、格式过一遍 → 把这一轮的气泡按「说话人：一句话要点」列一遍，确认每一句说出口的话都用「」包住、旁白单独写「白：」。
-- 思考的最后一行只写这三个字：开始演
-写完立刻停止思考，直接输出这一轮的演出（演出只写一次）。`
+- 思考的最后一行只写：开始演
+写完这一行立刻停止思考，直接输出这一轮的演出（演出只写一次）。`
   }
 ];
 
@@ -484,7 +484,8 @@ export const THINK_TAIL_FALLBACK: Record<PresetMode, string> = {
 // 作用：v1.5.75 首发版的内置预设已经写进用户设备，改源码不会自动生效——
 // 启动时若设备副本仍是这里记录的旧文本（说明用户没动过），就替换为当前出厂文案；
 // 用户自己编辑过的模块（文本对不上）永久保留。
-const MINIMAL_PRESET_PATCHES: Array<{ id: string; moduleId: string; oldContent: string }> = [
+// oldName：可选。设备上的模块名与它逐字相同（说明用户没改过名）就同步成出厂名——只改名，不动内容。
+const MINIMAL_PRESET_PATCHES: Array<{ id: string; moduleId: string; oldContent: string; oldName?: string }> = [
   {
     id: 'cot-no-draft-v1', moduleId: 'min_18_cot_full',
     oldContent: `# 动笔前的梳理
@@ -532,6 +533,10 @@ const MINIMAL_PRESET_PATCHES: Array<{ id: string; moduleId: string; oldContent: 
 
 然后直接写正文，正文里不留任何梳理痕迹。`
   },
+  // 2026-09-26 改名（只改名字，内容不动）：把系统侧那两条与新的尾部模块区分开——
+  // 系统里的是「思考什么」的细则，尾部那两条（思维链·续写 / 思维链·演出）才是「多长、何时停」的纪律。
+  { id: 'cot-detail-rename-v2', moduleId: 'min_18_cot_full', oldContent: '', oldName: '思维链·标准' },
+  { id: 'cot-short-rename-v2', moduleId: 'min_19_cot_short', oldContent: '', oldName: '思维链·简版' },
   {
     id: 'dash-ban-narrative', moduleId: 'min_04_narrative',
     // 用户要求：破折号绝对禁用（与旧的「不超过三处」冲突时，以禁用为准）
@@ -653,8 +658,12 @@ const MINIMAL_PRESET_LATE_MODULES_V4: Array<{ id: string; before: string[] }> = 
 // 那是对用户编辑的尊重，默认不该破。2026-09-23 用户要求「反 AI 味」这次例外：不管用户改没改过，
 // 统一覆盖为出厂文案（条目刚上线，用户手里的副本可能有删改，先统一一遍）。
 // 边界：只覆盖设备上**已存在**的模块——用户删掉的不加回；开/关状态、名称、顺序都不动；只处理一次。
+// 2026-09-26：两条尾部思维链模块在 1.5.99.5 上线后 10 分钟内发现文案错（「这五个字」其实是四个字、
+// 又写了与设置项冲突的「思考强度：低」）——一次性覆盖为修正版，同时把名字同步成新词（思维链·续写/演出）。
 const MINIMAL_PRESET_FORCE_SYNC: Array<{ id: string; moduleId: string }> = [
-  { id: 'ai-flavor-v2', moduleId: 'min_20_ai_flavor' }
+  { id: 'ai-flavor-v2', moduleId: 'min_20_ai_flavor' },
+  { id: 'think-tail-novel-v2', moduleId: 'min_25_think_tail_novel' },
+  { id: 'think-tail-chat-v2', moduleId: 'min_26_think_tail_chat' }
 ];
 
 function minimalPreset(): Preset {
@@ -854,15 +863,21 @@ export const PresetManager = {
       if (!p || !Array.isArray(p.promptModules)) return;
       const _applied = SM().get<string[]>('minimalPresetPatchApplied', []);
       const applied: string[] = Array.isArray(_applied) ? _applied.slice() : [];
-      const mods = p.promptModules as Array<{ id?: string; content?: string }>;
+      const mods = p.promptModules as Array<{ id?: string; content?: string; name?: string }>;
       let changed = false;
       MINIMAL_PRESET_PATCHES.forEach(patch => {
         if (applied.indexOf(patch.id) >= 0) return;
         applied.push(patch.id);
         const mod = mods.find(m => m.id === patch.moduleId);
         const shipped = MINIMAL_PRESET_MODULES.find(m => m.id === patch.moduleId);
-        if (mod && shipped && String(mod.content || '') === patch.oldContent) {
+        if (!mod || !shipped) return;
+        if (patch.oldContent && String(mod.content || '') === patch.oldContent) {
           mod.content = shipped.content;
+          changed = true;
+        }
+        // 只改名（用户改过名字就尊重，不动）
+        if (patch.oldName && String(mod.name || '') === patch.oldName && shipped.name !== mod.name) {
+          mod.name = shipped.name;
           changed = true;
         }
       });
@@ -929,12 +944,13 @@ export const PresetManager = {
         if (done.indexOf(entry.id) >= 0) return;
         done.push(entry.id);
         const shipped = MINIMAL_PRESET_MODULES.find(m => m.id === entry.moduleId);
-        const mod = mods.find(m => m.id === entry.moduleId);
+        const mod = mods.find(m => m.id === entry.moduleId) as { content?: string; name?: string } | undefined;
         if (!shipped || !mod) return;                     // 用户删掉的不加回
         if (String(mod.content || '') !== shipped.content) {
           mod.content = shipped.content;
           forced.push(shipped.name);
         }
+        if (mod.name !== shipped.name) mod.name = shipped.name;   // 名字也跟出厂走（这批是重命名＋改文案）
       });
       SM().set('minimalPresetForceSyncDone', done);
       if (forced.length) {

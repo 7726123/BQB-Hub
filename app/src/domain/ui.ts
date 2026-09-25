@@ -442,7 +442,7 @@ const UIManager: UIManagerShape = {
       // 「思考」= 思考要求（思考强度 off 时不下发，且它的存在会抑制软件兜底条款）。
       const _tail = m.role === 'user';
       const _think = m.slot === 'think';
-      const _tag = _tail ? (_think ? '思考·尾部' : '尾部') : 'system';
+      const _tag = _tail ? (_think ? '思维链' : '末尾·导入') : 'system';
       const _modeTag = m.mode === 'novel' ? '·仅续写' : (m.mode === 'chat' ? '·仅演出' : '');
       return '<div class="module-row" data-drag-item="' + m.id + '" data-drag-id="' + m.id + '" data-drag-idx="' + i + '">' +
         '<span class="drag-handle" title="拖动排序">≡</span>' +
@@ -500,19 +500,24 @@ const UIManager: UIManagerShape = {
     document.getElementById('moduleEditId')!.value = moduleId || '';
     document.getElementById('moduleEditName')!.value = '';
     document.getElementById('moduleEditContent')!.value = '';
-    (document.getElementById('moduleEditRole') as HTMLSelectElement).value = 'system';
+    // 类型下拉：常态只有「非思维链 / 思维链」两项；导入的酒馆 user 条目（role=user 但没有思考标记）
+    // 单独给一项，避免编辑一次就把它的位置静默改掉。每次重建 options，不让上一轮的临时项残留。
+    const kindSel = document.getElementById('moduleEditKind') as HTMLSelectElement;
+    const BASE_KINDS = '<option value="plain">非思维链（默认）</option><option value="think">思维链</option>';
+    kindSel.innerHTML = BASE_KINDS;
     (document.getElementById('moduleEditMode') as HTMLSelectElement).value = 'both';
-    (document.getElementById('moduleEditThink') as HTMLInputElement).checked = false;
     if (moduleId) {
       const preset = PresetManager.getCurrentPreset();
       const mod = preset && preset.promptModules ? preset.promptModules.find(function (m: any) { return m.id === moduleId; }) : null;
       if (mod) {
         document.getElementById('moduleEditName')!.value = mod.name || '';
         document.getElementById('moduleEditContent')!.value = mod.content || '';
-        (document.getElementById('moduleEditRole') as HTMLSelectElement).value = mod.role === 'user' ? 'user' : 'system';
+        const isTail = mod.role === 'user';
+        const isThink = mod.slot === 'think';
+        if (isTail && !isThink) kindSel.innerHTML = BASE_KINDS + '<option value="tail">末尾模块（导入的酒馆用户条目）</option>';
+        kindSel.value = isTail ? (isThink ? 'think' : 'tail') : 'plain';
         (document.getElementById('moduleEditMode') as HTMLSelectElement).value =
           (mod.mode === 'novel' || mod.mode === 'chat') ? mod.mode : 'both';
-        (document.getElementById('moduleEditThink') as HTMLInputElement).checked = mod.slot === 'think';
       }
     }
     this.showModal('modalModuleEdit');
@@ -527,14 +532,15 @@ const UIManager: UIManagerShape = {
     const preset = PresetManager.getCurrentPreset();
     if (!preset) { App.toast('请先选择一个预设'); return; }
     if (!preset.promptModules) preset.promptModules = [];
-    const role = (document.getElementById('moduleEditRole') as HTMLSelectElement).value === 'user' ? 'user' : 'system';
+    const kind = (document.getElementById('moduleEditKind') as HTMLSelectElement).value;
     const mode = (document.getElementById('moduleEditMode') as HTMLSelectElement).value;
-    const slot = (document.getElementById('moduleEditThink') as HTMLInputElement).checked ? 'think' : '';
     const _applyFields = function (m: any) {
-      m.role = role;
+      // kind=think → 思维链（放在用户消息末尾，思考关闭时跳过，且替代软件默认思考条款）；
+      // kind=tail → 导入的酒馆 user 条目（放末尾，但没有思考语义）；plain → 普通系统模块。
+      m.role = (kind === 'think' || kind === 'tail') ? 'user' : 'system';
+      if (kind === 'think') m.slot = 'think'; else delete m.slot;
       // mode 只在非 both 时落盘（保持老模块的对象形状不变，别给所有模块凭空加字段）
       if (mode === 'novel' || mode === 'chat') m.mode = mode; else delete m.mode;
-      if (slot === 'think') m.slot = 'think'; else delete m.slot;
     };
     if (id) {
       const mod = preset.promptModules.find(function (m: any) { return m.id === id; });
@@ -546,7 +552,7 @@ const UIManager: UIManagerShape = {
         name: name,
         content: content,
         enabled: true,
-        role: role,
+        role: 'system',
         order: preset.promptModules.length
       };
       _applyFields(_mod);

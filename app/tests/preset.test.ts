@@ -520,6 +520,55 @@ describe('尾部模块：位置/模式/思考标记', () => {
     expect(PSM.tailText('novel', { nativeReasoning: true })).toBe('【前】\n\n【后】');
   });
 
+  // 2026-09-26 用户反馈：文案里写错了字数（「这五个字：先看再写」其实是四个字），
+  // 还写了「思考强度：低」——思考强度有专门的设置项，写在正文里会让模型自己疑惑（思考反而变长）。
+  it('两条思维链文案：不出现「思考强度」（与设置项冲突）、不出现字数计数（写错会误导模型）', () => {
+    PSM.initDefaults();
+    const mods = ((PSM.getPresets()[0] as any).promptModules as any[]);
+    [THINK_TAIL_FALLBACK.novel, THINK_TAIL_FALLBACK.chat].forEach((c) => {
+      expect(c).not.toContain('思考强度');            // 强度归设置项，文案只说长度上限
+      expect(c).not.toMatch(/[一二两三四五六七八九十]个字/);   // 「先看再写」是四个字，别再数了
+      expect(c).toContain('1500 字');                 // 预算仍然明确
+    });
+    // 起止语仍在（止住长思考的关键），且首尾各只出现在指定位置
+    expect(THINK_TAIL_FALLBACK.novel).toContain('思考的第一行只写：先看再写');
+    expect(THINK_TAIL_FALLBACK.novel).toContain('思考的最后一行只写：开始写');
+    expect(THINK_TAIL_FALLBACK.chat).toContain('思考的最后一行只写：开始演');
+    // 系统侧那条（细则）与尾部两条用名字区分开
+    expect(mods.find((m) => m.id === 'min_18_cot_full')!.name).toBe('思维链细则（系统）');
+    expect(mods.find((m) => m.id === 'min_25_think_tail_novel')!.name).toBe('思维链·续写');
+    expect(mods.find((m) => m.id === 'min_26_think_tail_chat')!.name).toBe('思维链·演出');
+  });
+
+  // 1.5.99.5 那两条错文案上线只有几分钟：一次性覆盖为修正版（不比对用户是否改过），并同步新名字；
+  // 系统侧那两条只改名、不动内容，且用户改过名字就尊重。
+  it('迁移：错文案一次性覆盖 + 名字同步（用户改过名字的模块不动）', () => {
+    PSM.initDefaults();
+    const list = PSM.getPresets();
+    const p = list.find((x) => x.id === 'preset_minimal') as any;
+    const byId = (id: string) => p.promptModules.find((m: any) => m.id === id);
+    byId('min_25_think_tail_novel').content = '【思考要求】旧文案（含思考强度：低）';
+    byId('min_26_think_tail_chat').content = '【思考要求】旧文案';
+    byId('min_18_cot_full').name = '思维链·标准';          // 设备上的旧名
+    byId('min_19_cot_short').name = '我自己改的名字';        // 用户改过 → 不动
+    PSM.savePresets(list);
+    // initDefaults 刚才已经跑过一次这两个迁移（标记已置位）——要模拟"设备上是旧文案"，得先清标记
+    sm().remove('minimalPresetForceSyncDone');
+    sm().remove('minimalPresetPatchApplied');
+    PSM.applyMinimalPresetForceSync();
+    PSM.applyMinimalPresetPatches();
+    const list2 = PSM.getPresets();
+    const p2 = list2.find((x) => x.id === 'preset_minimal') as any;
+    const b2 = (id: string) => p2.promptModules.find((m: any) => m.id === id);
+    expect(b2('min_25_think_tail_novel').content).toBe(THINK_TAIL_FALLBACK.novel);
+    expect(b2('min_26_think_tail_chat').content).toBe(THINK_TAIL_FALLBACK.chat);
+    expect(b2('min_25_think_tail_novel').name).toBe('思维链·续写');
+    expect(b2('min_26_think_tail_chat').name).toBe('思维链·演出');
+    expect(b2('min_18_cot_full').name).toBe('思维链细则（系统）');   // 旧名命中 → 同步
+    expect(b2('min_18_cot_full').content).toContain('思考里禁止写正文'); // 内容没被动
+    expect(b2('min_19_cot_short').name).toBe('我自己改的名字');      // 用户改过 → 保留
+  });
+
   // 老设备上的内置预设是存量数据：新模块不会自己出现，靠 V4 补装批次带回（只补一次、删过不加回）
   it('补装批次 V4：老设备能拿到两条思考尾部模块（字段完整）', () => {
     PSM.initDefaults();

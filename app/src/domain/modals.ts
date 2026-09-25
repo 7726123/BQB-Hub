@@ -40,10 +40,10 @@ export const Modals: {
     <input type="hidden" id="moduleEditId">
     <div class="form-group"><label>模块名称</label><input type="text" id="moduleEditName" placeholder="如：角色设定、文风指引"></div>
     <div class="form-row">
-      <div class="form-group"><label>位置</label><select id="moduleEditRole"><option value="system">系统提示词（稳定，吃缓存）</option><option value="user">用户消息末尾（近端强调）</option></select></div>
-      <div class="form-group"><label>适用模式</label><select id="moduleEditMode"><option value="both">两个模式</option><option value="novel">仅续写模式</option><option value="chat">仅演出模式</option></select></div>
+      <div class="form-group"><label>类型</label><select id="moduleEditKind"><option value="plain">非思维链（默认）</option><option value="think">思维链</option></select></div>
+      <div class="form-group"><label>适用模式</label><select id="moduleEditMode"><option value="both">两个模式都用</option><option value="novel">只用在续写模式</option><option value="chat">只用在演出模式</option></select></div>
     </div>
-    <div class="form-group" style="display:flex;align-items:center;gap:8px;"><input type="checkbox" id="moduleEditThink" style="width:auto;"><label for="moduleEditThink" style="margin:0;">这是「思考要求」（思考强度设为关闭时自动跳过；预设里有它就不再插软件默认的思考条款）</label></div>
+    <div style="font-size:12px;color:var(--text-muted);line-height:1.5;margin:-2px 0 10px;">思维链＝这条讲「思考多长、怎么记、什么时候停」，软件会自动把它放在最后一条用户消息的末尾（作者不用管位置），并在思考强度设为关闭时跳过它。选「思维链」且模式选「只用在续写/演出」时，两个模式可以同时开着，各取自己那条。</div>
     <div class="form-group"><label>模块内容</label><textarea id="moduleEditContent" rows="8" placeholder="输入该模块的提示词内容..."></textarea></div>
   </div>
   <div class="modal-footer"><button onclick="UIManager.closeModal('modalModuleEdit')">取消</button><button class="primary" onclick="UIManager.saveModule()">保存</button></div></div>
