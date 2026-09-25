@@ -38,7 +38,7 @@ describe('PresetManager', () => {
   it('内置最小预设：启用文本满足注入管线约束', () => {
     PSM.initDefaults();
     const mods = ((PSM.getPresets()[0] as unknown as { promptModules: Array<{ content: string; enabled: boolean; role: string }> }).promptModules);
-    expect(mods.filter((m) => m.enabled)).toHaveLength(9);
+    expect(mods.filter((m) => m.enabled)).toHaveLength(12);   // 2026-09-25 增补三条（去主角中心/出场角色/情绪）
     expect(mods.every((m) => m.role === 'system')).toBe(true);
     const sp = mods.filter((m) => m.enabled).map((m) => m.content).join('\n\n');
     expect(sp).not.toContain('<thinking>');            // 原生推理模型会被诱导弹标签
@@ -125,6 +125,55 @@ describe('PresetManager', () => {
     expect(kept.find((mm) => mm.id === patch.moduleId)!.content).toBe('我自己的文风要求');
   });
 
+  // 用户 2026-09-25 反馈的三条体验问题 → 三条默认开启的新模块（酒馆预设同款思路：去user中心化/NPC不围主角/防全知）
+  it('新增三模块：叙事焦点·去主角中心 / 出场角色·克制 / 情绪·不冷静（默认开启、位置与要点）', () => {
+    PSM.initDefaults();
+    const mods = ((PSM.getPresets()[0] as unknown as { promptModules: Array<{ id: string; name: string; content: string; enabled: boolean; order: number }> }).promptModules);
+    const focus = mods.find((m) => m.id === 'min_21_ensemble')!;
+    const cast = mods.find((m) => m.id === 'min_22_cast')!;
+    const emo = mods.find((m) => m.id === 'min_23_emotion')!;
+    for (const m of [focus, cast, emo]) { expect(m.enabled).toBe(true); expect(m.order).toBeGreaterThanOrEqual(0); }
+    expect(focus.content).toContain('主角是视角，不是世界的中心');
+    expect(focus.content).toContain('功能位');
+    expect(focus.content).toContain('未必属于主角');
+    expect(cast.content).toContain('1~3 个人');
+    expect(cast.content).toContain('清点式写人');
+    expect(cast.content).toContain('凭空添新面孔');
+    expect(emo.content).toContain('镇定是偶尔的');
+    expect(emo.content).toContain('本能反应');
+    expect(emo.content).toContain('允许不体面');
+    expect(emo.content).toContain('洞悉一切');
+    // 顺序：叙事规则 → 叙事焦点 → 出场角色 → 文风……；情绪在 反AI味 之前
+    const ids = mods.map((m) => m.id);
+    expect(ids.indexOf('min_21_ensemble')).toBe(ids.indexOf('min_04_narrative') + 1);
+    expect(ids.indexOf('min_22_cast')).toBe(ids.indexOf('min_21_ensemble') + 1);
+    expect(ids.indexOf('min_23_emotion')).toBe(ids.indexOf('min_20_ai_flavor') - 1);
+    // 三条互不越界：不重定义视角/字数/主控权
+    for (const m of [focus, cast, emo]) {
+      expect(m.content).not.toContain('字数');
+      expect(m.content).not.toContain('主控权');
+    }
+    // 老设备（V2 补装）：设备上没有这三条时补一次，插到各自锚点之前
+    const strip = () => PSM.savePresets(PSM.getPresets().map((p) => (p.id === 'preset_minimal'
+      ? { ...p, promptModules: (p as unknown as { promptModules: Array<{ id: string }> }).promptModules.filter((m) => ['min_21_ensemble', 'min_22_cast', 'min_23_emotion'].indexOf(m.id) < 0) }
+      : p)) as never);
+    strip();
+    sm().remove('minimalPresetLateModulesV2');
+    PSM.applyMinimalPresetLateModules();
+    const after = (PSM.getPresets().find((p) => p.id === 'preset_minimal') as unknown as { promptModules: Array<{ id: string; order: number; enabled: boolean }> }).promptModules;
+    const a = after.map((m) => m.id);
+    expect(a).toContain('min_21_ensemble');
+    expect(a.indexOf('min_21_ensemble')).toBe(a.indexOf('min_04_narrative') + 1);
+    expect(a.indexOf('min_23_emotion')).toBe(a.indexOf('min_20_ai_flavor') - 1);
+    expect(after.find((m) => m.id === 'min_22_cast')!.enabled).toBe(true);
+    expect(after.map((m) => m.order)).toEqual(after.map((_m, i) => i));
+    // 只处理一次：标记已置位后再删掉也不加回
+    strip();
+    PSM.applyMinimalPresetLateModules();
+    const fin = (PSM.getPresets().find((p) => p.id === 'preset_minimal') as unknown as { promptModules: Array<{ id: string }> }).promptModules;
+    expect(fin.some((m) => m.id === 'min_21_ensemble')).toBe(false);
+  });
+
   it('内置预设补全：老用户升级补一条、不抢当前预设、删掉后不再自动加回', () => {
     PSM.savePresets([{ id: 'mine', name: '我的预设', prompts: [], createdAt: 0 }]);
     PSM.setCurrentPresetId('mine');
@@ -157,7 +206,7 @@ describe('PresetManager', () => {
     expect(mod.content).not.toContain('视角');   // 视角只由 min_09..min_12 决定，两套规则不能打架
     expect(mod.content).not.toContain('字数');
     const ids = mods.map((m) => m.id);
-    expect(ids.indexOf('min_20_ai_flavor')).toBe(ids.indexOf('min_08_style_custom') + 1);
+    expect(ids.indexOf('min_20_ai_flavor')).toBe(ids.indexOf('min_08_style_custom') + 2);   // 中间多了「情绪·不冷静」
     expect(ids.indexOf('min_09_pov_1')).toBe(ids.indexOf('min_20_ai_flavor') + 1);
   });
 

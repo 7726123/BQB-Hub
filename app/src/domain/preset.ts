@@ -18,7 +18,8 @@ export interface SystemPrompt { id: string; name: string; content: string }
 
 // 内置「轻小说·最小预设」：2026-09 起取代旧「标准预设」（旧预设文本源自第三方预设改写，
 // 随开源合规清理下架；存量用户设备里的副本仍在 localStorage，不受影响）。
-// 模块分组：视角 / 文风 / 字数 / 思维链 每组只启用一个；默认启用 9 个，合计约 3100 字。
+// 模块分组：视角 / 文风 / 字数 / 思维链 每组只启用一个；默认启用 12 个，合计约 4400 字
+// （2026-09-25 增补「叙事焦点·去主角中心 / 出场角色·克制 / 情绪·不冷静」三条，用户反馈驱动）。
 // 注意：文本内不出现 <thinking> 字样（原生推理模型会被诱导弹标签）、不出现英文 user
 // （app.ts 会把任意 user 替换成主角名）、不出现 ${...}（预设展开时会剥壳）；含「梳理：」
 // 以触发 app.ts 的「预设要求先梳理」判定，无原生推理的模型才会拿到 <thinking> 硬协议。
@@ -75,7 +76,33 @@ const MINIMAL_PRESET_MODULES: Array<{ id: string; name: string; content: string;
 - 排版：正文是纯叙事文本，不用标题、列表、加粗、括号补充说明；破折号全文不超过三处，不拿它代替逗号或省略号；对白用「」包裹。`
   },
   {
-    id: 'min_05_style_kei', name: '文风·轻小说', enabled: true, role: 'system', order: 4,
+    id: 'min_21_ensemble', name: '叙事焦点·去主角中心', enabled: true, role: 'system', order: 4,
+    content: `# 叙事焦点：去主角中心
+
+主角是视角，不是世界的中心。别人不为他而活，世界也不围着他转。
+
+- 配角有自己的目标、关系与日程：他可能更喜欢别的人、更操心自己的事，对主角的处境只是顺带关心——不要把他写成围着主角转的功能位（捧哏、解说员、爱慕者、出气筒）。
+- 主角在场，别人照样推进自己的事：该谈的谈、该吵的吵、该走的走；不必人人都来和主角互动一轮。
+- 主角可以只是旁观：插不上话、被无视、被误会、看错人、慢半拍都允许；不必每场戏都由他解答、由他推动。
+- 不写"所有人都看着主角/都在评价主角"的场面；主角做了什么，别人的反应可以平淡，甚至没有反应。
+- 已经离场的角色，不要为了"关心主角"再叫回来；不在场的人就不在场。
+- 一段戏的最后一个动作、最后一句话，未必属于主角：镜头可以停在别人身上。`
+  },
+  {
+    id: 'min_22_cast', name: '出场角色·克制', enabled: true, role: 'system', order: 5,
+    content: `# 出场角色：克制
+
+人一多，戏就散。一场戏里真正参与的人要少而准。
+
+- 默认只让 1~3 个人说话、行动；其余在场的人当背景处理——写一两个具体动作就够，不逐个发言、不逐个给镜头。
+- 不要清点式写人：不列"某某、某某、某某都在场"，不把世界书里的角色一次性搬出来。
+- 新角色登场要由当前场景需要（来找人、本来就住这儿、正好路过）；登场之后不要立刻喧宾夺主。
+- 已经离开、与当前场景无关的人不要顺便出现，也不要让大家集体围观同一件事。
+- 群像反应不等于"大家都笑了""所有人沉默了"：写清谁在做什么、谁没参与、谁在走神。
+- 需要有人推动剧情时，先用在场的人，不要凭空添新面孔。`
+  },
+  {
+    id: 'min_05_style_kei', name: '文风·轻小说', enabled: true, role: 'system', order: 6,
     content: `# 文风：轻小说·日常（台版腔）
 
 - 句子短、段落短：多数句子 10~25 字，一段一到三句；说完了就断行，不堆长句，不写大段景物。
@@ -92,7 +119,7 @@ const MINIMAL_PRESET_MODULES: Array<{ id: string; name: string; content: string;
 - 比喻节制：一场戏最多一处，用身边的事物打比方，不用来解释已经写清楚的事。`
   },
   {
-    id: 'min_06_style_hot', name: '文风·热血', enabled: false, role: 'system', order: 5,
+    id: 'min_06_style_hot', name: '文风·热血', enabled: false, role: 'system', order: 7,
     content: `# 文风：热血·快节奏
 
 - 开局就进事件，少铺垫，每一段都要有事发生。
@@ -102,7 +129,7 @@ const MINIMAL_PRESET_MODULES: Array<{ id: string; name: string; content: string;
 - 不用长段抒情、景物象征和哲理独白。`
   },
   {
-    id: 'min_07_style_mystery', name: '文风·悬疑', enabled: false, role: 'system', order: 6,
+    id: 'min_07_style_mystery', name: '文风·悬疑', enabled: false, role: 'system', order: 8,
     content: `# 文风：悬疑·冷峻
 
 - 叙述克制、用词精确，只写观察得到的东西，不写读心。
@@ -112,13 +139,26 @@ const MINIMAL_PRESET_MODULES: Array<{ id: string; name: string; content: string;
 - 叙述者不跳出来宣布「真相」或「关键线索」。`
   },
   {
-    id: 'min_08_style_custom', name: '文风·自定义', enabled: false, role: 'system', order: 7,
+    id: 'min_08_style_custom', name: '文风·自定义', enabled: false, role: 'system', order: 9,
     content: `# 文风：自定义
 
 （启用后把这一段替换成你自己的文风要求：语气、句子长短、对白比例、禁用词、想模仿的感觉等。）`
   },
   {
-    id: 'min_20_ai_flavor', name: '反 AI 味', enabled: true, role: 'system', order: 8,
+    id: 'min_23_emotion', name: '情绪·不冷静', enabled: true, role: 'system', order: 10,
+    content: `# 情绪：不冷静
+
+角色不是机器：镇定是偶尔的，不是默认状态。
+
+- 遇到意外先写本能反应（手一抖、声音拔高、往后退半步、脑子一片空白），再写他如何收拾；不要人人都面不改色。
+- 情绪要有来由、有落差：一场戏里允许有人失态、有人沉默、有人赌气、有人把话说重了、有人事后后悔。
+- 允许不体面：翻旧账、说气话、手足无措、答非所问、越描越黑；不要每句话都恰到好处、每次都处理得当。
+- 角色会不确定、会误判、会被骗、会想错，也会承认"我不知道"；不写谁洞悉一切、早有预料。
+- 情绪从细节里漏出来：语气、停顿、多余的手上动作、看向别处的眼睛；少用"她很生气"这种概述，也别让整段情绪一刀切。
+- 同一个人对不同人可以有不同态度：对谁忍、对谁凶、对谁装——关系就写在这里。`
+  },
+  {
+    id: 'min_20_ai_flavor', name: '反 AI 味', enabled: true, role: 'system', order: 11,
     content: `# 反 AI 味
 
 下面几条针对最容易暴露「机器写的」的收尾、句式、套话，以及过快的「看穿」。动笔时照它写，成稿后照它自查一遍。
@@ -155,7 +195,7 @@ const MINIMAL_PRESET_MODULES: Array<{ id: string; name: string; content: string;
 - 标点不连用（！！、？？），破折号只在真正需要时用。`
   },
   {
-    id: 'min_09_pov_1', name: '视角·第一人称', enabled: true, role: 'system', order: 9,
+    id: 'min_09_pov_1', name: '视角·第一人称', enabled: true, role: 'system', order: 12,
     content: `# 视角：第一人称
 
 - 主角用「我」。只写「我」的所见、所闻、所感、所想。
@@ -165,7 +205,7 @@ const MINIMAL_PRESET_MODULES: Array<{ id: string; name: string; content: string;
 - 时间顺序清楚，不闪回、不插叙，除非作者要求。`
   },
   {
-    id: 'min_10_pov_3a', name: '视角·第三人称跟随', enabled: false, role: 'system', order: 10,
+    id: 'min_10_pov_3a', name: '视角·第三人称跟随', enabled: false, role: 'system', order: 13,
     content: `# 视角：第三人称·跟随主角
 
 - 主角用名字或「他」「她」，镜头始终跟着主角，只写主角在场的部分。
@@ -174,7 +214,7 @@ const MINIMAL_PRESET_MODULES: Array<{ id: string; name: string; content: string;
 - 不用「其实」「与此同时」这类旁白切到别处。`
   },
   {
-    id: 'min_11_pov_3b', name: '视角·第三人称多线', enabled: false, role: 'system', order: 11,
+    id: 'min_11_pov_3b', name: '视角·第三人称多线', enabled: false, role: 'system', order: 14,
     content: `# 视角：第三人称·多线
 
 - 可以写任意角色的所见所想，可以在不同场景之间切换。
@@ -183,7 +223,7 @@ const MINIMAL_PRESET_MODULES: Array<{ id: string; name: string; content: string;
 - 信息互相隔离：一个人知道的事，不能凭空出现在另一个人的认知里。`
   },
   {
-    id: 'min_12_pov_2', name: '视角·第二人称', enabled: false, role: 'system', order: 12,
+    id: 'min_12_pov_2', name: '视角·第二人称', enabled: false, role: 'system', order: 15,
     content: `# 视角：第二人称
 
 - 主角用「你」，写「你」的经历和感受。
@@ -192,7 +232,7 @@ const MINIMAL_PRESET_MODULES: Array<{ id: string; name: string; content: string;
 - 少用连续的「你」字开头，可以适当省略主语。`
   },
   {
-    id: 'min_13_ctrl_strict', name: '主控权·严格', enabled: false, role: 'system', order: 13,
+    id: 'min_13_ctrl_strict', name: '主控权·严格', enabled: false, role: 'system', order: 16,
     content: `# 主控权：严格
 
 - 主角的一切言行由作者写。你只写其他角色与环境。
@@ -200,7 +240,7 @@ const MINIMAL_PRESET_MODULES: Array<{ id: string; name: string; content: string;
 - 每段结尾都把决定权交回作者。`
   },
   {
-    id: 'min_14_ctrl_free', name: '主控权·放开', enabled: false, role: 'system', order: 14,
+    id: 'min_14_ctrl_free', name: '主控权·放开', enabled: false, role: 'system', order: 17,
     content: `# 主控权：放开
 
 - 主角可以主动行动、说话、做决定，你可以推动剧情、制造转折。
@@ -208,28 +248,28 @@ const MINIMAL_PRESET_MODULES: Array<{ id: string; name: string; content: string;
 - 主角做重大决定时，写清楚他的理由，让作者能接手。`
   },
   {
-    id: 'min_15_len_1000', name: '字数·1000', enabled: false, role: 'system', order: 15,
+    id: 'min_15_len_1000', name: '字数·1000', enabled: false, role: 'system', order: 18,
     content: `# 字数
 
 - 本次输出约 1000 字。
 - 写不满时不要靠复述、排比、废话凑数，宁可把情节写实。`
   },
   {
-    id: 'min_16_len_1500', name: '字数·1500', enabled: true, role: 'system', order: 16,
+    id: 'min_16_len_1500', name: '字数·1500', enabled: true, role: 'system', order: 19,
     content: `# 字数
 
 - 本次输出约 1500 字。
 - 写成一个完整的场景：有推进、有细节、有收尾，不拖沓也不仓促。`
   },
   {
-    id: 'min_17_len_2500', name: '字数·2500', enabled: false, role: 'system', order: 17,
+    id: 'min_17_len_2500', name: '字数·2500', enabled: false, role: 'system', order: 20,
     content: `# 字数
 
 - 本次输出约 2500 字。
 - 篇幅够长，要有层次的推进：起、承、转各写足，避免中段注水。`
   },
   {
-    id: 'min_18_cot_full', name: '思维链·标准', enabled: true, role: 'system', order: 18,
+    id: 'min_18_cot_full', name: '思维链·标准', enabled: true, role: 'system', order: 21,
     content: `# 动笔前的梳理
 
 梳理：动笔前把下面六步走完，每步只写结论。思考写成要点、短语、箭头，不写成句子。
@@ -271,7 +311,7 @@ const MINIMAL_PRESET_MODULES: Array<{ id: string; name: string; content: string;
 梳理结束后立刻开始写正文，正文只写这一次。正文里不留任何梳理痕迹：不出现步骤名，不出现「一、二、三」编号，不出现对剧情的分析或自查。正文从第一个字起就是小说。`
   },
   {
-    id: 'min_19_cot_short', name: '思维链·简版', enabled: false, role: 'system', order: 19,
+    id: 'min_19_cot_short', name: '思维链·简版', enabled: false, role: 'system', order: 22,
     content: `# 动笔前的梳理（简版）
 
 梳理：三步走完，每步一两句话就够。只写要点，不要在思考里写正文或对白。
@@ -359,6 +399,15 @@ const MINIMAL_PRESET_LATE_MODULES: Array<{ id: string; before: string[] }> = [
     id: 'min_20_ai_flavor',
     before: ['min_09_pov_1', 'min_10_pov_3a', 'min_11_pov_3b', 'min_12_pov_2']
   }
+];
+
+// v1.5.98.5 起的新增批次（第二批）：老设备补装一次，机制同上，只是换成自己的标记键
+// （V1 的 minimalPresetLateModulesV1 在存量设备上已置位，再加进 V1 清单收不到）。
+// 三条都是用户 2026-09-25 反馈驱动的：主角中心化 / 角色一锅端 / 情绪像机器人。
+const MINIMAL_PRESET_LATE_MODULES_V2: Array<{ id: string; before: string[] }> = [
+  { id: 'min_21_ensemble', before: ['min_05_style_kei', 'min_06_style_hot', 'min_07_style_mystery', 'min_08_style_custom'] },
+  { id: 'min_22_cast', before: ['min_05_style_kei', 'min_06_style_hot', 'min_07_style_mystery', 'min_08_style_custom'] },
+  { id: 'min_23_emotion', before: ['min_20_ai_flavor', 'min_09_pov_1', 'min_10_pov_3a', 'min_11_pov_3b', 'min_12_pov_2'] }
 ];
 
 // 一次性强制覆盖清单：常规路径（applyMinimalPresetPatches）是逐字比对，用户改过就不动——
@@ -561,16 +610,22 @@ export const PresetManager = {
   // 插到 before 指定的模块之前（保持注入顺序），并把 order 重编为数组下标（与模块管理页一致）。
   // 用户可自行关闭或删除；删掉后不再自动加回（标记已置位）。
   applyMinimalPresetLateModules(): void {
+    this._installLateModules('minimalPresetLateModulesV1', MINIMAL_PRESET_LATE_MODULES);
+    this._installLateModules('minimalPresetLateModulesV2', MINIMAL_PRESET_LATE_MODULES_V2);
+  },
+
+  // 通用补装：flagKey 已置位就跳过（每批只处理一次；用户删过的模块不加回）
+  _installLateModules(flagKey: string, batch: Array<{ id: string; before: string[] }>): void {
     try {
-      if (MINIMAL_PRESET_LATE_MODULES.length === 0) return;
-      if (SM().get<boolean>('minimalPresetLateModulesV1', false)) return;
-      SM().set('minimalPresetLateModulesV1', true);
+      if (batch.length === 0) return;
+      if (SM().get<boolean>(flagKey, false)) return;
+      SM().set(flagKey, true);
       const list = this.getPresets();
       const p = list.find(x => x.id === 'preset_minimal');
       if (!p || !Array.isArray(p.promptModules)) return;
       const mods = p.promptModules as Array<{ id?: string; order?: number }>;
       const added: string[] = [];
-      MINIMAL_PRESET_LATE_MODULES.forEach(entry => {
+      batch.forEach(entry => {
         if (mods.some(m => m.id === entry.id)) return;
         const shipped = MINIMAL_PRESET_MODULES.find(m => m.id === entry.id);
         if (!shipped) return;
