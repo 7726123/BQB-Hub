@@ -526,12 +526,12 @@ describe('尾部模块注入：思考要求落在最后一条用户消息末尾'
     await App.generate('autoContinue');
 
     const user = (calls[0] || []).filter((m: any) => m && m.role === 'user').pop();
-    expect(String(user.content)).toContain('先看再写');            // 思维链（续写版）：唯一来源，在用户消息尾部
-    expect(String(user.content)).toContain('不抄对白原文');         // 文体级禁令也在这一条里
+    expect(String(user.content)).toContain('按下面清单一项一项过');   // 思维链（续写版）：唯一来源，在用户消息尾部
+    expect(String(user.content)).toContain('对白原句');              // 文体级禁令也在这一条里
     expect(String(user.content)).toContain('这只是思考的上限');      // 预算澄清（避免模型想满就收工）
     expect(String(user.content)).not.toContain('开始演');          // 演出版那条不该出现在续写请求里
     const sysText = (calls[0] || []).filter((m: any) => m && m.role === 'system').map((m: any) => String(m.content)).join('\n');
-    expect(sysText).not.toContain('先看再写');                     // 尾部模块不进 system
+    expect(sysText).not.toContain('按下面清单一项一项过');           // 尾部模块不进 system
     // 2026-09-26 合并：系统侧那两条细则默认关闭 → system 里不再有它们的文案（思考纪律只剩尾部这一处）
     expect(sysText).not.toContain('# 动笔前的梳理');
     expect(sysText).not.toContain('思考里禁止写正文');
@@ -575,7 +575,7 @@ describe('无原生思考通道的模型：靠"预设里有思维链模块"拿�
   it('原生推理模型（deepseek）→ 不追加文本标签协议', async () => {
     const instr = await instrOnce('deepseek-v4.1-flash');
     expect(instr).not.toContain('<thinking>');
-    expect(instr).toContain('先看再写');   // 思维链还是照发（走原生通道）
+    expect(instr).toContain('按下面清单一项一项过');   // 思维链还是照发（走原生通道）
   });
 });
 
