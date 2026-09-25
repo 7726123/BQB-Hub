@@ -9,6 +9,9 @@
 //      - AI 输出：引号 = 语言，其余 = 淡色（bareIsSay: false，默认）
 //      - 作者输入：引号 = 语言，（）内 = 淡色，裸文本 = 语言（bareIsSay: true）
 //      依据是软件既有的约定（写作页「场景草稿」就是"（）=心理/动作，「」=对话"）。
+//   ④ 两条"漂移兜底"（2026-09-24 按真机反馈加的，见各自注释）：
+//      - 整段没有引号的角色气泡（模型忘写引号）→ 逐句分色，台词不再被当成淡色；
+//      - 没写说话人前缀的整行 → 另起一条旁白，不再粘进上一个角色的气泡尾部。
 
 export interface BubbleBlock { type: 'say' | 'act'; text: string; nlBefore?: boolean }
 export interface Bubble {
@@ -136,9 +139,15 @@ const SAY_OPEN: Record<string, string> = { '「': '」', '『': '』', '“': '�
 // 后面的（动作）与叙述会一起被吞进深色的台词块里——用户报的"不是语言的部分却用了深色字体"。
 const SAY_CLOSE_ANY: Record<string, boolean> = { '」': true, '』': true, '”': true, '"': true, '＂': true };
 
-function scanSegments(text: string, bareIsSay: boolean): BubbleBlock[] {
-  const out: BubbleBlock[] = [];
+interface ScanBlock extends BubbleBlock { fromBare?: boolean }
+
+// 扫描器状态机：把一段文本切成 语言 / 非语言 段（只剥标记，不丢字）。
+//   blocks = 段列表（fromBare = 这段来自"裸文本"还是引号/（）/* 里，漂移分色要用）；
+//   open   = 末尾落在引号/（）/* 里（这一段的标记还没闭合）——判断"下一行是不是同一句话的续行"用它。
+function _scanRaw(text: string, bareIsSay: boolean): { blocks: ScanBlock[]; open: boolean } {
+  const out: ScanBlock[] = [];
   let buf = ''; let bufType: 'say' | 'act' = bareIsSay ? 'say' : 'act';
+  let fromBare = true;
   const flush = () => {
     if (!buf) return;
     // 块文本两端收干净（首尾空白不带进块里），但**记住这块前面原文里有没有换行**：
@@ -150,8 +159,11 @@ function scanSegments(text: string, bareIsSay: boolean): BubbleBlock[] {
     const t = buf.replace(/[ \t]+/g, ' ').trim();
     if (t) {
       const last = out[out.length - 1];
-      if (last && last.type === bufType) last.text += (hadNl ? '\n' : '') + t;
-      else out.push({ type: bufType, text: t, nlBefore: hadNl || undefined });
+      // 相邻同类型块合并，但**来源不同不并**：裸文本与（）/* 的动作分开留着，
+      // 漂移分色只动裸文本那一块，不会把（）里的动作一起染色。
+      if (last && last.type === bufType && !!last.fromBare === fromBare) {
+        last.text += (hadNl ? '\n' : '') + t;
+      } else out.push({ type: bufType, text: t, nlBefore: hadNl || undefined, fromBare: fromBare || undefined });
     } else if (hadNl && out.length > 0) {
       out[out.length - 1].text += '\n';   // 只有换行的"空块"（原文里的空行）：保留成段落间隔
     }
@@ -165,23 +177,92 @@ function scanSegments(text: string, bareIsSay: boolean): BubbleBlock[] {
     if (mode === 'bare') {
       const q = SAY_OPEN[ch];
       if (q) {
-        flush(); mode = 'say'; close = q; bufType = 'say';
+        flush(); mode = 'say'; close = q; bufType = 'say'; fromBare = false;
         // 严格收尾符在这段文本里不再出现 → 放宽到"任意收尾引号"（混写/漏写收尾的兜底）
         looseQuoteClose = text.indexOf(q, i + 1) < 0;
         continue;
       }
-      if (ch === '（' || ch === '(') { flush(); mode = 'act'; close = ch === '（' ? '）' : ')'; bufType = 'act'; looseQuoteClose = false; continue; }
-      if (ch === '*') { flush(); mode = 'act'; close = '*'; bufType = 'act'; looseQuoteClose = false; continue; }
+      if (ch === '（' || ch === '(') { flush(); mode = 'act'; close = ch === '（' ? '）' : ')'; bufType = 'act'; fromBare = false; looseQuoteClose = false; continue; }
+      if (ch === '*') { flush(); mode = 'act'; close = '*'; bufType = 'act'; fromBare = false; looseQuoteClose = false; continue; }
       buf += ch;
       continue;
     }
-    if (ch === close) { flush(); mode = 'bare'; bufType = bareIsSay ? 'say' : 'act'; looseQuoteClose = false; continue; }
-    if (mode === 'say' && looseQuoteClose && SAY_CLOSE_ANY[ch]) { flush(); mode = 'bare'; bufType = bareIsSay ? 'say' : 'act'; looseQuoteClose = false; continue; }
-    if (close === '"' && ch === '”') { flush(); mode = 'bare'; bufType = bareIsSay ? 'say' : 'act'; looseQuoteClose = false; continue; }
+    if (ch === close) { flush(); mode = 'bare'; bufType = bareIsSay ? 'say' : 'act'; fromBare = true; looseQuoteClose = false; continue; }
+    if (mode === 'say' && looseQuoteClose && SAY_CLOSE_ANY[ch]) { flush(); mode = 'bare'; bufType = bareIsSay ? 'say' : 'act'; fromBare = true; looseQuoteClose = false; continue; }
+    if (close === '"' && ch === '”') { flush(); mode = 'bare'; bufType = bareIsSay ? 'say' : 'act'; fromBare = true; looseQuoteClose = false; continue; }
     buf += ch;
   }
   flush();
-  return out.filter(b => b.text.length > 0);
+  return { blocks: out.filter(b => b.text.length > 0), open: mode !== 'bare' };
+}
+
+function scanSegments(text: string, bareIsSay: boolean): BubbleBlock[] {
+  return _scanRaw(text, bareIsSay).blocks;
+}
+
+// ---- 漂移兜底 ①：整段没有引号的角色气泡 → 逐句分色 ----
+// 背景（真机反馈："对话内容却是淡色"）：模型偶尔整篇不写引号（实测约 1/10，见
+// fixtures/chat-output-space.txt：`林薇 我替人送的。`）。AI 输出的默认规则是"非引号=淡色"，
+// 于是台词全变成了旁白色。这里改成：默认按台词（深色）上色，只有明显的第三人称叙述/场景句
+// 仍按旁白（淡色）。**只在整段一个引号都没有时启用**——正常格式里的行内叙述
+// （`「林叶。」她没回头。`）不受影响，仍按淡色。
+const NARR_HEAD = /^(?:他|她|它|祂|他们|她们|它们|祂们|人家|别人|对方|那人|这人|教室|走廊|窗外|门外|门口|外面|屋里|房里|街上|路上|远处|四周|周围|空气|灯光|天色|阳光|月光|声音|人群|后排|前排|台上|台下|桌上|地面|墙角|楼下|楼上|气氛|场面|然后|接着|于是|随后|跟着|随即)/;
+const SPEECH_MARK = /[我你您咱]|[？！…]|[吧吗呢啊哦呀嘛](?:[。！？…]|$)/;
+
+function looksLikeSpeech(sentence: string): boolean {
+  const s = sentence.trim();
+  if (!s) return false;
+  if (NARR_HEAD.test(s)) return false;
+  if (!SPEECH_MARK.test(s) && s.length >= 18) return false;   // 没有口语标记的长句 → 当叙述
+  return true;
+}
+
+// 按句号类标点与换行切句（标点留在句里，保证"绝不丢字"）
+function splitSentences(text: string): Array<{ text: string; nlBefore?: boolean }> {
+  const out: Array<{ text: string; nlBefore?: boolean }> = [];
+  let buf = ''; let nl = false;
+  const push = () => { const t = buf.trim(); if (t) out.push({ text: t, nlBefore: nl || undefined }); buf = ''; nl = false; };
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (ch === '\n') { push(); nl = true; continue; }
+    buf += ch;
+    if ('。！？…；!?;'.indexOf(ch) >= 0) {
+      while (i + 1 < text.length && '。！？…；!?;'.indexOf(text[i + 1]) >= 0) { buf += text[i + 1]; i++; }   // 连续标点（……）归本句
+      push();
+    }
+  }
+  push();
+  return out;
+}
+
+function speechifyAct(text: string, nlBefore?: boolean): BubbleBlock[] {
+  const out: BubbleBlock[] = [];
+  const parts = splitSentences(text);
+  parts.forEach((p, i) => {
+    const type: 'say' | 'act' = looksLikeSpeech(p.text) ? 'say' : 'act';
+    const last = out[out.length - 1];
+    const nl = i === 0 ? nlBefore : p.nlBefore;
+    if (last && last.type === type) last.text += (nl ? '\n' : '') + p.text;
+    else out.push({ type, text: p.text, nlBefore: nl || undefined });
+  });
+  return out;
+}
+
+// ---- 漂移兜底 ②：没写说话人前缀的整行 → 另起旁白 ----
+// 以前这类行一律并进上一个气泡，于是"模型忘写「白：」的环境/群像描写"被算在上一个角色头上
+// （用户报的"旁白被放到上一个角色说的话的尾部"）。现在：只有确实属于上一个角色的续行才并，
+// 其余另起一条旁白（淡色行，不带头像）。
+function _splitToNarration(cur: { speaker: string | null; text: string }, line: string, bareIsSay: boolean): boolean {
+  if (bareIsSay) return false;                                          // 作者输入按用户规则（裸文本=台词），不改
+  if (cur.speaker === null || cur.speaker === NARRATOR) return false;    // 上一个就是旁白：继续并进去
+  if (_scanRaw(cur.text, false).open) return false;                      // 台词/动作还没闭合（跨行）→ 必须延续
+  const t = line.trim();
+  if (!t) return false;
+  if (/^(?:他|她|它|祂|他们|她们|它们|祂们)/.test(t)) return false;        // 紧接的「她/他…」多半是这个角色自己的动作
+  if (cur.speaker && t.indexOf(cur.speaker) === 0) return false;         // 直接写角色名开头
+  if (/^[（(][\s\S]*[）)]$/.test(t)) return false;                       // （动作）
+  if (/^\*[^*][\s\S]*\*$/.test(t)) return false;                        // *动作*
+  return true;
 }
 
 // 逐行剥掉行首说话人前缀（内容原样保留）。两个用途：
@@ -239,14 +320,38 @@ export function parseBubbles(raw: string, opts: ParseOpts = {}): Bubble[] {
     if (!cur) return;
     // 气泡文本只去掉**首尾**换行（避免气泡开头/结尾多出一个空行）；内部的换行一律保留：
     // 渲染层不再在块之间插 <br>，段落边界完全由原文决定。
-    const blocks = scanSegments(cur.text.replace(/^\n+|\n+$/g, ''), bareIsSay);
+    const body = cur.text.replace(/^\n+|\n+$/g, '');
+    const scanned = _scanRaw(body, bareIsSay);
+    // 漂移兜底①：AI 输出、角色气泡、整段一个引号都没有 → 裸文本逐句分色（台词深、叙述淡）。
+    // 引号只在"有"的时候才说明模型在正常格式上，（）/* 造成的非语言块不动。
+    const speechify = !bareIsSay && !!cur.speaker && cur.speaker !== NARRATOR
+      && !/[「」『』“”"]/.test(body);
+    const blocks: BubbleBlock[] = [];
+    scanned.blocks.forEach(b => {
+      const parts: BubbleBlock[] = (speechify && b.type === 'act' && b.fromBare)
+        ? speechifyAct(b.text, b.nlBefore)
+        : [{ type: b.type, text: b.text, nlBefore: b.nlBefore }];
+      parts.forEach(p => {
+        const last = blocks[blocks.length - 1];
+        // 还原扫描器的"相邻同类型合并"（分色切出来之后仍要保持块数不膨胀）。
+        // nlBefore 只记"这一块开头有没有换行"，合并进来的部分用文本里的 '\n' 表达（渲染层 nl2br）。
+        if (last && last.type === p.type) last.text += (p.nlBefore ? '\n' : '') + p.text;
+        else blocks.push({ type: p.type, text: p.text, nlBefore: p.nlBefore });
+      });
+    });
     if (blocks.length) bubbles.push({ speaker: cur.speaker, known: cur.known, blocks });
     cur = null;
   };
   for (const line of text.split('\n')) {
     const hit = matchSpeaker(line, roster, norm, aliases);
     if (hit) { flush(); cur = { speaker: hit.name, known: hit.known, text: hit.rest }; continue; }
-    if (!cur) cur = { speaker: def, known: def ? norm.has(normalizeSpeakerName(def)) : false, text: '' };
+    if (!cur) {
+      cur = { speaker: def, known: def ? norm.has(normalizeSpeakerName(def)) : false, text: '' };
+    } else if (_splitToNarration(cur, line, bareIsSay)) {
+      // 漂移兜底②：模型忘写前缀的旁白另起一条，不再粘进上一个角色的气泡尾部
+      flush();
+      cur = { speaker: null, known: false, text: '' };
+    }
     cur.text += (cur.text ? '\n' : '') + line;
   }
   flush();
@@ -291,7 +396,19 @@ export function analyzeParse(raw: string, opts: ParseOpts = {}): ParseReport {
   NOTE_PATTERNS.forEach(([re, label]) => { if (re.test(text)) rep.notes.push(label); });
   // 两个"解析质量"信号：引号丢了（台词会被当非语言渲染）与格式漂移（过半内容没有说话人前缀）
   const total0 = rep.sayChars + rep.actChars;
-  if (rep.bubbles >= 4 && total0 > 0 && rep.sayChars < total0 * 0.03) rep.notes.push('台词未加引号（台词会被当成非语言渲染）');
+  // "台词没加引号"用**原文直接扫一遍**判定（引号里的字数占比）——不能看解析结果：
+  // 现在裸文本的角色气泡会把台词兜底染成 say，从结果反推就永远看不到这个信号了。
+  let quotedChars = 0, rawChars = 0;
+  try {
+    _scanRaw(text, false).blocks.forEach(bl => {
+      const n = bl.text.replace(/\s/g, '').length;
+      rawChars += n;
+      if (bl.type === 'say' && !bl.fromBare) quotedChars += n;
+    });
+  } catch (e) { /* 诊断失败不影响其它信号 */ }
+  if (rep.bubbles >= 4 && total0 > 0 && rawChars > 0 && quotedChars < rawChars * 0.03) {
+    rep.notes.push('台词未加引号（已按内容自动分色，可能不完全准）');
+  }
   if (total0 > 0 && rep.fallbackChars > total0 * 0.5) rep.notes.push('格式漂移（过半内容没有说话人前缀）');
   if (roster.length) {
     const norm = new Set(roster.map(normalizeSpeakerName));

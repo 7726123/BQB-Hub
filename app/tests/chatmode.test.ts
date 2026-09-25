@@ -310,17 +310,31 @@ describe('提示词组装（同一份世界书 + 指定字数）', () => {
     });
   });
 
+  // 2026-09-24 用户要求：作者输入**不显示**在演出流里，也要从模型历史上拿掉——
+  // 读者只看到 AI 演的版本（像小说模式那样），模型只在本轮的【作者】行拿到要求。
   it('user：带演出记录、【作者】与【本轮目标】——字数写在这里（实测只写 system 会掉到 65–80%）', () => {
     seedBooks();
     setupPreset(1500);
     ChatMode.append('ai', '林薇：「你怎么才来。」');
-    ChatMode.append('director', '演到她说出理由');
+    ChatMode.append('author', '演到她说出理由');
+    ChatMode.append('director', '推进到放学');
     const user = ChatMode.buildUser('接着演');
     expect(user.indexOf('演出记录')).toBeGreaterThan(-1);
     expect(user.indexOf('林薇：「你怎么才来。」')).toBeGreaterThan(-1);
-    expect(user.indexOf('【作者的指令】演到她说出理由')).toBeGreaterThan(-1);
-    expect(user.indexOf('【作者】接着演')).toBeGreaterThan(-1);
+    expect(user.indexOf('演到她说出理由')).toBe(-1);           // 作者输入不进历史上下文
+    expect(user.indexOf('推进到放学')).toBe(-1);
+    expect(user.indexOf('【作者】接着演')).toBeGreaterThan(-1);   // 本轮要求只在末尾这一行
     expect(/【本轮目标】约 1500 字/.test(user)).toBe(true);   // 预设写了字数 → 用户消息末尾重申一次
+    expect(user.indexOf('【格式】')).toBeGreaterThan(user.indexOf('【作者】'));   // 格式重申贴在指令之后
+  });
+
+  it('作者输入只存不显（hidden）：记录还在（撤回要用），但演出流里看不到', () => {
+    seedBooks();
+    setupPreset(null);
+    const sent = ChatMode.append('author', '你别拆。', { hidden: true });
+    expect(sent.kind).toBe('author');
+    expect(sent.hidden).toBe(true);
+    expect(ChatMode.log().some(m => m.id === sent.id)).toBe(true);
   });
 
   it('user 里的顺序：演出记录 → 临时修订 → 【作者】→【本轮目标】（修订块排在指令前、记录后）', () => {
@@ -568,6 +582,18 @@ describe('头像与角色简介（自动聚合）', () => {
 });
 
 describe('渲染与流式', () => {
+  it('作者输入默认不显示（hidden）：演出流里只有 AI 演出来的内容', () => {
+    seedBooks();
+    setupPreset(1000);
+    ChatMode.append('ai', '林薇：「你怎么才来。」');
+    ChatMode.append('author', '我：「谁的。」', { hidden: true });
+    ChatMode.render();
+    const html = els['chatStream'].innerHTML;
+    expect(html.indexOf('你怎么才来')).toBeGreaterThan(-1);
+    expect(html.indexOf('谁的')).toBe(-1);          // 作者原话不出现（由 AI 演出来）
+    expect(html.indexOf('chat-row-me')).toBe(-1);   // 也不再单独渲染成主角气泡
+  });
+
   it('空记录 → 空状态；有记录 → 气泡；作者戏里的一句靠右（撤回已不在气泡上）', () => {
     seedBooks();
     setupPreset(1000);
@@ -920,5 +946,19 @@ describe('演出轮记进用量统计', () => {
     const st = UsageStats as unknown as { _sessionStartIndex: number | null };
     expect(st._sessionStartIndex).toBeNull();            // 会话已结束（没调用 → 不产生记录，但状态干净）
     expect(UsageStats.getHistory().length).toBe(before); // 失败轮不产生记录
+  });
+
+  // 作者输入不再显示在演出流里 → 失败时若不回填，用户会以为自己写的没了（也没有可撤回的一轮）
+  it('请求失败：把作者刚才那句放回输入框（输入框已有内容时不覆盖）', async () => {
+    seedBooks();
+    setupPreset(1000);
+    const raw = APIHandler as unknown as { fetchCompletions: unknown };
+    raw.fetchCompletions = (msgs: any[], _onDelta: any, _onOk: any, onErr: any) => { onErr('网络错误'); };
+    els['chatInput'].value = '';
+    await ChatMode.generate('演到她说出理由');
+    expect(els['chatInput'].value).toBe('演到她说出理由');
+    els['chatInput'].value = '我自己正在打的字';
+    await ChatMode.generate('另一句要求');
+    expect(els['chatInput'].value).toBe('我自己正在打的字');   // 不覆盖用户正在写的内容
   });
 });

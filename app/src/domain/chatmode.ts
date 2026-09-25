@@ -30,6 +30,8 @@ export interface ChatMsg {
   kind: 'ai' | 'author' | 'director';  // ai=演出 / author=作者扮演发言 / director=作者指令
   raw: string;
   at: number;
+  hidden?: boolean;     // 不显示在演出流里（作者输入：只给模型，读者只看到 AI 演出来的版本）；
+                        // 仍然留在记录里，撤回时能把当轮要求放回输入框
   truncated?: boolean;   // finish_reason=length：这轮被截断
   drift?: boolean;       // 解析诊断发现格式漂移或台词没加引号
   words?: number;        // 本轮字数（标记剥离后，仅用于显示）
@@ -299,7 +301,7 @@ export const ChatMode = {
     const tail: ChatMsg | null = (this._sending && this._streamBookId === this.bookId())
       ? { id: '_streaming', kind: 'ai', raw: this._acc, at: Date.now() }
       : null;
-    const rows = shown.concat(tail ? [tail] : []);
+    const rows = shown.concat(tail ? [tail] : []).filter(m => !m.hidden);
     if (rows.length === 0) {
       stream.innerHTML = '<div class="empty-box" style="margin:20px 12px;"><div class="empty-tt">这本还没有演出记录</div>' +
         '<div class="empty-sub">在下面写一句要求（比如「放学后的教室，林薇把一封信放在我桌上」），或者直接点「发送」</div></div>';
@@ -460,7 +462,7 @@ export const ChatMode = {
         ? '这一轮被截断了（思考已用掉约 ' + m.reasoning + ' 字额度，正文写不下了）——点「发送」接着往下演'
         : '这一轮被截断了（模型额度用完）——点「发送」接着往下演');
     }
-    if (m.drift) flags.push('这一轮的格式没走对，已按旁白显示');
+    if (m.drift) flags.push('这一轮的格式没走对（台词没加引号）：颜色是按内容自动分的，可能不完全准');
     if (m.kind === 'ai' && m.id !== '_streaming' && m.words) {
       out += '<div class="chat-actions"><span class="chat-meta">' + esc(m.words + ' 字') + '</span></div>';
     }
@@ -519,6 +521,22 @@ export const ChatMode = {
   },
 
   isSending(): boolean { return this._sending; },
+
+  /**
+   * 把作者刚写的那句放回输入框（只在输入框空着时）。
+   * 作者输入不再显示在演出流里，所以"请求失败/没拿到内容"时必须回填——否则用户会觉得
+   * 自己写的东西凭空没了（而且没有可撤回的一轮，↩ 也够不着）。
+   */
+  _restoreInstruction(text: string): boolean {
+    const t = String(text || '').trim();
+    if (!t) return false;
+    const ta = document.getElementById('chatInput') as HTMLTextAreaElement | null;
+    if (!ta || String(ta.value || '').trim()) return false;
+    ta.value = t;
+    ta.style.height = 'auto';
+    ta.style.height = Math.min(140, ta.scrollHeight) + 'px';
+    return true;
+  },
 
   send(): void {
     if (this._sending) return;   // 生成中：停止走输入行旁边那颗红色停止键（与写作页一致）
@@ -634,8 +652,10 @@ export const ChatMode = {
   // 现在记一个起点下标（每本书一个），只包含 [from, end)：起点固定 → 每轮只往末尾追加，
   // 缓存能一路命中到上一轮结尾；攒到 1.5 倍目标长度才把起点往前推一次（那一轮本来就整段重写）。
   _ctxFromKey(): string { return 'chatCtxFrom_' + (this.bookId() || 'none'); },
+  // 演出记录里只放"演出"：作者输入是当轮的指令（在 user 消息末尾另发一次），不进历史上下文——
+  // 与小说模式一致（正文里没有作者的要求），也避免模型把上一轮的要求再演一遍。
   _msgPiece(m: ChatMsg): string {
-    return m.kind === 'ai' ? m.raw : (m.kind === 'author' ? '【作者】' + m.raw : '【作者的指令】' + m.raw);
+    return m.kind === 'ai' ? m.raw : '';
   },
   // 演出记录的目标长度（字）：按模型预算算（预算 = 可用上下文 − 系统块 − 世界书 − 尾部）。
   // 系统块要现算一次（预设 + 原书世界书 + 格式块），失败就退回兜底值。
@@ -657,7 +677,10 @@ export const ChatMode = {
     if (!(from >= 0) || from > all.length) from = 0;
     const build = (f: number) => {
       const parts: string[] = [];
-      for (let i = f; i < all.length; i++) parts.push(this._msgPiece(all[i]));
+      for (let i = f; i < all.length; i++) {
+        const piece = this._msgPiece(all[i]);
+        if (piece) parts.push(piece);
+      }
       return parts.join('\n\n').trim();
     };
     let out = build(from);
@@ -679,6 +702,9 @@ export const ChatMode = {
     const ovCtx = this.overlayCtx();
     if (ovCtx) parts.push(ovCtx);
     parts.push('【作者】' + (instruction || '（没有新要求，接着往下演）'));
+    // 格式重申放最末尾：与字数一样，只写在 system 里命中率会掉（实测），贴在用户消息尾部最有效。
+    // 两句都是重灾区：漏引号 → 台词被当动作（淡色）；旁白忘了写「白：」→ 会被算在上一个角色头上。
+    parts.push('【格式】行首写「说话人：」；旁白单独一行写「白：」；台词一律用「」包住（漏引号会被当成动作）。');
     if (n) parts.push('【本轮目标】约 ' + n + ' 字。不足 ' + n + ' 字算没写完，不要提前收尾。');
     return parts.join('\n\n');
   },
@@ -702,7 +728,9 @@ export const ChatMode = {
     // 本轮属于对话模式：临时世界书写到 settingOverlay_<书ID>_chat（与小说模式各存各的）
     try { SettingSyncManager.setMode('chat'); } catch (e) { /* ignore */ }
     if (instruction) {
-      this.append('author', instruction);   // 作者输入统一记 author：渲染时按内容自动分（戏里的一句 → 主角气泡，其余 → 淡色一行）
+      // 作者输入**不显示**在演出流里（用户要求：读者只看到 AI 整理过的演出，像小说模式那样）：
+      // 记 hidden 留在记录里，只为"撤回时把当轮要求放回输入框"，以及当轮随 user 消息发给模型。
+      this.append('author', instruction, { hidden: true });
     }
     this._lastInstruction = instruction;
     this._sending = true;
@@ -743,7 +771,8 @@ export const ChatMode = {
             this._acc = '';
             this.render();
             try { UsageStats.endSession(0); } catch (e) { /* ignore */ }
-            try { App.toast('请求失败：' + err); } catch (e) { /* ignore */ }
+            const back = this._restoreInstruction(instruction);
+            try { App.toast('请求失败：' + err + (back ? '（刚才那句已放回输入框）' : '')); } catch (e) { /* ignore */ }
             done();
           },
           {
@@ -791,11 +820,13 @@ export const ChatMode = {
       // 一条都没写出来时把"是不是额度被思考吃掉了"说清楚：推理模型的思考与正文共用输出额度，
       // 思考跑满就一个字都写不出来（用户实测场景）。不然用户只会以为是随机抽风。
       const _cut = finishReason === 'length' || finishReason === 'max_tokens';
+      const back = this._restoreInstruction(this._lastInstruction);   // 输入不再显示，没写出来就回填
       try { UsageStats.endSession(0); } catch (e) { /* 记账失败不影响提示 */ }
       try {
-        App.toast(_cut && _reasoning > 0
+        App.toast((_cut && _reasoning > 0
           ? '额度被思考吃满了（已想约 ' + _reasoning + ' 字），正文一个字没写出来：再点「发送」重试，反复如此就把「思考强度」调到最低或换个模型'
-          : '这一轮没有拿到内容（可能被截断或模型返回空），可以点「发送」重试');
+          : '这一轮没有拿到内容（可能被截断或模型返回空），可以点「发送」重试')
+          + (back ? '（刚才那句已放回输入框）' : ''));
       } catch (e) { /* ignore */ }
       this.render();
       return;

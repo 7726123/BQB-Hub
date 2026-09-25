@@ -52,7 +52,10 @@ describe('气泡解析：说话人前缀的三种写法', () => {
     const b = parseBubbles('路人甲：「谁啊。」\n注意：这里不该开气泡。', AI);
     expect(b[0].speaker).toBe('路人甲');
     expect(b[0].known).toBe(false);
-    expect(b).toHaveLength(1);
+    // 「注意：」不算说话人 → 这行没有前缀 → 另起一条旁白（不再粘进路人甲的气泡尾部）
+    expect(b).toHaveLength(2);
+    expect(b[1].speaker).toBe(null);
+    expect(b[1].blocks.map(x => x.text).join('')).toContain('这里不该开气泡');
   });
 
   // 叙述里的「XX：」不是说话人（用户报的"非常奇怪的分段"里就有它：叙述被当成新角色开了气泡+头像）
@@ -144,6 +147,69 @@ describe('作者输入解析（bareIsSay + （）=淡色 + 默认说话人）', 
   });
 });
 
+// 2026-09-24 用户报的三条里，两条在解析层：
+//   ① "对话内容却是淡色"——模型整篇不写引号时，台词被按"非引号=淡色"渲染了；
+//   ② "旁白被放到上一个角色说的话的尾部"——忘写前缀的旁白行被粘进上一个角色气泡。
+describe('漂移兜底：台词分色与旁白另起（真机反馈）', () => {
+  it('整段没引号的角色气泡：台词按深色，第三人称叙述仍按淡色', () => {
+    const b = parseBubbles('林薇 我替人送的。\n林薇 她把手插回口袋，站着没坐。', AI);
+    expect(b[0].blocks).toEqual([{ type: 'say', text: '我替人送的。' }]);
+    expect(b[1].blocks).toEqual([{ type: 'act', text: '她把手插回口袋，站着没坐。' }]);
+  });
+
+  it('同一气泡里台词与叙述混排（真机 fixture 的典型形态）→ 逐句分色', () => {
+    const b = parseBubbles('林薇 你先别问。她把手插回口袋，站着没坐。我今天连包都没拿。', AI);
+    expect(b[0].blocks.map(x => x.type)).toEqual(['say', 'act', 'say']);
+    expect(b[0].blocks[1].text).toBe('她把手插回口袋，站着没坐。');
+  });
+
+  it('短句默认当台词（「别拆。」这类没有口语标记的也是台词）', () => {
+    const b = parseBubbles('林薇 别拆。', AI);
+    expect(b[0].blocks).toEqual([{ type: 'say', text: '别拆。' }]);
+  });
+
+  it('正常格式（有引号）里的行内叙述不受影响，仍按淡色', () => {
+    const b = parseBubbles('林薇：「林叶。」她没回头。', AI);
+    expect(b[0].blocks).toEqual([
+      { type: 'say', text: '林叶。' },
+      { type: 'act', text: '她没回头。' },
+    ]);
+  });
+
+  it('白气泡永远整段淡色（不会被兜底染成台词）', () => {
+    const b = parseBubbles('白 我把信封放下，压在卷子一角。', AI);
+    expect(b[0].blocks).toEqual([{ type: 'act', text: '我把信封放下，压在卷子一角。' }]);
+  });
+
+  it('（）/* 里的动作不会被兜底染色（只染裸文本那一段）', () => {
+    const b = parseBubbles('林薇 我替人送的。（她笑了一下）', AI);
+    expect(b[0].blocks).toEqual([
+      { type: 'say', text: '我替人送的。' },
+      { type: 'act', text: '她笑了一下' },
+    ]);
+  });
+
+  it('忘写前缀的旁白：另起一条旁白行，不再粘进上一个角色的气泡尾部', () => {
+    const b = parseBubbles('林薇：「你来了。」\n走廊的灯只亮一半。\n她朝窗外看了一眼。', AI);
+    expect(b.map(x => x.speaker)).toEqual(['林薇', null]);
+    expect(b[0].blocks.map(x => x.text)).toEqual(['你来了。']);
+    expect(b[1].blocks.map(x => x.type)).toEqual(['act']);
+    expect(b[1].blocks.map(x => x.text).join('').replace(/\n/g, '')).toBe('走廊的灯只亮一半。她朝窗外看了一眼。');
+  });
+
+  it('角色自己的续行仍留在同一气泡：多行台词 / 紧接的「她…」动作 / （动作）', () => {
+    expect(parseBubbles('林薇：「我要是想说，\n刚才在走廊上就说了。」', AI)).toHaveLength(1);   // 引号没闭合
+    expect(parseBubbles('林薇：「你怎么才来。」\n她把伞收起来。', AI)).toHaveLength(1);          // 她…= 自己的动作
+    expect(parseBubbles('林薇：「你来了。」\n（她把门带上。）', AI)).toHaveLength(1);             // （动作）
+  });
+
+  it('旁白气泡之后的无前缀行继续并进旁白（不再来回开新行）', () => {
+    const b = parseBubbles('白：走廊里没人。\n灯还在响。', AI);
+    expect(b.map(x => x.speaker)).toEqual([NARRATOR]);
+    expect(b[0].blocks[0].text.replace(/\n/g, '')).toBe('走廊里没人。灯还在响。');
+  });
+});
+
 describe('丢字不变量：解析只剥标记，内容一个字不少', () => {
   for (const name of ['chat-output-colon.txt', 'chat-output-space.txt']) {
     it(name + ' 的字符多重集完全一致', () => {
@@ -223,8 +289,15 @@ describe('格式块：名单/主角/字数渲染', () => {
     expect(blk).toContain('个气泡');
     expect(blk).toContain('林叶');
   });
-  it('主角在名单里带「作者本人·主角」标记，且写明主角=作者、不许分身', () => {
+  it('格式块：引号是硬要求、旁白必须单独一行、作者输入要"演出来"', () => {
     const blk = chatFormatBlock({ roster: ROSTER, protagonist: '林叶', lengthWords: 2500 });
+    expect(blk).toContain('台词一律用「」包住');
+    expect(blk).toContain('不要跟在某个角色的台词后面');   // 白行独立（用户报的"旁白挂在角色话尾"）
+    expect(blk).toContain('作者的输入不会显示给读者');
+    expect(blk).not.toContain('不要复述同一句话');          // 旧规则（作者输入已经显示过）已作废
+  });
+
+  it('主角在名单里带「作者本人·主角」标记，且写明主角=作者、不许分身', () => {    const blk = chatFormatBlock({ roster: ROSTER, protagonist: '林叶', lengthWords: 2500 });
     expect(blk).toContain('林叶（作者本人·主角）');
     expect(blk).toContain('主角就是作者本人');
     expect(blk).toContain('主角只有一个人，不许分身');
