@@ -265,6 +265,33 @@ describe('批量结果回传模型：结构化 JSON 与 failed 明细', () => {
   });
 });
 
+describe('主角 / user：从零写卡不引入（用户 2026-09-25 明确要求）', () => {
+  it('base 明确：从零写卡没有主角概念，不要问、不要单开条目、不要挂靠', () => {
+    const b = Cw()._defaultBlocks();
+    const base = String(b.base);
+    expect(base).toContain('【主角 / user：从零写卡不需要，不要主动引入');
+    expect(base).toContain('不要问「谁是主角');
+    expect(base).toContain('用户自己会扮演卡里任意角色');
+    expect(base).toContain('从零写卡时不要主动写');
+    expect(base).toContain('明确要求');
+    expect(b.__version).toBeGreaterThanOrEqual(22);
+  });
+
+  it('改造场景的保留规则仍在（{{user}} 不许删、不许写死人名）', () => {
+    const base = String(Cw()._defaultBlocks().base);
+    expect(base).toContain('【主角占位符');
+    expect(base).toContain('必须原样保留');
+    expect(base).toContain('禁止改写成具体人名');
+  });
+
+  it('角色卡渲染用中性「关系：」，不再写「与主角关系：」', () => {
+    const txt = String((Cw() as unknown as { _charsToText: (a: unknown, b: unknown) => string })
+      ._charsToText([{ name: '林晚', gender: '女', age: 17, relation: '同班同学' }], []));
+    expect(txt).toContain('关系：同班同学');
+    expect(txt).not.toContain('与主角关系');
+  });
+});
+
 describe('对话示例（可选）：AI 先给候选让用户挑，角色不该死板', () => {
   it('method 默认文案含【对话示例】：候选形式、可选不追问、原话写回、克制', () => {
     const b = Cw()._defaultBlocks();
