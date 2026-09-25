@@ -489,13 +489,24 @@ export function pickNonSseContent(j: any): { content?: string; reasoning?: strin
   if (!j || typeof j !== 'object') return {};
   const out: { content?: string; reasoning?: string } = {};
   const d = (j.choices && j.choices[0] && (j.choices[0].delta || j.choices[0].message)) || null;
-  if (d) {
-    if (typeof d.content === 'string' && d.content) out.content = d.content;
-    if (typeof d.reasoning_content === 'string' && d.reasoning_content) out.reasoning = d.reasoning_content;
+  const msg = (j.choices && j.choices[0] && j.choices[0].message) || null;
+  if (d && typeof d.content === 'string' && d.content) out.content = d.content;
+  // 深度思考通道（与流式同一套字段阶梯）：reasoning_content / reasoning / thinking / thought / analysis。
+  // 用户实测（commandcode 端点，2026-09-25）：网关把思考放在 message.reasoning 里，以前只认
+  // reasoning_content → 非流式路径的思考全丢；正文为空时更看不出"额度被思考吃掉"的原因。
+  // 同帧多字段重复出现时只取第一个非空（部分网关 reasoning 与 reasoning_content 内容相同）。
+  const rcFields = [
+    d && d.reasoning_content, d && d.reasoning, d && d.thinking, d && d.thought, d && d.analysis,
+    msg && msg.reasoning_content, msg && msg.reasoning, msg && msg.thinking, msg && msg.thought,
+    j.reasoning_content, j.reasoning, j.thinking,
+  ];
+  for (const f of rcFields) {
+    if (typeof f === 'string' && f.length > 0) { out.reasoning = f; break; }
+    if (f && typeof f.text === 'string' && f.text.length > 0) { out.reasoning = f.text; break; }
   }
   if (!out.content && j.message && typeof j.message.content === 'string' && j.message.content) out.content = j.message.content;
   if (!out.content && typeof j.response === 'string' && j.response) out.content = j.response;
-  if (!out.reasoning && j.message && typeof j.message.reasoning_content === 'string') out.reasoning = j.message.reasoning_content;
+  if (!out.reasoning && j.message && typeof j.message.reasoning === 'string' && j.message.reasoning) out.reasoning = j.message.reasoning;
   return out;
 }
 

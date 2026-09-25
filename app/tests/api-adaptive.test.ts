@@ -276,4 +276,15 @@ describe('响应形态自适应', () => {
     expect(pickNonSseContent({ response: 'd' }).content).toBe('d');
     expect(pickNonSseContent({}).content).toBeUndefined();
   });
+
+  // 用户实测（commandcode 端点，2026-09-25）：网关把思考放在 message.reasoning，不在 reasoning_content；
+  // 只认后者会让非流式路径的思考全丢（正文为空时看不出"额度被思考吃掉"）。
+  it('pickNonSseContent：思考字段多格式（reasoning / thinking 对象 / 顶层）', () => {
+    expect(pickNonSseContent({ choices: [{ message: { content: '', reasoning: '想了很多' } }] }).reasoning).toBe('想了很多');
+    expect(pickNonSseContent({ choices: [{ message: { content: 'x', thinking: { text: '思考' } } }] }).reasoning).toBe('思考');
+    // 同帧多字段重复：只取第一个非空（避免重复累计）
+    expect(pickNonSseContent({ choices: [{ message: { content: '', reasoning_content: 'A', reasoning: 'A' } }] }).reasoning).toBe('A');
+    expect(pickNonSseContent({ reasoning: '顶层思考' }).reasoning).toBe('顶层思考');
+    expect(pickNonSseContent({ message: { content: 'e', reasoning: '想' } })).toEqual({ content: 'e', reasoning: '想' });
+  });
 });

@@ -231,26 +231,58 @@ const SAY_VERB_ANY = /(?:说|问|答|道|想|知道|觉得|认为|明白|记得|
 
 // 拟声/短音 + "了一声"（`哦了一声。` `应了一声。`）必定是叙述（谁发出了什么声音），不是台词
 const NARR_UTTER = /^[^，。！？…]{0,3}(?:了一声)/;
+// 「注意：」「提示：」这类括注说明：是旁白，不该开气泡、也不该粘在角色气泡里（要另起旁白行）
+const NOTE_HEAD = /^(?:注意|提示|备注|说明|规则|格式|示例|注)[：:]/;
 
 // narratorBubble = 这个气泡的说话人是**第一人称叙述者本人**（主角）。
-// 主角气泡里的"我…"长句：没有第二人称/疑问/语气词，也没有说话·心理类动词时，当叙述
-// （`我在廊下站着，她就这么扫过去…`——真机反馈里这种整句被染成了深色台词）。
-// 短回复（`我知道。` `我还没拆。`）与带说话动词的（`我其实早就知道…`）仍是台词。
-function looksLikeSpeech(sentence: string, narratorBubble = false): boolean {
+// 漂移输出（模型整轮不写引号）里，一个气泡里常常是"台词 + 第一人称/第三人称叙述"混排，
+// 所以逐句判成三态：'say'（明确是说话）/ 'act'（明确是叙述）/ 'amb'（看不出）——
+// 拿不准的交给 speechifyAct 按"就近归属"（同气泡里最近的有标签句子）或长度处理。
+// 判错的代价是双向的：叙述染深色（用户 2026-09-25 连着报过三次）与台词染淡（1.5.98.1 报过），
+// 所以这里只在**有明确线索**时下结论，其余一律 amb。
+const INTERROG = /(?:什么|怎么|为什么|为啥|谁|哪|几|多少|是不是|好不好|行不行|对不对|吗|呢)/;
+// 疑问词要先排除"不定代词"用法：`像被什么东西勒过` `什么都没说` `什么时候都行` 都不是提问
+function hasInterrogative(s: string): boolean {
+  const t = s
+    .replace(/(?:像|好像|似乎|仿佛|像是)[^，。！？…]{0,4}什么/g, '')
+    .replace(/没(?:什么|啥)/g, '')
+    .replace(/什么[^，。！？…]{0,4}(?:都|也)/g, '');
+  return INTERROG.test(t);
+}
+const IMPERATIVE_HEAD = /(?:^|[，。；：！？…\s])(?:请|快|喂|嗯|谢谢|对不[起住])/;
+// 祈使/否定祈使（`别拆。` `灯别全关，值日的留下。`）：先把"别的/告别/特别/区别…"这类构词剔掉，
+// 再看还有没有"别"——不然 `她把别的东西收起来。` 会被当成说话
+function hasImperative(s: string): boolean {
+  const t = s.replace(/(?:告别|分别|特别|差别|识别|辨别|性别|个别|离别|道别|类别|级别|区别|别致|别墅|别人|别的|别处|别扭|别说|别针|别具|别管)/g, '');
+  return t.indexOf('别') >= 0 || IMPERATIVE_HEAD.test(t);
+}
+
+function classifySentence(sentence: string, narratorBubble = false): 'say' | 'act' | 'amb' {
   const s = sentence.trim();
-  if (!s) return false;
-  if (NARR_HEAD.test(s)) return false;
-  if (NARR_UTTER.test(s)) return false;
+  if (!s) return 'amb';
+  // ---- 明确是叙述 ----
+  if (NARR_HEAD.test(s)) return 'act';
+  if (NARR_UTTER.test(s)) return 'act';
+  if (NOTE_HEAD.test(s)) return 'act';          // 注意：/提示：这类括注说明本身不是说话
   // 「她哦了一声」里的「哦」是拟声不是语气词：判"有没有口语标记"之前先把它剔掉，
   // 否则 `我点头。她哦了一声。` 会被 哦 挡住叙事判定、整句染成台词
   const gc = s.replace(/[哦嗯啊诶欸噢唔喔]{1,2}了一声/g, '');
-  if (!ACT_GUARD.test(gc) && (NARR_DEMON.test(s) || NARR_DEGREE.test(s))) return false;
-  if (!ACT_GUARD.test(gc) && (ACT_POSSESS.test(s) || ACT_BODY.test(s))) return false;
+  if (!ACT_GUARD.test(gc) && (NARR_DEMON.test(s) || NARR_DEGREE.test(s))) return 'act';
+  if (!ACT_GUARD.test(gc) && (ACT_POSSESS.test(s) || ACT_BODY.test(s))) return 'act';
   if (narratorBubble && s.indexOf('我') >= 0 && Array.from(s).length >= 12
     && !/[你您]|[？！…～]/.test(gc) && !/[吧吗呢啊哦呀嘛啦嘞](?:[。！？…]|$)/.test(s)
-    && !SAY_VERB_ANY.test(s)) return false;
-  if (!SPEECH_MARK.test(s) && s.length >= 18) return false;   // 没有口语标记的长句 → 当叙述
-  return true;
+    && !SAY_VERB_ANY.test(s)) return 'act';
+  // ---- 明确是台词 ----
+  if (SPEECH_MARK.test(s)) return 'say';        // 我/你/您/咱、？！…、句末语气词
+  if (/[你您]/.test(gc)) return 'say';
+  if (hasInterrogative(s)) return 'say';        // 疑问词（模型经常忘打问号）
+  if (hasImperative(s)) return 'say';
+  if (!SPEECH_MARK.test(s) && s.length >= 18) return 'act';   // 没有口语标记的长句 → 当叙述
+  return 'amb';
+}
+
+function looksLikeSpeech(sentence: string, narratorBubble = false): boolean {
+  return classifySentence(sentence, narratorBubble) === 'say';
 }
 
 // 按句号类标点与换行切句（标点留在句里，保证"绝不丢字"）
@@ -271,7 +303,7 @@ function splitSentences(text: string): Array<{ text: string; nlBefore?: boolean 
   return out;
 }
 
-function speechifyAct(text: string, nlBefore?: boolean, narratorBubble = false): BubbleBlock[] {
+function speechifyAct(text: string, nlBefore?: boolean, narratorBubble = false, answering = false, roundQuoted = false): BubbleBlock[] {
   const out: BubbleBlock[] = [];
   // 先接"折行"：换行后上一句还没有句末标点（`我点头。她\n哦\n了一声。`），说明模型只是把一句
   // 折成了几行——碎片（≤3 字且没有句末标点）也一并接回，否则「哦」会被当成一句短台词染深色
@@ -284,8 +316,18 @@ function speechifyAct(text: string, nlBefore?: boolean, narratorBubble = false):
     if (prev && (!prevEnds || frag)) prev.text += p.text;
     else parts.push({ text: p.text, nlBefore: p.nlBefore });
   });
+  // 句级分类 + 归属：拿不准（amb）的句子按三条线索定——
+  //   ① 很短（≤6 字）→ 短回复（`不行。` `楼梯口。` `器材室门口。`），算台词；
+  //   ② 这句是在回答上一气泡的提问 → 算台词；
+  //   ③ 其余看**整轮有没有引号**：模型这一轮里对白都带引号、只有旁白忘了写「白：」时，
+  //      没引号的句子按叙述（`门被带上了一半。`）；整轮一个引号都没有（真漂移）时按台词
+  //      （`我替人送的。`——1.5.98.1 用户报过"对话内容却是淡色"，漂移时宁可保台词色）。
+  const cls = parts.map(p => classifySentence(p.text, narratorBubble));
   parts.forEach((p, i) => {
-    const type: 'say' | 'act' = looksLikeSpeech(p.text, narratorBubble) ? 'say' : 'act';
+    let type: 'say' | 'act';
+    if (cls[i] !== 'amb') type = cls[i] as 'say' | 'act';
+    else if (Array.from(p.text.trim()).length <= 6 || answering) type = 'say';
+    else type = roundQuoted ? 'act' : 'say';
     const last = out[out.length - 1];
     const nl = i === 0 ? nlBefore : p.nlBefore;
     if (last && last.type === type) last.text += (nl ? '\n' : '') + p.text;
@@ -423,6 +465,11 @@ function _splitToNarration(cur: { speaker: string | null; text: string }, line: 
   if (!t) return false;
   if (/^(?:他|她|它|祂|他们|她们|它们|祂们)/.test(t)) return false;        // 紧接的「她/他…」多半是这个角色自己的动作
   if (cur.speaker && t.indexOf(cur.speaker) === 0) return false;         // 直接写角色名开头
+  // 以引号开头的行是**台词**：模型常把「说话人：」单独写一行、后面每句台词一行且不带前缀
+  // （`陈亦：` / `「我爸在楼下等着。」`）——这一行留在上一个说话人的气泡里，不能另起旁白行。
+  // 真机实测（2026-09-25 commandcode 生成）：不认这一条时，一半台词会被拆进旁白行——
+  // 没名字、没头像、按旁白样式显示（读者看不出是谁说的）。
+  if (/^[「『“‘"]/.test(t)) return false;
   // 上一句还没写完（结尾不是句末标点）→ 这是折行，不是新的一条旁白：
   // 否则 `我点头。她` + `哦` + `了一声。` 会被拆成两半（用户 2026-09-25 反馈的"分段"）。
   // 收尾引号只在它前面已经有句末标点时才算句末（`「你来了。」` 算，`「哦」` 不算——那是引述的一声）。
@@ -433,7 +480,9 @@ function _splitToNarration(cur: { speaker: string | null; text: string }, line: 
   if (Array.from(t).length <= 3 && !/[。！？…；!?;]$/.test(t)) return false;
   if (/^[（(][\s\S]*[）)]$/.test(t)) return false;                       // （动作）
   if (/^\*[^*][\s\S]*\*$/.test(t)) return false;                        // *动作*
-  return true;
+  // 只有**明确是叙述**的行才另起旁白：台词（疑问句、短回复）和拿不准的留在当前说话人气泡里，
+  // 否则模型把「说话人：」写一行、后续不带前缀的台词也会被拆进旁白行
+  return classifySentence(t, false) === 'act';
 }
 
 // 逐行剥掉行首说话人前缀（内容原样保留）。两个用途：
@@ -502,12 +551,24 @@ export function parseBubbles(raw: string, opts: ParseOpts = {}): Bubble[] {
     // 引号只在"有"的时候才说明模型在正常格式上，（）/* 造成的非语言块不动。
     const speechify = !bareIsSay && !!cur.speaker && cur.speaker !== NARRATOR
       && !/[「」『』“”"]/.test(body);
+    // 整轮里有没有**中文引号**（模型这一轮是否按格式给对白加引号）。只认「」『』“”：
+    // 半角 " 常出现在正常叙述里（`最后一个"叶"的捺`），拿它当信号会把整轮判反。
+    const roundQuoted = /[「」『』“”]/.test(text);
     // 这个气泡的说话人就是第一人称叙述者（主角）吗？——决定"我…"的长句按叙述还是台词着色
     const narrBubble = !!opts.narrator && cur.speaker === opts.narrator;
+    // 这条气泡是在回答上一个气泡的提问吗？（上一气泡是别人说的、末尾一句带疑问）
+    // 漂移输出里"短回答"和"短叙述"形状一样，只有上下文能分开：提问后的短句按台词着色。
+    let answering = false;
+    const prevB = bubbles[bubbles.length - 1];
+    if (prevB && prevB.speaker !== cur.speaker) {
+      const ptxt = prevB.blocks.map(x => x.text).join('').trim();
+      const lastSent = ptxt.split(/[。！？…\n]/).filter(s => s.trim()).pop() || '';
+      answering = /[？?]/.test(ptxt) || hasInterrogative(lastSent);
+    }
     const blocks: BubbleBlock[] = [];
     src.forEach(b => {
       const parts: BubbleBlock[] = (speechify && b.type === 'act' && b.fromBare)
-        ? speechifyAct(b.text, b.nlBefore, narrBubble)
+        ? speechifyAct(b.text, b.nlBefore, narrBubble, answering, roundQuoted)
         : [{ type: b.type, text: b.text, nlBefore: b.nlBefore }];
       parts.forEach(p => {
         const last = blocks[blocks.length - 1];

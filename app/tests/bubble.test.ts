@@ -265,6 +265,45 @@ describe('漂移兜底：台词分色与旁白另起（真机反馈）', () => {
     expect(parseBubbles('林薇 我去办公室拿名单，路过窗户。', N)[0].blocks.map(x => x.type)).toEqual(['say']);
   });
 
+  // 用 commandcode 端点跑真实生成（4 轮 × 约 1900 字）后按"逐句三态 + 就近/整轮信号"重做的分色。
+  // 真机新输出里的形态：**对白都带引号**，只有旁白忘了写「白：」→ 没引号的句子按叙述。
+  it('这一轮的对白带引号时：没引号的句子按叙述（门被带上了一半。→ 淡色）', () => {
+    const b = parseBubbles('林叶：「我知道了。」\n门被带上了一半。\n信封露出练习册底下一个白角。', AI);
+    expect(b.map(x => x.blocks.map(y => y.type))).toEqual([['say', 'act']]);   // 台词深、旁白淡（同一条气泡里）
+    expect(b[0].blocks[1].text.replace(/\n/g, '')).toBe('门被带上了一半。信封露出练习册底下一个白角。');
+    // 明确是第三人称叙述的整行才另起旁白行
+    const c = parseBubbles('林叶：「我知道了。」\n她把伞收起来。', AI);
+    expect(c.map(x => x.blocks.map(y => y.type))).toEqual([['say', 'act']]);
+  });
+
+  it('整轮一个引号都没有（真漂移）时：拿不准的句子仍按台词——宁可保台词色（1.5.98.1 的教训）', () => {
+    expect(parseBubbles('林薇 我还没拆。门被带上了一半。', AI)[0].blocks.map(x => x.type)).toEqual(['say']);
+  });
+
+  it('短回复（≤6 字）与"回答上一句提问"的句子，即使整轮带引号也按台词', () => {
+    const raw = '林叶：「我包呢。」\n林薇：器材室门口。\n林叶：「他去哪儿了。」\n林薇：操场那边；跑着。';
+    const bs = parseBubbles(raw, AI);
+    expect(bs[1].blocks.map(x => x.type)).toEqual(['say']);        // 器材室门口。
+    expect(bs[3].blocks.map(x => x.type)).toEqual(['say']);        // 回答上一句 → 台词
+  });
+
+  it('「别」的祈使判定：灯别全关是说话；别的名字/告别不是', () => {
+    expect(parseBubbles('林叶：「嗯。」\n苏老师：灯别全关，值日的留下。', AI)[1].blocks.map(x => x.type)).toEqual(['say']);
+    const b = parseBubbles('林叶：「嗯。」\n信封上写着别的名字。', AI);
+    expect(b[0].blocks.map(x => x.type)).toEqual(['say', 'act']);
+  });
+
+  // 真机实测（commandcode 生成，2026-09-25）：模型常把「说话人：」单独写一行、后面每句台词一行且不带前缀。
+  // 以前这种行会被当成"忘写前缀的旁白"另起一条旁白行 → 一半台词进了旁白行（没名字、没头像）。
+  it('说话人单独一行 + 后续无前缀的引号行：都留在该说话人的气泡里', () => {
+    const raw = '陈亦：\n他从后门那边过来，琴盒拎在手上。\n「我爸在楼下等着。」\n他往我柜子那边看了一眼。\n「鞋底是白的。」';
+    const bs = parseBubbles(raw, AI);
+    expect(bs).toHaveLength(1);
+    expect(bs[0].speaker).toBe('陈亦');
+    expect(bs[0].blocks.map(x => x.type)).toEqual(['act', 'say', 'act', 'say']);
+    expect(bs[0].blocks[3].text).toBe('鞋底是白的。');
+  });
+
   it('第一人称的身体动作/操作是叙述（我把信封翻过来。/ 我抬头。）', () => {
     expect(parseBubbles('林叶 我把信封翻过来。背面空的，封口用胶水粘的，边上有点毛。', AI)[0].blocks.map(x => x.type)).toEqual(['act']);
     expect(parseBubbles('林叶 我抬头。', AI)[0].blocks.map(x => x.type)).toEqual(['act']);
