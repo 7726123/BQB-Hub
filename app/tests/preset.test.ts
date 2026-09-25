@@ -38,7 +38,7 @@ describe('PresetManager', () => {
   it('内置最小预设：启用文本满足注入管线约束', () => {
     PSM.initDefaults();
     const mods = ((PSM.getPresets()[0] as unknown as { promptModules: Array<{ content: string; enabled: boolean; role: string }> }).promptModules);
-    expect(mods.filter((m) => m.enabled)).toHaveLength(12);   // 2026-09-25 增补三条（去主角中心/出场角色/情绪）
+    expect(mods.filter((m) => m.enabled)).toHaveLength(13);   // 2026-09-25 增补四条（去主角中心/出场角色/情绪/禁令）
     expect(mods.every((m) => m.role === 'system')).toBe(true);
     const sp = mods.filter((m) => m.enabled).map((m) => m.content).join('\n\n');
     expect(sp).not.toContain('<thinking>');            // 原生推理模型会被诱导弹标签
@@ -99,13 +99,13 @@ describe('PresetManager', () => {
     expect(mod.content).toContain('句尾习惯');
     expect(mod.content).toContain('不写「气氛有些尴尬」');
     expect(mod.content).toContain('省略号是常用的标点');
-    expect(mod.content).toContain('破折号按《叙事规则》节制使用');   // 不与 min_04 的「破折号≤3 处」打架
+    expect(mod.content).toContain('破折号不出现（见《禁令》）');   // 破折号绝对禁用（用户 2026-09-25 要求）
     expect(mod.content).toContain('避免书面腔');
     expect(mod.content).not.toContain('视角');   // 视角只由 min_09..min_12 决定
     expect(mod.content).not.toContain('字数');
 
     // 老设备：模块内容还是旧文案 → 启动同步后换成新版
-    const patch = MINIMAL_PRESET_PATCHES.find((x) => x.moduleId === 'min_05_style_kei')!;
+    const patch = MINIMAL_PRESET_PATCHES.find((x) => x.id === 'style-kei-v2')!;
     expect(patch.id).toBe('style-kei-v2');
     PSM.savePresets(PSM.getPresets().map((p) => (p.id === 'preset_minimal'
       ? { ...p, promptModules: (p as unknown as { promptModules: Array<{ id: string; content: string }> }).promptModules.map((mm) => (mm.id === patch.moduleId ? { ...mm, content: patch.oldContent } : mm)) }
@@ -123,6 +123,75 @@ describe('PresetManager', () => {
     PSM.applyMinimalPresetPatches();
     const kept = (PSM.getPresets().find((p) => p.id === 'preset_minimal') as unknown as { promptModules: Array<{ id: string; content: string }> }).promptModules;
     expect(kept.find((mm) => mm.id === patch.moduleId)!.content).toBe('我自己的文风要求');
+  });
+
+  // 用户要求「把禁令加上」：把酒馆预设的去欧规范改写成我们自己的《禁令》模块；破折号绝对禁用
+  // （与旧的「不超过三处」冲突时以禁用为准）——三处旧文案都靠补丁同步给老设备。
+  it('禁令模块：破折号绝对禁用 + 具体套路清单；三处旧文案补丁同步（改过则保留）', () => {
+    PSM.initDefaults();
+    const mods = ((PSM.getPresets()[0] as unknown as { promptModules: Array<{ id: string; name: string; content: string; enabled: boolean; order: number }> }).promptModules);
+    const ban = mods.find((m) => m.id === 'min_24_bans')!;
+    expect(ban.name).toBe('禁令·套路与套话');
+    expect(ban.enabled).toBe(true);
+    expect(ban.content).toContain('破折号一个字都不出现');
+    expect(ban.content).toContain('全文各限一次');
+    expect(ban.content).toContain('x 了 x 叠词');
+    expect(ban.content).toContain('「那+量词」');
+    expect(ban.content).toContain('环境过渡三句封顶');
+    expect(ban.content).toContain('等待式结尾');
+    expect(ban.content).toContain('数数式排比');
+    expect(ban.content).not.toContain('字数');   // 不与字数模块抢规则
+    const ids = mods.map((m) => m.id);
+    expect(ids.indexOf('min_24_bans')).toBe(ids.indexOf('min_20_ai_flavor') + 1);   // 紧跟「反 AI 味」
+    expect(ids.indexOf('min_09_pov_1')).toBe(ids.indexOf('min_24_bans') + 1);       // 仍在视角之前
+    // 破折号：连老规则也改了（用户要求冲突时以禁用为准）
+    expect(mods.find((m) => m.id === 'min_04_narrative')!.content).toContain('破折号不出现');
+    expect(mods.find((m) => m.id === 'min_04_narrative')!.content).not.toContain('不超过三处');
+    expect(mods.find((m) => m.id === 'min_20_ai_flavor')!.content).toContain('破折号不出现（见《禁令》）');
+
+    // 老设备：三条旧文案（数值≤3 / 节制使用 / 真正需要时用）→ 补丁换成出厂新版
+    const snapshot = (id: string) => (PSM.getPresets().find((p) => p.id === 'preset_minimal') as unknown as { promptModules: Array<{ id: string; content: string }> }).promptModules.find((m) => m.id === id)!.content;
+    const setContent = (id: string, text: string) => {
+      PSM.savePresets(PSM.getPresets().map((p) => (p.id === 'preset_minimal'
+        ? { ...p, promptModules: (p as unknown as { promptModules: Array<{ id: string; content: string }> }).promptModules.map((m) => (m.id === id ? { ...m, content: text } : m)) }
+        : p)) as never);
+    };
+    const shipped04 = snapshot('min_04_narrative');
+    const shipped20 = snapshot('min_20_ai_flavor');
+    const p04 = MINIMAL_PRESET_PATCHES.find((x) => x.id === 'dash-ban-narrative')!;
+    const p05 = MINIMAL_PRESET_PATCHES.find((x) => x.id === 'dash-ban-style-kei')!;
+    const p20 = MINIMAL_PRESET_PATCHES.find((x) => x.id === 'dash-ban-ai-flavor')!;
+    expect(p04.oldContent).toContain('破折号全文不超过三处');
+    expect(p05.oldContent).toContain('破折号按《叙事规则》节制使用');
+    expect(p20.oldContent).toContain('破折号只在真正需要时用');
+    setContent('min_04_narrative', p04.oldContent);
+    setContent('min_20_ai_flavor', p20.oldContent);
+    sm().remove('minimalPresetPatchApplied');
+    PSM.applyMinimalPresetPatches();
+    expect(snapshot('min_04_narrative')).toBe(shipped04);
+    expect(snapshot('min_20_ai_flavor')).toBe(shipped20);
+    // 用户自己改过 → 保留
+    sm().remove('minimalPresetPatchApplied');
+    setContent('min_20_ai_flavor', '我自己的反 AI 味版本');
+    PSM.applyMinimalPresetPatches();
+    expect(snapshot('min_20_ai_flavor')).toBe('我自己的反 AI 味版本');
+
+    // V3 补装：老设备没有禁令模块时补一次，插在视角之前；删掉后不再加回
+    const strip = () => PSM.savePresets(PSM.getPresets().map((p) => (p.id === 'preset_minimal'
+      ? { ...p, promptModules: (p as unknown as { promptModules: Array<{ id: string }> }).promptModules.filter((m) => m.id !== 'min_24_bans') }
+      : p)) as never);
+    strip();
+    sm().remove('minimalPresetLateModulesV3');
+    PSM.applyMinimalPresetLateModules();
+    const after = (PSM.getPresets().find((p) => p.id === 'preset_minimal') as unknown as { promptModules: Array<{ id: string; order: number }> }).promptModules;
+    expect(after.some((m) => m.id === 'min_24_bans')).toBe(true);
+    const a = after.map((m) => m.id);
+    expect(a.indexOf('min_24_bans')).toBe(a.indexOf('min_20_ai_flavor') + 1);
+    expect(after.map((m) => m.order)).toEqual(after.map((_m, i) => i));
+    strip();
+    PSM.applyMinimalPresetLateModules();
+    const fin = (PSM.getPresets().find((p) => p.id === 'preset_minimal') as unknown as { promptModules: Array<{ id: string }> }).promptModules;
+    expect(fin.some((m) => m.id === 'min_24_bans')).toBe(false);
   });
 
   // 用户 2026-09-25 反馈的三条体验问题 → 三条默认开启的新模块（酒馆预设同款思路：去user中心化/NPC不围主角/防全知）
@@ -207,7 +276,7 @@ describe('PresetManager', () => {
     expect(mod.content).not.toContain('字数');
     const ids = mods.map((m) => m.id);
     expect(ids.indexOf('min_20_ai_flavor')).toBe(ids.indexOf('min_08_style_custom') + 2);   // 中间多了「情绪·不冷静」
-    expect(ids.indexOf('min_09_pov_1')).toBe(ids.indexOf('min_20_ai_flavor') + 1);
+    expect(ids.indexOf('min_09_pov_1')).toBe(ids.indexOf('min_20_ai_flavor') + 2);   // 中间多了「禁令·套路与套话」
   });
 
   // 老设备上 preset_minimal 的模块表是存量数据，源码里新增模块不会自己出现（v1.5.75 首发版踩过）

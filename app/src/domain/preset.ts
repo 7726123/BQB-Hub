@@ -18,7 +18,7 @@ export interface SystemPrompt { id: string; name: string; content: string }
 
 // 内置「轻小说·最小预设」：2026-09 起取代旧「标准预设」（旧预设文本源自第三方预设改写，
 // 随开源合规清理下架；存量用户设备里的副本仍在 localStorage，不受影响）。
-// 模块分组：视角 / 文风 / 字数 / 思维链 每组只启用一个；默认启用 12 个，合计约 4400 字
+// 模块分组：视角 / 文风 / 字数 / 思维链 每组只启用一个；默认启用 13 个，合计约 5100 字
 // （2026-09-25 增补「叙事焦点·去主角中心 / 出场角色·克制 / 情绪·不冷静」三条，用户反馈驱动）。
 // 注意：文本内不出现 <thinking> 字样（原生推理模型会被诱导弹标签）、不出现英文 user
 // （app.ts 会把任意 user 替换成主角名）、不出现 ${...}（预设展开时会剥壳）；含「梳理：」
@@ -73,7 +73,7 @@ const MINIMAL_PRESET_MODULES: Array<{ id: string; name: string; content: string;
 - 不串味：角色的反应服从性格、处境与关系，不为推进剧情让人物做不像他的事。
 - 一次一场戏：一场戏写完整，不在一段里跳跃多个场景。
 - 收尾：以动作、对白或环境收尾，不写总结式、抒情式、顿悟式的升华句。
-- 排版：正文是纯叙事文本，不用标题、列表、加粗、括号补充说明；破折号全文不超过三处，不拿它代替逗号或省略号；对白用「」包裹。`
+- 排版：正文是纯叙事文本，不用标题、列表、加粗、括号补充说明；破折号不出现（要停顿就用逗号、句号或省略号）；对白用「」包裹。`
   },
   {
     id: 'min_21_ensemble', name: '叙事焦点·去主角中心', enabled: true, role: 'system', order: 4,
@@ -114,7 +114,7 @@ const MINIMAL_PRESET_MODULES: Array<{ id: string; name: string; content: string;
 - 情绪落在动作与对白上：不写「她有点生气」，写她做了什么、说了哪句、停了多久才开口。
 - 幽默来自性格与处境的错位，以及叙述者的吐槽腔；不硬塞网络梗，不用流行语。
 - 转场用一两句短句交代（时间、地点、谁先走了），不写大段景物过渡，也不写「另一边」。
-- 省略号是常用的标点（犹豫、拖长音、被打断、无语），但一段最多两处；破折号按《叙事规则》节制使用；心理和动作不放进括号。
+- 省略号是常用的标点（犹豫、拖长音、被打断、无语），但一段最多两处；破折号不出现（见《禁令》）；心理和动作不放进括号。
 - 口语优先：允许不完整句；避免书面腔（此刻、然而、于是乎、不由得、不禁）与四字成语连用。
 - 比喻节制：一场戏最多一处，用身边的事物打比方，不用来解释已经写清楚的事。`
   },
@@ -192,10 +192,43 @@ const MINIMAL_PRESET_MODULES: Array<{ id: string; name: string; content: string;
 
 排版
 - 正文不出现 markdown 标记、列表编号、小标题、emoji、括号补注。
-- 标点不连用（！！、？？），破折号只在真正需要时用。`
+- 标点不连用（！！、？？）；破折号不出现（见《禁令》）。`
   },
   {
-    id: 'min_09_pov_1', name: '视角·第一人称', enabled: true, role: 'system', order: 12,
+    id: 'min_24_bans', name: '禁令·套路与套话', enabled: true, role: 'system', order: 12,
+    content: `# 禁令：套路与套话
+
+下面这些一出现就"机器味"。与《反 AI 味》配合执行。
+
+标点
+- **破折号一个字都不出现**：要停顿就用逗号、句号或省略号。
+
+身体与小动作
+- 一个场景最多一个微动作（撩头发、摸鼻子、舔嘴唇这类）；日常场景的动作不超过三个，三五个字写到位就停。
+- 全文各限一次：攥紧又松开、指节泛白、喉结滚动、眼眶泛水光、嘴角扯出弧度、叹气。
+- 不做解剖式身体描写（肩胛骨、锁骨、脊椎、指节骨…全文最多一处）；不用「表皮」「毛细血管」「心率」这类医学术语。
+
+用词
+- 不写「看了看」「想了想」「顿了顿」这类 x 了 x 叠词，改成单个动词。
+- 「那张」「那件」「那双」「那根」这类「那+量词」直接删掉，写名词本身。
+- 「一下」「一会儿」「一声」「一点」这类「一+量词」，一段最多两次。
+- 不写「再……就……」这种拖延句式（再躺五分钟就起来）。
+- 不用翻译腔结构：「如此……以至于……」「当……的时候」「名为……」「取而代之的是」。
+- 名词前面最多两个修饰语，长定语拆成短句；少用「被」字句。
+- 不写数数式排比（「一股。两股。三股。」）。
+
+句子与对白
+- 一句话不做总结陈词：「这意味着」「他终于明白」「原来如此」「这一刻」这类不写；要表达就写动作和细节。
+- 对白后面不补解释：不写「这句话落下」「话说完」，也不加「是实话。不逞强。」这种自我说明；接动作、沉默或下一句。
+- 不写等待式结尾（「在等你回复」「等着你的回答」），也不写「未完待续」。
+
+环境与转场
+- 环境过渡三句封顶：只抓最核心的一两处，不逐项罗列材质、不堆形容词。
+- 转场只写光线、声音、温度这类物理变化，不写「气氛」「空气」这类抽象词。
+- 环境不做万能开头或结尾：只在时间地点变化、或需要承接时才写；删掉不影响剧情的环境描写不留。`
+  },
+  {
+    id: 'min_09_pov_1', name: '视角·第一人称', enabled: true, role: 'system', order: 13,
     content: `# 视角：第一人称
 
 - 主角用「我」。只写「我」的所见、所闻、所感、所想。
@@ -205,7 +238,7 @@ const MINIMAL_PRESET_MODULES: Array<{ id: string; name: string; content: string;
 - 时间顺序清楚，不闪回、不插叙，除非作者要求。`
   },
   {
-    id: 'min_10_pov_3a', name: '视角·第三人称跟随', enabled: false, role: 'system', order: 13,
+    id: 'min_10_pov_3a', name: '视角·第三人称跟随', enabled: false, role: 'system', order: 14,
     content: `# 视角：第三人称·跟随主角
 
 - 主角用名字或「他」「她」，镜头始终跟着主角，只写主角在场的部分。
@@ -214,7 +247,7 @@ const MINIMAL_PRESET_MODULES: Array<{ id: string; name: string; content: string;
 - 不用「其实」「与此同时」这类旁白切到别处。`
   },
   {
-    id: 'min_11_pov_3b', name: '视角·第三人称多线', enabled: false, role: 'system', order: 14,
+    id: 'min_11_pov_3b', name: '视角·第三人称多线', enabled: false, role: 'system', order: 15,
     content: `# 视角：第三人称·多线
 
 - 可以写任意角色的所见所想，可以在不同场景之间切换。
@@ -223,7 +256,7 @@ const MINIMAL_PRESET_MODULES: Array<{ id: string; name: string; content: string;
 - 信息互相隔离：一个人知道的事，不能凭空出现在另一个人的认知里。`
   },
   {
-    id: 'min_12_pov_2', name: '视角·第二人称', enabled: false, role: 'system', order: 15,
+    id: 'min_12_pov_2', name: '视角·第二人称', enabled: false, role: 'system', order: 16,
     content: `# 视角：第二人称
 
 - 主角用「你」，写「你」的经历和感受。
@@ -232,7 +265,7 @@ const MINIMAL_PRESET_MODULES: Array<{ id: string; name: string; content: string;
 - 少用连续的「你」字开头，可以适当省略主语。`
   },
   {
-    id: 'min_13_ctrl_strict', name: '主控权·严格', enabled: false, role: 'system', order: 16,
+    id: 'min_13_ctrl_strict', name: '主控权·严格', enabled: false, role: 'system', order: 17,
     content: `# 主控权：严格
 
 - 主角的一切言行由作者写。你只写其他角色与环境。
@@ -240,7 +273,7 @@ const MINIMAL_PRESET_MODULES: Array<{ id: string; name: string; content: string;
 - 每段结尾都把决定权交回作者。`
   },
   {
-    id: 'min_14_ctrl_free', name: '主控权·放开', enabled: false, role: 'system', order: 17,
+    id: 'min_14_ctrl_free', name: '主控权·放开', enabled: false, role: 'system', order: 18,
     content: `# 主控权：放开
 
 - 主角可以主动行动、说话、做决定，你可以推动剧情、制造转折。
@@ -248,28 +281,28 @@ const MINIMAL_PRESET_MODULES: Array<{ id: string; name: string; content: string;
 - 主角做重大决定时，写清楚他的理由，让作者能接手。`
   },
   {
-    id: 'min_15_len_1000', name: '字数·1000', enabled: false, role: 'system', order: 18,
+    id: 'min_15_len_1000', name: '字数·1000', enabled: false, role: 'system', order: 19,
     content: `# 字数
 
 - 本次输出约 1000 字。
 - 写不满时不要靠复述、排比、废话凑数，宁可把情节写实。`
   },
   {
-    id: 'min_16_len_1500', name: '字数·1500', enabled: true, role: 'system', order: 19,
+    id: 'min_16_len_1500', name: '字数·1500', enabled: true, role: 'system', order: 20,
     content: `# 字数
 
 - 本次输出约 1500 字。
 - 写成一个完整的场景：有推进、有细节、有收尾，不拖沓也不仓促。`
   },
   {
-    id: 'min_17_len_2500', name: '字数·2500', enabled: false, role: 'system', order: 20,
+    id: 'min_17_len_2500', name: '字数·2500', enabled: false, role: 'system', order: 21,
     content: `# 字数
 
 - 本次输出约 2500 字。
 - 篇幅够长，要有层次的推进：起、承、转各写足，避免中段注水。`
   },
   {
-    id: 'min_18_cot_full', name: '思维链·标准', enabled: true, role: 'system', order: 21,
+    id: 'min_18_cot_full', name: '思维链·标准', enabled: true, role: 'system', order: 22,
     content: `# 动笔前的梳理
 
 梳理：动笔前把下面六步走完，每步只写结论。思考写成要点、短语、箭头，不写成句子。
@@ -311,7 +344,7 @@ const MINIMAL_PRESET_MODULES: Array<{ id: string; name: string; content: string;
 梳理结束后立刻开始写正文，正文只写这一次。正文里不留任何梳理痕迹：不出现步骤名，不出现「一、二、三」编号，不出现对剧情的分析或自查。正文从第一个字起就是小说。`
   },
   {
-    id: 'min_19_cot_short', name: '思维链·简版', enabled: false, role: 'system', order: 22,
+    id: 'min_19_cot_short', name: '思维链·简版', enabled: false, role: 'system', order: 23,
     content: `# 动笔前的梳理（简版）
 
 梳理：三步走完，每步一两句话就够。只写要点，不要在思考里写正文或对白。
@@ -377,6 +410,76 @@ const MINIMAL_PRESET_PATCHES: Array<{ id: string; moduleId: string; oldContent: 
 然后直接写正文，正文里不留任何梳理痕迹。`
   },
   {
+    id: 'dash-ban-narrative', moduleId: 'min_04_narrative',
+    // 用户要求：破折号绝对禁用（与旧的「不超过三处」冲突时，以禁用为准）
+    oldContent: `# 叙事规则
+
+- 事实一致：只依据世界书设定与已写正文中的事实写作，前文没发生的事不当作已经发生。
+- 信息差：每个角色只知道他亲身经历过、亲耳听到或能合理推断的事，不能凭空全知。
+- 不重复：不复述前文写过的场景与对白，不把上一段换个说法再写一遍。
+- 不越界：作者写出来的内容就是事实，不推翻、不改写、不解释。
+- 不串味：角色的反应服从性格、处境与关系，不为推进剧情让人物做不像他的事。
+- 一次一场戏：一场戏写完整，不在一段里跳跃多个场景。
+- 收尾：以动作、对白或环境收尾，不写总结式、抒情式、顿悟式的升华句。
+- 排版：正文是纯叙事文本，不用标题、列表、加粗、括号补充说明；破折号全文不超过三处，不拿它代替逗号或省略号；对白用「」包裹。`
+  },
+  {
+    id: 'dash-ban-style-kei', moduleId: 'min_05_style_kei',
+    // 用户要求：破折号绝对禁用（与旧的「不超过三处」冲突时，以禁用为准）
+    oldContent: `# 文风：轻小说·日常（台版腔）
+
+- 句子短、段落短：多数句子 10~25 字，一段一到三句；说完了就断行，不堆长句，不写大段景物。
+- 对白挑大梁：一场戏里对白占一半左右，叙述只做必要的连接（谁做了什么、声音从哪来、表情怎么变）。
+- 对白独立成行、用「」包住；说话人靠称呼、语气与动作交代（「……你先别问。」她把两手插回兜里。），不要每句都写「○○说道」。
+- 心里话直接写进叙述：短、口语、可以自嘲或吐槽（「我才没有那种东西。」）；不加引号、不解释、不总结。
+- 每个角色有自己的声音：口头禅、称呼、敬语层级、句尾习惯（……／啊／吧／呢）各不相同；同一个意思，两个人说出来的措辞必须不一样。
+- 写具体的东西：光线、声音、气味、温度、手上的小动作、房间里摆着什么；不写「气氛有些尴尬」「空气仿佛凝固」这类概括。
+- 情绪落在动作与对白上：不写「她有点生气」，写她做了什么、说了哪句、停了多久才开口。
+- 幽默来自性格与处境的错位，以及叙述者的吐槽腔；不硬塞网络梗，不用流行语。
+- 转场用一两句短句交代（时间、地点、谁先走了），不写大段景物过渡，也不写「另一边」。
+- 省略号是常用的标点（犹豫、拖长音、被打断、无语），但一段最多两处；破折号按《叙事规则》节制使用；心理和动作不放进括号。
+- 口语优先：允许不完整句；避免书面腔（此刻、然而、于是乎、不由得、不禁）与四字成语连用。
+- 比喻节制：一场戏最多一处，用身边的事物打比方，不用来解释已经写清楚的事。`
+  },
+  {
+    id: 'dash-ban-ai-flavor', moduleId: 'min_20_ai_flavor',
+    // 用户要求：破折号绝对禁用（与旧的「不超过三处」冲突时，以禁用为准）
+    oldContent: `# 反 AI 味
+
+下面几条针对最容易暴露「机器写的」的收尾、句式、套话，以及过快的「看穿」。动笔时照它写，成稿后照它自查一遍。
+
+收尾
+- 一段戏结束时停在动作、对白或一个具体画面上。
+- 章末不总结、不升华、不点题、不预告后文：「从今往后」「或许，这就是」「然而她不知道的是」这类句子不写。
+- 可以停在说了一半的话、做了一半的动作上，把往下读的劲留给读者。
+
+句式
+- 不写对称对比的模板句：「不是……而是……」「没有……只有……」「越……越……」。
+- 不写三连排比：三个「的」结构、三个同主语短句并排出现。
+- 不给全篇划重点：「这一切」「这就是」「原来如此」不写。
+- 不写自问自答，也不写「究竟是什么」「等待着她的又是什么」这种设问式预告。
+
+心理与情绪
+- 情绪落在身体和动作上（手在做什么、声音变成什么样），不写「很愤怒」「很难过」这类判断。
+- 不替角色下结论：删掉「他明白」「她意识到」「心里想着」，让读者自己看出来。
+- 少用磨平了的生理套话：心头一紧、倒吸一口凉气、瞳孔一缩、嘴角勾起。
+
+看穿与身体反应
+- 身体反应要有来由：脸红、心跳、移开视线先给具体诱因（刚跑过、天冷、喝过酒、被当面点破），常态下不写；同一种反应一章里最多一次。
+- 身体反应不是证据：谁脸红了不等于心思被读出来，对方只能得到「可能」，得不到「就是」。
+- 看透要有代价：人物可以猜、可以试探，但会猜错、会被否认、会被岔开话题。
+- 一被说破就承认、就默认，是最省事的和解写法，不写；当事人可以嘴硬、装傻，或者自己都没意识到。
+
+对话与过渡
+- 语气写进台词里，少用「淡淡地说」「沉声道」；同一段里不反复出现「说道」「问道」。
+- 场景切换直接空行，或停在动作上，不写「另一边」「镜头一转」。
+- 顺承用动作接，不靠「然后」「于是」「紧接着」串成流水账。
+
+排版
+- 正文不出现 markdown 标记、列表编号、小标题、emoji、括号补注。
+- 标点不连用（！！、？？），破折号只在真正需要时用。`
+  },
+  {
     id: 'style-kei-v2', moduleId: 'min_05_style_kei',
     // 用户要求：预设文风太弱 → 按桌面上两部台版轻小说（败犬女主 / 路人女主）的真实文本重写文风模块。
     // 旧文案逐字节如下：用户改过就不动（尊重编辑），只有仍是出厂版的设备才会被换成新版。
@@ -408,6 +511,11 @@ const MINIMAL_PRESET_LATE_MODULES_V2: Array<{ id: string; before: string[] }> = 
   { id: 'min_21_ensemble', before: ['min_05_style_kei', 'min_06_style_hot', 'min_07_style_mystery', 'min_08_style_custom'] },
   { id: 'min_22_cast', before: ['min_05_style_kei', 'min_06_style_hot', 'min_07_style_mystery', 'min_08_style_custom'] },
   { id: 'min_23_emotion', before: ['min_20_ai_flavor', 'min_09_pov_1', 'min_10_pov_3a', 'min_11_pov_3b', 'min_12_pov_2'] }
+];
+
+// V3 批次（2026-09-25 第二批）：禁令模块（用户要求「把禁令加上」）。同样只补一次、插到视角之前。
+const MINIMAL_PRESET_LATE_MODULES_V3: Array<{ id: string; before: string[] }> = [
+  { id: 'min_24_bans', before: ['min_09_pov_1', 'min_10_pov_3a', 'min_11_pov_3b', 'min_12_pov_2'] }
 ];
 
 // 一次性强制覆盖清单：常规路径（applyMinimalPresetPatches）是逐字比对，用户改过就不动——
@@ -612,6 +720,7 @@ export const PresetManager = {
   applyMinimalPresetLateModules(): void {
     this._installLateModules('minimalPresetLateModulesV1', MINIMAL_PRESET_LATE_MODULES);
     this._installLateModules('minimalPresetLateModulesV2', MINIMAL_PRESET_LATE_MODULES_V2);
+    this._installLateModules('minimalPresetLateModulesV3', MINIMAL_PRESET_LATE_MODULES_V3);
   },
 
   // 通用补装：flagKey 已置位就跳过（每批只处理一次；用户删过的模块不加回）
