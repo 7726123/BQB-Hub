@@ -98,7 +98,8 @@ describe('PresetManager', () => {
     expect(mod.content).toContain('每个角色有自己的声音');
     expect(mod.content).toContain('句尾习惯');
     expect(mod.content).toContain('不写「气氛有些尴尬」');
-    expect(mod.content).toContain('省略号与破折号');
+    expect(mod.content).toContain('省略号是常用的标点');
+    expect(mod.content).toContain('破折号按《叙事规则》节制使用');   // 不与 min_04 的「破折号≤3 处」打架
     expect(mod.content).toContain('避免书面腔');
     expect(mod.content).not.toContain('视角');   // 视角只由 min_09..min_12 决定
     expect(mod.content).not.toContain('字数');
