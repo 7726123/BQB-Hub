@@ -13,8 +13,8 @@
 //      - 整段没有引号的角色气泡（模型忘写引号）→ 逐句分色，台词不再被当成淡色；
 //      - 没写说话人前缀的整行 → 另起一条旁白，不再粘进上一个角色的气泡尾部。
 //   ⑤ 引号里的内容不一定是台词（2026-09-25 用户："很多时候引号内部并不一定是对话内容"）：
-//      书名/歌名/标语/被强调的词/黑板上写的字也会用「」，它们属于旁白。判定见 _demoteQuotedTerms，
-//      只改分色不改字（丢字不变量不受影响）。
+//      书名/歌名/标语/被强调的词/黑板上写的字，以及**被叙述包着的引述**（`她「哦」了一声`）都属于旁白。
+//      判定见 _demoteQuotedTerms，只改分色不改字（丢字不变量不受影响）。
 //   ⑥ 说话与非说话分段（2026-09-25 用户："说话的内容和非说话的内容要分段，不要直接连着"）：
 //      相邻的台词块与非语言块之间在渲染上另起一行（para 标记）；换行前把下一块开头的标点
 //      收进上一块，新行不以标点开头（1.5.97.36 用户报过"标点成为一行的第一个"）。
@@ -219,13 +219,26 @@ const SPEECH_MARK = /[我你您咱]|[？！…]|[吧吗呢啊哦呀嘛](?:[。�
 // 那是说话（`你把信给我。` `别把这事说出去。`）。把台词判成淡色是用户报过的更严重的错，宁可漏判。
 const ACT_GUARD = /[你您咱]|[？！…～]|[吧吗呢啊哦呀嘛啦嘞]|别|请|喂|嗯|谢谢|对不[起住]/;
 const ACT_POSSESS = /把[^，。！？…]{1,14}/;
-const ACT_BODY = /(?:抬|低|回|点|摇|转)(?:起|下|过|了|着)?(?:了|一下)?(?:头|身|脸|眼)|伸出手|伸手|抬手|收回|掏出|塞回|塞进|捂住?|按住|拍|敲|踢|踩|拎|抱起?|搂|牵|背起|戴上|脱下|解开|系上|打开|关上|收起|翻开|翻到|合上|放下|拿起|抓起|捏住|推开|拉开|走进|走出|回到|停住|愣住|皱眉|叹气|抬眼|垂下|看向|盯着|瞥/;
+const ACT_BODY = /(?:抬|低|回|点|摇|转)(?:起|下|过|了|着)?(?:了|一下)?(?:头|身|脸|眼)|伸出手|伸手|抬手|收回|掏出|塞回|塞进|捂住?|按住|拍|敲|踢|踩|拎|抱起?|搂|牵|背起|戴上|脱下|解开|系上|打开|关上|收起|翻开|翻到|合上|放下|拿起|抓起|捏住|推开|拉开|走进|走出|回到|停住|愣住|皱眉|叹气|抬眼|垂下|看向|盯着|瞥|(?:看|扫|望|瞄|瞟)了?(?:一眼|一下|两眼|几眼)/;
+// "指示代词主语 + 状态"的叙述句（`那一眼没什么表情。` `这声音很轻。`）——真机反馈里这类被当成了台词；
+// 要求同时出现状态标记（没什么/没有/很/…），比单看"那/这"开头安全（`那我先走了。` 仍是说话）。
+const NARR_DEMON = /^(?:那|这)(?:一|个|种|副|张|声|下|眼|脸|阵|丝|抹|道|片|只|双|口|句|次|回|条|把|点|番)[^，。！？…]{0,12}(?:没什么|没有|不是|不像|很|挺|太|有点|显得|透着|带着)/;
+// 程度补语句（`答得太快。` `走得比谁都快。`）是叙述，不是说话
+const NARR_DEGREE = /^[^，。！？…]{1,6}[得地](?:太|很|挺|有点|比|像|更|极|非常|特别)/;
+
+// 拟声/短音 + "了一声"（`哦了一声。` `应了一声。`）必定是叙述（谁发出了什么声音），不是台词
+const NARR_UTTER = /^[^，。！？…]{0,3}(?:了一声)/;
 
 function looksLikeSpeech(sentence: string): boolean {
   const s = sentence.trim();
   if (!s) return false;
   if (NARR_HEAD.test(s)) return false;
-  if (!ACT_GUARD.test(s) && (ACT_POSSESS.test(s) || ACT_BODY.test(s))) return false;
+  if (NARR_UTTER.test(s)) return false;
+  // 「她哦了一声」里的「哦」是拟声不是语气词：判"有没有口语标记"之前先把它剔掉，
+  // 否则 `我点头。她哦了一声。` 会被 哦 挡住叙事判定、整句染成台词
+  const gc = s.replace(/[哦嗯啊诶欸噢唔喔]{1,2}了一声/g, '');
+  if (!ACT_GUARD.test(gc) && (NARR_DEMON.test(s) || NARR_DEGREE.test(s))) return false;
+  if (!ACT_GUARD.test(gc) && (ACT_POSSESS.test(s) || ACT_BODY.test(s))) return false;
   if (!SPEECH_MARK.test(s) && s.length >= 18) return false;   // 没有口语标记的长句 → 当叙述
   return true;
 }
@@ -250,7 +263,17 @@ function splitSentences(text: string): Array<{ text: string; nlBefore?: boolean 
 
 function speechifyAct(text: string, nlBefore?: boolean): BubbleBlock[] {
   const out: BubbleBlock[] = [];
-  const parts = splitSentences(text);
+  // 先接"折行"：换行后上一句还没有句末标点（`我点头。她\n哦\n了一声。`），说明模型只是把一句
+  // 折成了几行——碎片（≤3 字且没有句末标点）也一并接回，否则「哦」会被当成一句短台词染深色
+  // （用户 2026-09-25 反馈：`哦` 是别人说的话被叙述引述，却被深色 + 分段）。
+  const parts: Array<{ text: string; nlBefore?: boolean }> = [];
+  splitSentences(text).forEach(p => {
+    const prev = parts[parts.length - 1];
+    const prevEnds = prev ? /[。！？…；!?;]$/.test(prev.text) : false;
+    const frag = !/[。！？…；!?;]$/.test(p.text) && Array.from(p.text).length <= 3;
+    if (prev && (!prevEnds || frag)) prev.text += p.text;
+    else parts.push({ text: p.text, nlBefore: p.nlBefore });
+  });
   parts.forEach((p, i) => {
     const type: 'say' | 'act' = looksLikeSpeech(p.text) ? 'say' : 'act';
     const last = out[out.length - 1];
@@ -283,17 +306,24 @@ const NOT_SAY_DAO = /(?:知道|味道|街道|难道|一道|大道|走道|通道|
 // "书写/命名"类词收尾（后面跟的引号是引用：标牌上的字、书名、叫法）
 const WRITE_LEAD = /(?:写着|写下|写了|写道|写在|刻着|印着|贴着|挂着|标着|画着|绣着|记着|登着|题为|叫做|名叫|称为|俗称|字样)$/;
 
-function _isQuotedTerm(text: string, leadAct: string, hasActAfter: boolean): boolean {
+function _isQuotedTerm(text: string, leadAct: string, hasActAfter: boolean, embedded: boolean, followAct: string): boolean {
   const t = String(text || '').replace(/\s+/g, '');
   if (!t || Array.from(t).length > TERM_MAX_CP) return false;
   if (TERM_PUNCT.test(t)) return false;
-  if (TERM_PERSON.test(t) || TERM_PARTICLE.test(t) || TERM_INTERJECTION.test(t)) return false;
   const lead = String(leadAct || '').replace(/\s+/g, '');
   if (lead) {
     if (WRITE_LEAD.test(lead)) return true;                              // 标牌/书名/叫法 → 引用
     if (/[：:]$/.test(lead)) return false;                               // 冒号引导 → 台词
     if (SAY_LEAD.test(lead) && !NOT_SAY_DAO.test(lead)) return false;    // 「她说「等一下」」→ 台词
   }
+  // 引号后面紧跟"了一声"（模型把 `她「哦」了一声` 折成几行写）——被引述的一声，不是台词
+  if (/^[，,]?\s*了一声/.test(String(followAct || ''))) return true;
+  // 嵌在叙述句子中间（同一行前后都接着叙述）→ 引述：`我点头。她「哦」了一声。` `他回了句「知道」，挂了电话。`
+  // 这一条**不看人称与语气词**——「哦」「嗯」「我先走了」这类被叙述包着的引述也该是淡色
+  // （用户 2026-09-25 反馈：`她「哦」了一声` 的「哦」被当成台词深色 + 分段了）。
+  // 例外：引号内容以句中标点收尾（`「我先走了，」她挥了挥手。`——那是模型在写真对白）仍按台词。
+  if (embedded) return !/[，、；：,;:]$/.test(t);
+  if (TERM_PERSON.test(t) || TERM_PARTICLE.test(t) || TERM_INTERJECTION.test(t)) return false;
   return !!lead && hasActAfter;                                          // 嵌在叙述句子中间 → 引用
 }
 
@@ -309,7 +339,8 @@ function _demoteQuotedTerms(blocks: ScanBlock[]): ScanBlock[] {
     const next = blocks[i + 1];
     const leadSameLine = !!prev && !b.nlBefore && prev.text.indexOf('\n') < 0;
     const nextSameLine = !!next && !next.nlBefore && next.text.indexOf('\n') < 0;
-    if (_isQuotedTerm(b.text, leadSameLine && prev ? prev.text : '', nextSameLine)) {
+    const embedded = leadSameLine && nextSameLine;
+    if (_isQuotedTerm(b.text, leadSameLine && prev ? prev.text : '', nextSameLine, embedded, next ? next.text : '')) {
       out.push({ type: 'act', text: b.text, nlBefore: b.nlBefore, fromBare: b.fromBare });
     } else out.push(b);
   }
@@ -382,6 +413,14 @@ function _splitToNarration(cur: { speaker: string | null; text: string }, line: 
   if (!t) return false;
   if (/^(?:他|她|它|祂|他们|她们|它们|祂们)/.test(t)) return false;        // 紧接的「她/他…」多半是这个角色自己的动作
   if (cur.speaker && t.indexOf(cur.speaker) === 0) return false;         // 直接写角色名开头
+  // 上一句还没写完（结尾不是句末标点）→ 这是折行，不是新的一条旁白：
+  // 否则 `我点头。她` + `哦` + `了一声。` 会被拆成两半（用户 2026-09-25 反馈的"分段"）。
+  // 收尾引号只在它前面已经有句末标点时才算句末（`「你来了。」` 算，`「哦」` 不算——那是引述的一声）。
+  const tail = cur.text.replace(/\s+$/, '');
+  const endsSentence = /[。！？…；!?;]$/.test(tail) || /[。！？…；!?;][」』”"]$/.test(tail);
+  if (!endsSentence) return false;
+  // 极短且没有句末标点的行同样是碎片（上一句已经收尾时也并回去）
+  if (Array.from(t).length <= 3 && !/[。！？…；!?;]$/.test(t)) return false;
   if (/^[（(][\s\S]*[）)]$/.test(t)) return false;                       // （动作）
   if (/^\*[^*][\s\S]*\*$/.test(t)) return false;                        // *动作*
   return true;

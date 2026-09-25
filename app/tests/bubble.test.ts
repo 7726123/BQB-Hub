@@ -220,6 +220,30 @@ describe('漂移兜底：台词分色与旁白另起（真机反馈）', () => {
     expect(b[0].blocks[0].text.replace(/\n/g, '')).toBe('走廊里没人。灯还在响。');
   });
 
+  // 用户 2026-09-25 第二天反馈：「那一眼没什么表情。」是叙述却被判成台词（深色）。
+  // 三类"短句但明确是叙述"的形态补进 drift 判定：指示代词主语 + 状态、程度补语、看类动作。
+  it('短叙述句不再被当成台词：那一眼没什么表情。/ 答得太快。/ 我往门口看了一眼。', () => {
+    expect(parseBubbles('林叶 她这才抬了下眼睛，隔着镜片看了我一下。那一眼没什么表情。买什么。', AI)[0].blocks.map(x => x.type))
+      .toEqual(['act', 'say']);                                     // 叙述淡色；「买什么。」仍是台词
+    expect(parseBubbles('林叶 答得太快。', AI)[0].blocks.map(x => x.type)).toEqual(['act']);
+    expect(parseBubbles('林叶 我往门口看了一眼。', AI)[0].blocks.map(x => x.type)).toEqual(['act']);
+    // 有第二人称/疑问时仍按台词（宁可漏判）
+    expect(parseBubbles('林叶 那一眼没什么表情？', AI)[0].blocks.map(x => x.type)).toEqual(['say']);
+    expect(parseBubbles('林叶 那我先走了。', AI)[0].blocks.map(x => x.type)).toEqual(['say']);
+  });
+
+  // 用户 2026-09-25 第二天反馈的原始形态：模型把 `我点头。她「哦」了一声。` 折成几行写
+  // （`我点头。她` / `哦` / `了一声。`），碎片被逐行当成了短台词 → 深色 + 分段。
+  it('折行的碎片接回一句：我点头。她 / 哦 / 了一声。（不分段、不深色）', () => {
+    expect(parseBubbles('林叶：我点头。她\n哦\n了一声。', AI)[0].blocks)
+      .toEqual([{ type: 'act', text: '我点头。她哦了一声。' }]);
+    // 带引号的折行形态也归旁白（引号后面紧跟「了一声」= 被引述的一声）
+    const b = parseBubbles('林叶：我点头。她\n「哦」\n了一声。', AI);
+    expect(b.map(x => x.blocks.map(y => y.type))).toEqual([['act']]);
+    // 模型自己写的换行保留（那是它的分段），但不丢字、也不再是深色
+    expect(b[0].blocks.map(x => x.text).join('').replace(/\n/g, '')).toBe('我点头。她哦了一声。');
+  });
+
   it('第一人称的身体动作/操作是叙述（我把信封翻过来。/ 我抬头。）', () => {
     expect(parseBubbles('林叶 我把信封翻过来。背面空的，封口用胶水粘的，边上有点毛。', AI)[0].blocks.map(x => x.type)).toEqual(['act']);
     expect(parseBubbles('林叶 我抬头。', AI)[0].blocks.map(x => x.type)).toEqual(['act']);
@@ -263,6 +287,30 @@ describe('引号里的非对话内容归旁白（真机反馈）', () => {
       { type: 'say', text: '你先别问。' },
       { type: 'act', text: '她把手插回口袋。', nlBefore: true },
     ]);
+  });
+
+  // 用户 2026-09-25 第二天反馈：「我点头。她「哦」了一声。」里的「哦」是**别人说的话被叙述引述**，
+  // 不是当前角色在说话，却被判成台词 → 深色 + 被拆成三段。判定改为：嵌在叙述句子中间（同一行前后
+  // 都接着叙述）的引号一律算引述（淡色、不拆行），不再看人称与语气词。
+  it('叙述里引述的一句话（她「哦」了一声）是旁白：不分段也不深色', () => {
+    expect(parseBubbles('林叶：我点头。她「哦」了一声。', AI)[0].blocks)
+      .toEqual([{ type: 'act', text: '我点头。她哦了一声。' }]);
+    // 同一句不写引号（drift）时结果一致
+    expect(parseBubbles('林叶：我点头。她哦了一声。', AI)[0].blocks)
+      .toEqual([{ type: 'act', text: '我点头。她哦了一声。' }]);
+  });
+
+  it('引述里带第一人称/语气词也算引述（她说了句「我先走了」就转身了）', () => {
+    expect(parseBubbles('林叶：我把信塞回去，她说了句「我先走了」就转身了。', AI)[0].blocks.map(x => x.type)).toEqual(['act']);
+  });
+
+  it('但真对白不降级：引号以句中标点收尾（「我先走了，」她挥了挥手）', () => {
+    const b = parseBubbles('林叶：她把伞收好，「我先走了，」她挥了挥手。', AI);
+    expect(b[0].blocks.map(x => x.type)).toEqual(['act', 'say', 'act']);
+    expect(b[0].blocks[1].text).toBe('我先走了，');
+    // 冒号/说类动词引导的照旧是台词
+    expect(parseBubbles('白：她压低声音：「别出声。」', AI)[0].blocks.map(x => x.type)).toEqual(['act', 'say']);
+    expect(parseBubbles('林薇：她说「等一下」就跑了。', AI)[0].blocks.map(x => x.type)).toEqual(['act', 'say', 'act']);
   });
 
   it('旁白（白）气泡里不出现台词块——真机两份 fixture 全量核对', () => {
