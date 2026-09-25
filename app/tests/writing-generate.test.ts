@@ -444,3 +444,93 @@ describe('场景状态分析与变量自动更新已删除', () => {
     expect(all).not.toContain('旧校舍');
   });
 });
+
+// 2026-09-26：预设的「尾部模块」（role='user'）必须落在**最后一条用户消息的最末尾**。
+// 位置是软件负责的那一半：同一段思考条款写在 system 里 → 思考中位约 3689 字、常在思考里预演正文；
+// 放在用户消息末尾 → 中位约 600 字、正文字数不变甚至更长（实测见 preset.ts 里两条模块的注释）。
+describe('尾部模块注入：思考要求落在最后一条用户消息末尾', () => {
+  it('tailText 的文本追加在【指令】之后（消息最末尾），且不进 system 提示词；参数按模式与思考强度传', async () => {
+    const calls: any[] = [];
+    G.APIHandler = {
+      _apiCalls: [], abort: () => {},
+      fetchCompletions: vi.fn(async (msgs: any, _onChunk: any, onDone: any) => { calls.push(msgs); onDone('', false, ''); }),
+    };
+    const seen: any = {};
+    G.PresetManager = tolerant({
+      getActiveAPIConfig: () => ({ apiKey: 'k', model: 'deepseek-v3', endpoint: 'http://x/v1', temperature: 0.9 }),
+      getCurrentPreset: () => ({
+        id: 'preset_minimal', name: '轻小说·最小预设', prompts: [], createdAt: 0,
+        promptModules: MINIMAL_PRESET_MODULES.map((m) => ({ ...m })),
+      }),
+      getActiveSystemPrompt: () => '',
+      tailText: (mode: string, opts: any) => { seen.mode = mode; seen.opts = opts; return '【思考要求·测试】\n一、现状 → 测试。'; },
+    });
+    App.thinkingLevel = () => 'high';
+    App.getProtagonist = () => ({ name: '夏洛' });
+    App.isGenerating = false;
+
+    await App.generate('autoContinue');
+
+    const user = (calls[0] || []).filter((m: any) => m && m.role === 'user').pop();
+    const content = String((user && user.content) || '');
+    expect(content.endsWith('【思考要求·测试】\n一、现状 → 测试。')).toBe(true);   // ← 位置：最末尾
+    expect(content.indexOf('【指令】')).toBeLessThan(content.indexOf('【思考要求·测试】'));
+    expect(seen.mode).toBe('novel');
+    expect(seen.opts.thinkingOff).toBe(false);
+    expect(seen.opts.nativeReasoning).toBe(true);      // deepseek-v3 → 原生推理通道
+    const sysText = (calls[0] || []).filter((m: any) => m && m.role === 'system').map((m: any) => String(m.content)).join('\n');
+    expect(sysText).not.toContain('【思考要求·测试】');
+  });
+
+  it('思考强度 off：tailText 拿到的就是 thinkingOff=true（条款本身由它按规则跳过）', async () => {
+    const calls: any[] = [];
+    G.APIHandler = {
+      _apiCalls: [], abort: () => {},
+      fetchCompletions: vi.fn(async (msgs: any, _onChunk: any, onDone: any) => { calls.push(msgs); onDone('', false, ''); }),
+    };
+    const seen: any = {};
+    G.PresetManager = tolerant({
+      getActiveAPIConfig: () => ({ apiKey: 'k', model: 'deepseek-v3', endpoint: 'http://x/v1' }),
+      getCurrentPreset: () => null,
+      getActiveSystemPrompt: () => 'x',
+      tailText: (_mode: string, opts: any) => { seen.opts = opts; return ''; },
+    });
+    App.thinkingLevel = () => 'off';
+    App.isGenerating = false;
+    await App.generate('autoContinue');
+    expect(seen.opts.thinkingOff).toBe(true);
+    const user = (calls[0] || []).filter((m: any) => m && m.role === 'user').pop();
+    expect(String((user && user.content) || '').indexOf('【思考要求') ).toBe(-1);
+  });
+
+  it('不桩 tailText：真实 PresetManager + 内置预设 → 思考要求端到端进请求', async () => {
+    const mem = new Map<string, string>();
+    G.StorageManager = {
+      get: (k: string, d?: any) => (mem.has(k) ? JSON.parse(mem.get(k)!) : d),
+      set: (k: string, v: any) => { mem.set(k, JSON.stringify(v)); },
+      remove: (k: string) => { mem.delete(k); },
+    };
+    const realPM = (await import('../src/domain/preset')).PresetManager;
+    G.PresetManager = realPM;
+    realPM.initDefaults();
+    mem.set('apiConfig', JSON.stringify({ apiKey: 'k', model: 'deepseek-v3', endpoint: 'http://x/v1' }));
+    const calls: any[] = [];
+    G.APIHandler = {
+      _apiCalls: [], abort: () => {},
+      fetchCompletions: vi.fn(async (msgs: any, _onChunk: any, onDone: any) => { calls.push(msgs); onDone('', false, ''); }),
+    };
+    App.thinkingLevel = () => 'medium';
+    App.getProtagonist = () => ({ name: '夏洛' });
+    App.isGenerating = false;
+
+    await App.generate('autoContinue');
+
+    const user = (calls[0] || []).filter((m: any) => m && m.role === 'user').pop();
+    expect(String(user.content)).toContain('先看再写');            // 内置思考要求（续写版）
+    expect(String(user.content)).toContain('绝对禁止在思考里写正文草稿');
+    expect(String(user.content)).not.toContain('开始演');          // 演出版那条不该出现在续写请求里
+    const sysText = (calls[0] || []).filter((m: any) => m && m.role === 'system').map((m: any) => String(m.content)).join('\n');
+    expect(sysText).not.toContain('先看再写');                     // 尾部模块不进 system
+    expect(sysText).toContain('思考里禁止写正文');                  // system 里的详细规范还在
+  });
+});

@@ -18,13 +18,14 @@ export interface SystemPrompt { id: string; name: string; content: string }
 
 // 内置「轻小说·最小预设」：2026-09 起取代旧「标准预设」（旧预设文本源自第三方预设改写，
 // 随开源合规清理下架；存量用户设备里的副本仍在 localStorage，不受影响）。
-// 模块分组：视角 / 文风 / 字数 / 思维链 每组只启用一个；默认启用 13 个，合计约 5100 字
+// 模块分组：视角 / 文风 / 字数 / 思维链 每组只启用一个；默认启用 13 个系统模块（合计约 5100 字）
+// + 2 个「思考要求」尾部模块（role='user'，不进系统提示词、追加到用户消息末尾；见下方注释）。
 // （2026-09-25 增补「叙事焦点·去主角中心 / 出场角色·克制 / 情绪·不冷静」三条，用户反馈驱动）。
 // 注意：文本内不出现 <thinking> 字样（原生推理模型会被诱导弹标签）、不出现英文 user
 // （app.ts 会把任意 user 替换成主角名）、不出现 ${...}（预设展开时会剥壳）；含「梳理：」
 // 以触发 app.ts 的「预设要求先梳理」判定，无原生推理的模型才会拿到 <thinking> 硬协议。
 const MINIMAL_PRESET_NAME = '轻小说·最小预设';
-const MINIMAL_PRESET_MODULES: Array<{ id: string; name: string; content: string; enabled: boolean; role: string; order: number }> = [
+const MINIMAL_PRESET_MODULES: Array<{ id: string; name: string; content: string; enabled: boolean; role: string; order: number; mode?: string; slot?: string }> = [
   {
     id: 'min_01_persona', name: '人设·助手', enabled: true, role: 'system', order: 0,
     content: `# 你的身份
@@ -354,8 +355,130 @@ const MINIMAL_PRESET_MODULES: Array<{ id: string; name: string; content: string;
 三、这一段的最后一个画面是什么（只写要点，不要写出那句话）。
 
 然后直接写正文（正文只写一次），正文里不留任何梳理痕迹。`
+  },
+  // ---- 尾部模块（role='user'）：不进系统提示词，追加到最后一条用户消息的末尾（近端强调位）----
+  // 2026-09-26 实测（commandcode + deepseek-v4.1-flash，同一上下文各 2~7 次）：
+  //   思考纪律只写在 system 里 → 思考中位约 3689 字，且常在思考里预演正文（最长一段与正文逐字相同 482 字）；
+  //   同一段话挪到「最后一条用户消息」→ 思考中位约 600 字，草稿残留 ≤6 字，正文字数不变甚至更长。
+  // 位置是软件负责的部分（预设模块过去只能进 system，作者没法控制位置），文案是预设负责的部分——
+  // 这两条就是出厂文案，用户可改、可关、可删；任何预设只要自带一条启用的「思考要求」尾部模块，
+  // 软件就不再插自己的兜底（见 PresetManager.tailText）。
+  {
+    id: 'min_25_think_tail_novel', name: '思考要求·续写（尾部）', enabled: true, role: 'user', slot: 'think', mode: 'novel', order: 24,
+    content: `【思考要求（硬性要求，逐条执行）】
+- 思考强度：低。全程不超过 1500 字，写完立刻停。
+- 思考的第一行只写这五个字：先看再写
+- 只允许按下面四步思考，不做发散性思考：不反复考据同一条设定，不推翻重来，不自我复述，不做多套方案的对比推演。
+- 绝对禁止在思考里写正文草稿（重点强调项）：不写完整句子，不写对白原文，不写成段场景或心理描写。思考里出现的任何一句话都不允许直接粘进正文；一旦写出，立刻删掉、只留结论。取舍用 ✓/✗ 记，不要把候选句子重抄一遍再比对。
+一、现状 → 时间、地点、在场的人、上一个动作停在哪儿（各三五个词）。
+二、人物 → 一人一行：此刻想要什么／知道什么（守住信息差）／说话是什么味道。
+三、方向 → 列两条走向，每条推两步因果；选一条并写明为什么选它。
+四、落点 → 这一段停在哪个动作或哪句话上（只写要点，不要写出那句话）。
+- 思考的最后一行只写这三个字：开始写
+写下这三个字就立刻停止思考、直接输出正文；正文只写一次，正文里不留任何思考痕迹。`
+  },
+  {
+    // 对话模式**不能**照抄上面那条：它的思考还兼职"把气泡的引号/说话人格式排练一遍"。
+    // 实测（同一批实验，各 2~8 次）：按续写版禁掉"写对白草稿"并把思考压到 200 字 →
+    // 27 轮里 9 轮整场台词丢引号（分色退回按内容猜）；改成"只压长度、保留一步格式排练 +
+    // 思考块放在【格式】之前 + 只用正向措辞"→ 3/18 轮漂移，与现状 2/12 持平，思考中位 283 字。
+    id: 'min_26_think_tail_chat', name: '思考要求·演出（尾部）', enabled: true, role: 'user', slot: 'think', mode: 'chat', order: 25,
+    content: `【思考要求（硬性要求）】
+- 思考不超过 1500 字，写完立刻停。
+- 想完就动手：不推翻重来，不反复考据同一条设定，不自我复述，同一段不要写两遍。
+一、在场与关系 → 这一轮在场的人、各自想要什么、知道什么（守住信息差）。
+二、这一轮怎么走 → 二到三个来回怎么推进，停在哪个动作或哪句话上。
+三、格式过一遍 → 把这一轮的气泡按「说话人：一句话要点」列一遍，确认每一句说出口的话都用「」包住、旁白单独写「白：」。
+- 思考的最后一行只写这三个字：开始演
+写完立刻停止思考，直接输出这一轮的演出（演出只写一次）。`
   }
 ];
+
+// ---- 模块的三个可选字段（2026-09-26 新增；不改的模块行为完全不变）----
+// role：'system'（默认）进系统提示词（稳定前缀，吃缓存）；'user' 追加到最后一条用户消息尾部（近端强调位）。
+// mode：'both'（默认）｜'novel'（仅续写）/ 'chat'（仅演出）——同一条预设可以按模式带不同文案，
+//       不需要为两个模式各建一个预设。
+// slot：'think' = 这条是"思考要求"：思考强度 off 时自动跳过；它的存在会抑制软件兜底条款。
+export type PresetModuleRole = 'system' | 'user';
+export type PresetModuleMode = 'both' | 'novel' | 'chat';
+export type PresetMode = 'novel' | 'chat';
+// 非 system/user 的角色（酒馆预设里的 assistant 预填等）一律按 system 处理：
+// 老版本是**静默丢弃**（列表里还标着 system），导入酒馆预设会因此丢掉大半内容（见 §13.75）。
+export function moduleRole(m: any): PresetModuleRole { return m && m.role === 'user' ? 'user' : 'system'; }
+export function moduleMode(m: any): PresetModuleMode {
+  const v = m && m.mode;
+  return v === 'novel' || v === 'chat' ? v : 'both';
+}
+export function moduleSlot(m: any): 'think' | '' { return m && m.slot === 'think' ? 'think' : ''; }
+export function moduleAppliesTo(m: any, mode: PresetMode): boolean {
+  const mm = moduleMode(m);
+  return mm === 'both' || mm === mode;
+}
+
+// 当前模式生效的启用模块（按 order）。纯函数：调用方传自己已经拿到的 promptModules
+// （app.ts / chatmode.ts 都只依赖这个函数，不必依赖 PresetManager 的方法形状——测试桩友好）。
+export function pickModules(mods: any, mode: PresetMode): any[] {
+  if (!Array.isArray(mods)) return [];
+  return mods
+    .filter((m: any) => m && m.enabled && m.content && moduleAppliesTo(m, mode))
+    .slice()
+    .sort((a: any, b: any) => (Number(a.order) || 0) - (Number(b.order) || 0));
+}
+
+// 酒馆预设（prompts + prompt_order）→ 我们的模块列表。导入路径专用，抽成纯函数便于测试。
+// 与老实现的差别（2026-09-26）：
+// ① enabled/顺序取自 prompt_order——酒馆的 prompts 数组自身**没有** enabled 字段，
+//    老实现按 `enabled !== false` 一律当启用，被关掉的条目（禁词、NSFW 变体、写卡协议…）会全跟着进来；
+// ② role='user' 的条目接成「尾部模块」（它原本就是用户消息，近端位置）；其余（system/assistant）归一到 system。
+//    老实现里 role≠system 的模块在注入时被**静默丢弃**（列表里还标着 system），
+//    导入酒馆预设会因此丢掉大半内容——梦鲸那套 39 条非空条目里 12 条是 user（约 7.5KB）。
+export function stPromptsToModules(cfg: any): any[] {
+  const raw = (cfg && Array.isArray(cfg.prompts)) ? cfg.prompts : [];
+  const po = (cfg && cfg.prompt_order && cfg.prompt_order[0] && cfg.prompt_order[0].order) || [];
+  const poMap: Record<string, { enabled: boolean; idx: number }> = {};
+  po.forEach((o: any, oi: number) => {
+    if (o && o.identifier) poMap[String(o.identifier)] = { enabled: o.enabled !== false, idx: oi };
+  });
+  const usePo = Object.keys(poMap).length > 0;
+  return raw
+    .filter((m: any) => m && m.content && String(m.content).trim())
+    .map((m: any, i: number) => {
+      const info = usePo ? poMap[String(m.identifier || '')] : undefined;
+      return {
+        id: 'mod_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6) + '_' + i,
+        name: m.name || String(m.content).split('\n')[0].trim().slice(0, 40) || ('提示项 ' + (i + 1)),
+        content: m.content,
+        enabled: info ? info.enabled : (m.enabled !== false),
+        role: m.role === 'user' ? 'user' : 'system',
+        order: info ? info.idx : (m.injection_order != null ? m.injection_order : i)
+      };
+    });
+}
+
+// 原生预设格式（自带 promptModules）→ 归一化后的模块列表（同上，补齐 id/name/order，角色归一）
+export function nativeModulesToModules(mods: any[]): any[] {
+  return (Array.isArray(mods) ? mods : []).map((m: any, i: number) => {
+    const out: any = {
+      id: m.id || ('mod_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6) + '_' + i),
+      name: m.name || (m.content ? String(m.content).split('\n')[0].trim().slice(0, 40) : '') || ('提示项 ' + (i + 1)),
+      content: m.content || '',
+      enabled: m.enabled !== false,
+      role: m.role === 'user' ? 'user' : 'system',
+      order: m.order != null ? m.order : i
+    };
+    if (m.mode === 'novel' || m.mode === 'chat') out.mode = m.mode;
+    if (m.slot === 'think') out.slot = 'think';
+    return out;
+  });
+}
+
+// 软件兜底：当前预设没有任何启用的「思考要求」尾部模块（本模式）时补上这一条。
+// 文案与内置预设里那两条完全一致（作者改了内置那两条 = 改文案；预设里一条都没有 = 用这份兜底）。
+export const THINK_TAIL_FALLBACK: Record<PresetMode, string> = {
+  novel: MINIMAL_PRESET_MODULES.filter(m => m.id === 'min_25_think_tail_novel')[0].content,
+  chat: MINIMAL_PRESET_MODULES.filter(m => m.id === 'min_26_think_tail_chat')[0].content
+};
+
 
 // 内置预设文案补丁（出厂文案每轮迭代追加一条；只保留最近一两条，过时可删）。
 // 作用：v1.5.75 首发版的内置预设已经写进用户设备，改源码不会自动生效——
@@ -518,6 +641,14 @@ const MINIMAL_PRESET_LATE_MODULES_V3: Array<{ id: string; before: string[] }> = 
   { id: 'min_24_bans', before: ['min_09_pov_1', 'min_10_pov_3a', 'min_11_pov_3b', 'min_12_pov_2'] }
 ];
 
+// V4 批次（2026-09-26）：两条「思考要求」尾部模块（role='user'，不进系统提示词、追加到用户消息末尾）。
+// 位置不在数组顺序里体现（尾部内容由 PresetManager.tailText 按 order 拼接），所以 before 用空数组
+// = 追加到末尾即可；用户设备上这两条若被删过就不再补。
+const MINIMAL_PRESET_LATE_MODULES_V4: Array<{ id: string; before: string[] }> = [
+  { id: 'min_25_think_tail_novel', before: [] },
+  { id: 'min_26_think_tail_chat', before: [] }
+];
+
 // 一次性强制覆盖清单：常规路径（applyMinimalPresetPatches）是逐字比对，用户改过就不动——
 // 那是对用户编辑的尊重，默认不该破。2026-09-23 用户要求「反 AI 味」这次例外：不管用户改没改过，
 // 统一覆盖为出厂文案（条目刚上线，用户手里的副本可能有删改，先统一一遍）。
@@ -553,6 +684,36 @@ export const PresetManager = {
     const id = this.getCurrentPresetId();
     if (!id) return null;
     return this.getPresets().find(p => p.id === id) || null;
+  },
+
+  // 当前预设里「本模式生效」的启用模块，按 order 排序（system 与 user 混在一起，调用方按 role 分）。
+  // 过滤规则见 pickModules（纯函数，两个模式共用一套）。
+  activeModules(mode: PresetMode): any[] {
+    try {
+      const p = this.getCurrentPreset() as any;
+      return pickModules((p && p.promptModules) || [], mode);
+    } catch (e) { return []; }
+  },
+
+  // 尾部模块文本（role='user'，按 order 拼接）。规则：
+  // ① slot='think' 的思考要求：思考关闭（off）时跳过；模型没有原生推理通道时也跳过
+  //    （那类模型走 <thinking> 文本硬协议，跟它说"思考多少字"会诱使它把思考写进正文）；
+  // ② 本模式一条启用的思考要求都没有 → 补软件兜底（同样受 ① 约束）——老预设、导入的第三方预设
+  //    因此也能拿到这份改进，而作者自定义的文案会自然覆盖它（不需要任何开关）。
+  tailText(mode: PresetMode, opts: { thinkingOff?: boolean; nativeReasoning?: boolean }): string {
+    try {
+      const mods = this.activeModules(mode).filter((m: any) => moduleRole(m) === 'user');
+      const thinkOk = !!opts.nativeReasoning && !opts.thinkingOff;
+      const out: string[] = [];
+      const ownThink = mods.some((m: any) => moduleSlot(m) === 'think');
+      if (!ownThink && thinkOk) out.push(THINK_TAIL_FALLBACK[mode]);
+      mods.forEach((m: any) => {
+        if (moduleSlot(m) === 'think' && !thinkOk) return;   // 思考关了/无原生通道 → 整条不发
+        const c = String(m.content || '').trim();
+        if (c) out.push(c);
+      });
+      return out.join('\n\n');
+    } catch (e) { return ''; }
   },
 
   getActiveSystemPrompt(): string {
@@ -721,6 +882,7 @@ export const PresetManager = {
     this._installLateModules('minimalPresetLateModulesV1', MINIMAL_PRESET_LATE_MODULES);
     this._installLateModules('minimalPresetLateModulesV2', MINIMAL_PRESET_LATE_MODULES_V2);
     this._installLateModules('minimalPresetLateModulesV3', MINIMAL_PRESET_LATE_MODULES_V3);
+    this._installLateModules('minimalPresetLateModulesV4', MINIMAL_PRESET_LATE_MODULES_V4);
   },
 
   // 通用补装：flagKey 已置位就跳过（每批只处理一次；用户删过的模块不加回）
@@ -784,5 +946,5 @@ export const PresetManager = {
 };
 
 (globalThis as unknown as { PresetManager: typeof PresetManager }).PresetManager = PresetManager;
-export { MINIMAL_PRESET_NAME, MINIMAL_PRESET_MODULES, MINIMAL_PRESET_PATCHES, MINIMAL_PRESET_LATE_MODULES, MINIMAL_PRESET_FORCE_SYNC };
+export { MINIMAL_PRESET_NAME, MINIMAL_PRESET_MODULES, MINIMAL_PRESET_PATCHES, MINIMAL_PRESET_LATE_MODULES, MINIMAL_PRESET_LATE_MODULES_V4, MINIMAL_PRESET_FORCE_SYNC };
 export default PresetManager;

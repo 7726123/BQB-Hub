@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import '../src/infra/storage';
 import '../src/domain/preset';
-import { MINIMAL_PRESET_MODULES, MINIMAL_PRESET_PATCHES } from '../src/domain/preset';
+import { MINIMAL_PRESET_MODULES, MINIMAL_PRESET_PATCHES, THINK_TAIL_FALLBACK, stPromptsToModules, nativeModulesToModules } from '../src/domain/preset';
 import { RegexEngine as RE } from '../src/lib/regex'; // P3-A：regex 不再挂全局，直接 import
 
 type SM = import('../src/infra/storage').StorageManagerClass;
@@ -16,7 +16,7 @@ const toasts: string[] = [];
 
 describe('PresetManager', () => {
   beforeEach(() => {
-    for (const k of ['presets', 'systemPrompts', 'currentPresetId', 'currentSysPromptId', 'apiConfig', 'regexRules', 'builtinMinimalPresetV1', 'minimalPresetLateModulesV1', 'minimalPresetForceSyncDone']) sm().remove(k);
+    for (const k of ['presets', 'systemPrompts', 'currentPresetId', 'currentSysPromptId', 'apiConfig', 'regexRules', 'builtinMinimalPresetV1', 'minimalPresetLateModulesV1', 'minimalPresetLateModulesV2', 'minimalPresetLateModulesV3', 'minimalPresetLateModulesV4', 'minimalPresetForceSyncDone']) sm().remove(k);
     toasts.length = 0;
   });
 
@@ -38,13 +38,21 @@ describe('PresetManager', () => {
   it('内置最小预设：启用文本满足注入管线约束', () => {
     PSM.initDefaults();
     const mods = ((PSM.getPresets()[0] as unknown as { promptModules: Array<{ content: string; enabled: boolean; role: string }> }).promptModules);
-    expect(mods.filter((m) => m.enabled)).toHaveLength(13);   // 2026-09-25 增补四条（去主角中心/出场角色/情绪/禁令）
-    expect(mods.every((m) => m.role === 'system')).toBe(true);
-    const sp = mods.filter((m) => m.enabled).map((m) => m.content).join('\n\n');
+    // 启用 = 13 个系统模块 + 2 个「思考要求」尾部模块（2026-09-26 新增，role='user' 不进 system）
+    expect(mods.filter((m) => m.enabled)).toHaveLength(15);
+    expect(mods.filter((m) => m.enabled && m.role === 'user')).toHaveLength(2);
+    expect(mods.filter((m) => m.enabled && m.role !== 'user')).toHaveLength(13);
+    // 进系统提示词的那部分：文本里的 user 会被 app 换成主角名，标签会诱导弹标签
+    const sp = mods.filter((m) => m.enabled && m.role !== 'user').map((m) => m.content).join('\n\n');
     expect(sp).not.toContain('<thinking>');            // 原生推理模型会被诱导弹标签
     expect(sp).not.toMatch(/\$\{/);                    // 预设展开会剥壳
     expect(sp.replace(/\{\{user\}\}/g, '')).not.toMatch(/\buser\b/i); // app 会把任意 user 换成主角名
     expect(/writing_process|<!--\s*梳理|梳理：/.test(sp)).toBe(true);  // 触发「预设要求先梳理」判定
+    // 尾部思考模块同样会被 _expandSTInMessages 展开，约束一致
+    const tail = mods.filter((m) => m.enabled && m.role === 'user').map((m) => m.content).join('\n\n');
+    expect(tail).not.toContain('<thinking>');
+    expect(tail).not.toMatch(/\$\{/);
+    expect(tail.replace(/\{\{user\}\}/g, '')).not.toMatch(/\buser\b/i);
   });
 
   // 防「在思考里先写一遍正文草稿、再审查后输出」（用户实测常见，浪费额度且成稿与草稿对不上）
@@ -426,5 +434,170 @@ describe('PresetManager', () => {
     expect(created.systemPromptId).toBe('sp_default');
     expect((created as unknown as { promptModules: unknown[] }).promptModules).toEqual([]);
     expect(PSM.getCurrentPresetId()).toBe(created.id);
+  });
+});
+
+// 尾部模块（role='user'）与三个字段（2026-09-26）：位置归软件、内容归预设。
+// 背景（实测见 preset.ts 里两条模块的注释）：思考纪律只写在 system 里 → 思考中位约 3689 字、
+// 常在思考里预演正文；同一段话挪到最后一条用户消息末尾 → 中位约 600 字、正文不变甚至更长。
+describe('尾部模块：位置/模式/思考标记', () => {
+  // 本 describe 在原 describe 之外 → 没有它的 beforeEach，存储会跨用例残留（上一个用例的自定义预设
+  // 会让 initDefaults() 走"已有预设"分支、装不进内置预设）。这里自己清一遍。
+  beforeEach(() => {
+    for (const k of ['presets', 'systemPrompts', 'currentPresetId', 'currentSysPromptId', 'apiConfig', 'regexRules',
+      'builtinMinimalPresetV1', 'minimalPresetLateModulesV1', 'minimalPresetLateModulesV2', 'minimalPresetLateModulesV3', 'minimalPresetLateModulesV4', 'minimalPresetForceSyncDone']) sm().remove(k);
+  });
+  const setMods = (mods: any[]) => {
+    PSM.savePresets([{ id: 'p_tail', name: '尾部测试', prompts: [], promptModules: mods, systemPromptId: 'sp_default', isDefault: false, createdAt: 1 } as any]);
+    PSM.setCurrentPresetId('p_tail');
+  };
+  const sysMod = (id: string, content: string, extra: any = {}) => ({ id, name: id, content, enabled: true, role: 'system', order: 1, ...extra });
+  const tailMod = (id: string, content: string, extra: any = {}) => ({ id, name: id, content, enabled: true, role: 'user', order: 9, ...extra });
+
+  it('内置预设自带两条思考尾部模块（按模式分开），内容与兜底一致', () => {
+    PSM.initDefaults();
+    const mods = ((PSM.getPresets()[0] as any).promptModules as any[]);
+    const novel = mods.find((m) => m.id === 'min_25_think_tail_novel')!;
+    const chat = mods.find((m) => m.id === 'min_26_think_tail_chat')!;
+    expect([novel.role, novel.mode, novel.slot]).toEqual(['user', 'novel', 'think']);
+    expect([chat.role, chat.mode, chat.slot]).toEqual(['user', 'chat', 'think']);
+    expect(novel.content).toBe(THINK_TAIL_FALLBACK.novel);
+    expect(chat.content).toBe(THINK_TAIL_FALLBACK.chat);
+    // 两条都必须交代"停在哪儿"，这是止住长思考的关键（起止仪式）
+    expect(novel.content).toContain('开始写');
+    expect(chat.content).toContain('开始演');
+    // 续写版禁"在思考里写正文草稿"；演出版不能禁——它的思考要兼职排练气泡格式（引号/白行）
+    expect(novel.content).toContain('绝对禁止在思考里写正文草稿');
+    expect(chat.content).toContain('格式过一遍');
+  });
+
+  it('尾部模块不进系统提示词；system 模块不受影响', () => {
+    PSM.initDefaults();
+    const sys = PSM.activeModules('novel').filter((m: any) => m.role === 'system').map((m: any) => m.content).join('\n');
+    const tails = PSM.activeModules('novel').filter((m: any) => m.role === 'user');
+    expect(sys).not.toContain('先看再写');
+    expect(tails.map((m: any) => m.id)).toEqual(['min_25_think_tail_novel']);
+  });
+
+  it('模式门控：续写版只在续写生效，演出版只在演出生效', () => {
+    PSM.initDefaults();
+    expect(PSM.activeModules('novel').some((m: any) => m.mode === 'chat')).toBe(false);
+    expect(PSM.activeModules('chat').some((m: any) => m.mode === 'novel')).toBe(false);
+    // 兜底也因此按模式各取一份（续写预设里没有演出版的思考模块 → 演出模式吃兜底）
+    expect(PSM.tailText('novel', { nativeReasoning: true })).toBe(THINK_TAIL_FALLBACK.novel);
+    expect(PSM.tailText('chat', { nativeReasoning: true })).toBe(THINK_TAIL_FALLBACK.chat);
+  });
+
+  it('预设自带思考尾部模块 → 用作者那份，不再插软件兜底', () => {
+    setMods([sysMod('s1', '# 人设'), tailMod('t1', '【我的思考要求】只写三行。', { slot: 'think', mode: 'novel' })]);
+    const out = PSM.tailText('novel', { nativeReasoning: true });
+    expect(out).toBe('【我的思考要求】只写三行。');
+    expect(out).not.toContain('先看再写');   // 兜底文案没被叠加进来
+  });
+
+  it('没有任何尾部思考模块 → 软件兜底（老预设/导入预设也能拿到改进）', () => {
+    setMods([sysMod('s1', '# 人设'), tailMod('t1', '【本轮附加】收尾停在动作上。')]);
+    const out = PSM.tailText('novel', { nativeReasoning: true });
+    expect(out).toContain(THINK_TAIL_FALLBACK.novel);
+    expect(out).toContain('【本轮附加】收尾停在动作上。');   // 普通尾部模块照常下发
+  });
+
+  it('思考强度 off / 无原生推理通道 → 思考条款整条不下发（普通尾部模块仍在）', () => {
+    PSM.initDefaults();
+    expect(PSM.tailText('novel', { nativeReasoning: true, thinkingOff: true })).toBe('');
+    expect(PSM.tailText('novel', { nativeReasoning: false })).toBe('');
+    setMods([tailMod('t1', '【格式契约】', {}), tailMod('t2', '【思考要求】', { slot: 'think' })]);
+    const off = PSM.tailText('novel', { nativeReasoning: true, thinkingOff: true });
+    expect(off).toBe('【格式契约】');
+    expect(off).not.toContain('【思考要求】');
+  });
+
+  it('closing：多模块按 order 拼接（顺序稳定）', () => {
+    setMods([
+      tailMod('t9', '【后】', { slot: 'think', order: 9 }),
+      tailMod('t2', '【前】', { order: 2 }),
+    ]);
+    expect(PSM.tailText('novel', { nativeReasoning: true })).toBe('【前】\n\n【后】');
+  });
+
+  // 老设备上的内置预设是存量数据：新模块不会自己出现，靠 V4 补装批次带回（只补一次、删过不加回）
+  it('补装批次 V4：老设备能拿到两条思考尾部模块（字段完整）', () => {
+    PSM.initDefaults();
+    const IDS = ['min_25_think_tail_novel', 'min_26_think_tail_chat'];
+    const strip = () => {
+      const list = PSM.getPresets();
+      const p = list.find((x) => x.id === 'preset_minimal') as any;
+      p.promptModules = p.promptModules.filter((m: any) => IDS.indexOf(m.id) < 0);
+      PSM.savePresets(list);
+    };
+    const mods = () => (PSM.getPresets().find((x) => x.id === 'preset_minimal') as any).promptModules;
+    strip();
+    expect(mods().some((m: any) => IDS.indexOf(m.id) >= 0)).toBe(false);   // 先造出"老设备"状态
+    sm().remove('minimalPresetLateModulesV4');                              // 该设备还没跑过 V4
+    PSM.applyMinimalPresetLateModules();
+    const novel = mods().find((m: any) => m.id === 'min_25_think_tail_novel');
+    const chat = mods().find((m: any) => m.id === 'min_26_think_tail_chat');
+    expect(novel && novel.role === 'user' && novel.mode === 'novel' && novel.slot === 'think').toBe(true);
+    expect(chat && chat.role === 'user' && chat.mode === 'chat' && chat.slot === 'think').toBe(true);
+    // 补过一次后不再补：用户删掉的模块不会被加回
+    strip();
+    PSM.applyMinimalPresetLateModules();
+    expect(mods().some((m: any) => IDS.indexOf(m.id) >= 0)).toBe(false);
+  });
+});
+
+// 导入还原度（2026-09-26）：酒馆预设里 role='user' 的条目要接成尾部模块，
+// enabled/顺序取自 prompt_order——老实现这两件事都做错，导入后 content 大半不生效。
+describe('酒馆预设导入映射（stPromptsToModules / nativeModulesToModules）', () => {
+  beforeEach(() => {
+    for (const k of ['presets', 'currentPresetId']) sm().remove(k);
+  });
+  it('role=user → 尾部模块；assistant → system（不再静默丢弃）', () => {
+    const out = stPromptsToModules({
+      prompts: [
+        { identifier: 'a', role: 'system', content: '系统条目' },
+        { identifier: 'b', role: 'user', content: '用户条目' },
+        { identifier: 'c', role: 'assistant', content: '预填条目' },
+        { identifier: 'd', role: 'user', content: '   ' },     // 空内容：丢弃
+      ],
+    });
+    expect(out.map((m) => m.role)).toEqual(['system', 'user', 'system']);
+    expect(out.map((m) => m.content)).toEqual(['系统条目', '用户条目', '预填条目']);
+    expect(nativeModulesToModules([{ content: 'x', role: 'assistant' }])[0].role).toBe('system');
+  });
+
+  it('有 prompt_order 时按它取 enabled 与顺序（被关掉的条目不进提示词）', () => {
+    const out = stPromptsToModules({
+      prompts: [
+        { identifier: 'b', role: 'user', content: '第二条' },
+        { identifier: 'off', role: 'system', content: '被关掉的' },
+        { identifier: 'a', role: 'system', content: '第一条' },
+      ],
+      prompt_order: [{ character_id: 100000, order: [
+        { identifier: 'a', enabled: true },
+        { identifier: 'off', enabled: false },
+        { identifier: 'b', enabled: true },
+      ] }],
+    });
+    // 映射保持 prompts 数组原序，只把 prompt_order 的下标写进 order（注入时按 order 排序）
+    expect(out.map((m) => m.content)).toEqual(['第二条', '被关掉的', '第一条']);
+    expect(out.map((m) => m.enabled)).toEqual([true, false, true]);
+    expect(out.map((m) => m.order)).toEqual([2, 1, 0]);
+    // 只有启用（且模式匹配）的才进 activeModules，且按 order 排序
+    const PSM2 = PSM as any;
+    PSM2.savePresets([{ id: 'p_imp', name: '导入', prompts: [], promptModules: out, createdAt: 1 }]);
+    PSM2.setCurrentPresetId('p_imp');
+    expect(PSM2.activeModules('novel').map((m: any) => m.content)).toEqual(['第一条', '第二条']);
+  });
+
+  it('原生预设格式：mode/slot 透传，未知值忽略（不写进模块，保持对象形状）', () => {
+    const out = nativeModulesToModules([
+      { content: '思考', role: 'user', mode: 'chat', slot: 'think' },
+      { content: '普通', role: 'system', mode: 'nonsense', slot: 'nope' },
+    ]);
+    expect(out[0].mode).toBe('chat');
+    expect(out[0].slot).toBe('think');
+    expect('mode' in out[1]).toBe(false);
+    expect('slot' in out[1]).toBe(false);
   });
 });

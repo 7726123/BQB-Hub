@@ -438,11 +438,17 @@ const UIManager: UIManagerShape = {
       }
     });
     container.innerHTML = modules.map(function (m: any, i: any) {
+      // 位置/模式标签（2026-09-26）：尾部模块不进系统提示词、贴在用户消息末尾；
+      // 「思考」= 思考要求（思考强度 off 时不下发，且它的存在会抑制软件兜底条款）。
+      const _tail = m.role === 'user';
+      const _think = m.slot === 'think';
+      const _tag = _tail ? (_think ? '思考·尾部' : '尾部') : 'system';
+      const _modeTag = m.mode === 'novel' ? '·仅续写' : (m.mode === 'chat' ? '·仅演出' : '');
       return '<div class="module-row" data-drag-item="' + m.id + '" data-drag-id="' + m.id + '" data-drag-idx="' + i + '">' +
         '<span class="drag-handle" title="拖动排序">≡</span>' +
         '<span class="mod-name" title="' + htmlEscape(m.name) + '">' + htmlEscape(m.name) + '</span>' +
         '<input type="checkbox" ' + (m.enabled ? 'checked' : '') + ' onchange="UIManager.toggleModule(\'' + m.id + '\',this.checked)">' +
-        '<span class="tag">system</span>' +
+        '<span class="tag">' + _tag + _modeTag + '</span>' +
         '<span class="mod-actions">' +
           '<button class="icon-btn" onclick="UIManager.showModuleEdit(\'' + m.id + '\')">✎</button>' +
           '<button class="icon-btn danger" onclick="UIManager.deleteModule(\'' + m.id + '\')">✕</button>' +
@@ -494,12 +500,19 @@ const UIManager: UIManagerShape = {
     document.getElementById('moduleEditId')!.value = moduleId || '';
     document.getElementById('moduleEditName')!.value = '';
     document.getElementById('moduleEditContent')!.value = '';
+    (document.getElementById('moduleEditRole') as HTMLSelectElement).value = 'system';
+    (document.getElementById('moduleEditMode') as HTMLSelectElement).value = 'both';
+    (document.getElementById('moduleEditThink') as HTMLInputElement).checked = false;
     if (moduleId) {
       const preset = PresetManager.getCurrentPreset();
       const mod = preset && preset.promptModules ? preset.promptModules.find(function (m: any) { return m.id === moduleId; }) : null;
       if (mod) {
         document.getElementById('moduleEditName')!.value = mod.name || '';
         document.getElementById('moduleEditContent')!.value = mod.content || '';
+        (document.getElementById('moduleEditRole') as HTMLSelectElement).value = mod.role === 'user' ? 'user' : 'system';
+        (document.getElementById('moduleEditMode') as HTMLSelectElement).value =
+          (mod.mode === 'novel' || mod.mode === 'chat') ? mod.mode : 'both';
+        (document.getElementById('moduleEditThink') as HTMLInputElement).checked = mod.slot === 'think';
       }
     }
     this.showModal('modalModuleEdit');
@@ -514,19 +527,30 @@ const UIManager: UIManagerShape = {
     const preset = PresetManager.getCurrentPreset();
     if (!preset) { App.toast('请先选择一个预设'); return; }
     if (!preset.promptModules) preset.promptModules = [];
+    const role = (document.getElementById('moduleEditRole') as HTMLSelectElement).value === 'user' ? 'user' : 'system';
+    const mode = (document.getElementById('moduleEditMode') as HTMLSelectElement).value;
+    const slot = (document.getElementById('moduleEditThink') as HTMLInputElement).checked ? 'think' : '';
+    const _applyFields = function (m: any) {
+      m.role = role;
+      // mode 只在非 both 时落盘（保持老模块的对象形状不变，别给所有模块凭空加字段）
+      if (mode === 'novel' || mode === 'chat') m.mode = mode; else delete m.mode;
+      if (slot === 'think') m.slot = 'think'; else delete m.slot;
+    };
     if (id) {
       const mod = preset.promptModules.find(function (m: any) { return m.id === id; });
-      if (mod) { mod.name = name; mod.content = content; App.toast('模块已更新'); }
+      if (mod) { mod.name = name; mod.content = content; _applyFields(mod); App.toast('模块已更新'); }
       else { App.toast('模块不存在'); return; }
     } else {
-      preset.promptModules.push({
+      const _mod: any = {
         id: 'mod_' + Date.now() + '_' + Math.random().toString(36).slice(2,6),
         name: name,
         content: content,
         enabled: true,
-        role: 'system',
+        role: role,
         order: preset.promptModules.length
-      });
+      };
+      _applyFields(_mod);
+      preset.promptModules.push(_mod);
       App.toast('模块已添加');
     }
     PresetManager.savePresets(PresetManager.getPresets());

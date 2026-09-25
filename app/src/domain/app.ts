@@ -25,6 +25,7 @@ import { UpdateManager } from './update';
 import * as TavernAdapter from './tavern-adapter';
 import { ClientLog } from './clientlog';
 import { sanitizeEndpointUrl, chatCompletionsUrl } from '../lib/endpoint';
+import { moduleRole, pickModules, stPromptsToModules, nativeModulesToModules } from './preset';
 
 // 价格表默认值（人民币/百万 token）：DeepSeek V4.1 峰时价。
 // 2026-09-26 之前默认是 1 / 0.1 / 2 —— 缓存价按"输入的 10%"填，而真实是 2%（命中便宜 50 倍），
@@ -1045,13 +1046,12 @@ const App: AppShape = {
     const _hasNativeReasoning = hasNativeReasoning(_modelNameLower);
     if (_genPreset) {
       if (_genPreset.creativity) creativityLevel = _genPreset.creativity;
-      if (_genPreset.promptModules && _genPreset.promptModules.some(function (m: any) { return m.enabled; })) {
-        systemPrompt = _genPreset.promptModules
-          .filter(function (m: any) {
-            if (!m.enabled || (m.role && m.role !== 'system')) return false;
-            return true;
-          })
-          .sort(function (a: any, b: any) { return (a.order || 0) - (b.order || 0); })
+      // 模块收集走纯函数 pickModules：启用 + 本模式生效（mode）+ 按 order。
+      // role='user' 的模块不进系统提示词（它们去用户消息尾部，见下面的 tailText）。
+      const _mods = pickModules(_genPreset.promptModules, 'novel');
+      if (_mods.length > 0) {
+        systemPrompt = _mods
+          .filter(function (m: any) { return moduleRole(m) === 'system'; })
           .map(function (m: any) { return m.content; })
           .join('\n\n');
       }
@@ -1642,6 +1642,17 @@ const App: AppShape = {
     if (_factCardCtx) _userParts.push(_factCardCtx);
     if (_recallFresh) _userParts.push(_recallFresh);
     _userParts.push('【指令】' + '\n' + userInstruction);
+    // ④ 预设的「尾部模块」（role='user'）+ 思考要求兜底：追加在最后一条用户消息的最末尾。
+    //   位置是软件负责的部分：实测同一段思考条款写在 system 里 → 思考中位约 3689 字、常在思考里
+    //   预演正文；放到这条消息末尾 → 中位约 600 字、正文字数不变甚至更长（2026-09-26，见 preset.ts 注释）。
+    //   思考关闭（off）或无原生推理通道的模型：PresetManager.tailText 会自动跳过 slot='think' 的那些。
+    try {
+      const _tail = PresetManager.tailText('novel', {
+        thinkingOff: this.thinkingLevel() === 'off',
+        nativeReasoning: _hasNativeReasoning
+      });
+      if (_tail) _userParts.push(_tail);
+    } catch (e) { /* 尾部模块失败不影响生成 */ }
     messages.push({ role: 'user', content: _userParts.join('\n\n') });
     // 展开预设里的酒馆模板语法（setvar/getvar/{{//}}/${...}），让豆包等模型看到完整指令
     _expandSTInMessages(messages);
@@ -2790,32 +2801,13 @@ const stripped = _preProcessed.replace(/^#{1,3}\s+.*(\n|$)/gm, '').trim(); var _
         // 原生预设格式：预设自带文本正则（regexScripts）跟随预设，切换预设时自动生效
         if (p._stRegexRules && p._stRegexRules.length > 0) (_newPreset as any).regexScripts = p._stRegexRules;
         if (p.promptModules && Array.isArray(p.promptModules) && p.promptModules.length > 0) {
-          // 原样带进预设，但补齐每个模块的 id/name/order——
-          // 编辑/开关/拖拽都依赖 m.id，缺 id 会导致预设编辑列表"空"（点编辑无效）
-          (_newPreset as any).promptModules = (p as any).promptModules.map(function (m: any, i: any) {
-            return {
-              id: m.id || ('mod_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6) + '_' + i),
-              name: m.name || (m.content ? String(m.content).split('\n')[0].trim().slice(0, 40) : '') || ('提示项 ' + (i + 1)),
-              content: m.content || '',
-              enabled: m.enabled !== false,
-              role: m.role || 'system',
-              order: m.order != null ? m.order : i
-            };
-          });
+          // 原样带进预设，但补齐每个模块的 id/name/order（编辑/开关/拖拽都依赖 m.id，
+          // 缺 id 会导致预设编辑列表"空"）；角色归一与 mode/slot 透传见 nativeModulesToModules
+          (_newPreset as any).promptModules = nativeModulesToModules((p as any).promptModules);
         } else if (cfg.prompts && Array.isArray(cfg.prompts) && cfg.prompts.length > 0) {
-          // Convert SillyTavern-style prompts to our module format
-          (_newPreset as any).promptModules = cfg.prompts
-            .filter(function (m: any) { return m.content && m.content.trim(); })
-            .map(function (m: any, i: any) {
-              return {
-                id: 'mod_' + Date.now() + '_' + Math.random().toString(36).slice(2,6) + '_' + i,
-                name: m.name || (m.content ? m.content.split('\n')[0].trim().slice(0,40) : '') || ('提示项 '+(i+1)),
-                content: m.content,
-                enabled: m.enabled !== false,
-                role: m.role || 'system',
-                order: m.injection_order != null ? m.injection_order : i
-              };
-            });
+          // 酒馆预设转换：enabled/顺序取自 prompt_order，role=user 的条目接成尾部模块
+          // （细节与踩过的坑见 preset.ts 的 stPromptsToModules 注释）
+          (_newPreset as any).promptModules = stPromptsToModules(cfg);
         }
         presets.push(_newPreset);
         PresetManager.savePresets(presets);

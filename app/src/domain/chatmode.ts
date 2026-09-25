@@ -14,8 +14,9 @@
 // 上下文的"最近演出"= chatLog 尾部原文，长度要求写在用户消息末尾（实测只写在 system 里会掉到 65–80%）。
 
 import { WorldBookManager, selectInjectableEntries, WB_INJECT_MAX_CHARS, hasUserNamedEntry } from './worldbook';
-import { PresetManager } from './preset';
+import { PresetManager, moduleRole, pickModules } from './preset';
 import { APIHandler } from './api';
+import { hasNativeReasoning } from './modelcompat';
 import { BookManager } from './book';
 import { SettingSyncManager } from './settingsync';
 import { PluginManager } from './plugins';
@@ -755,13 +756,12 @@ export const ChatMode = {
   buildSystem(): string {
     // 组装对话模式的提示词：先把临时世界书切到对话模式那份（键名带 _chat；小说模式那份不参与）
     try { SettingSyncManager.setMode('chat'); } catch (e) { /* ignore */ }
-    const p = PresetManager.getCurrentPreset() as any;
     let sys = '';
-    const mods = (p && p.promptModules) || [];
-    if (mods.some((m: any) => m && m.enabled)) {
-      sys = mods.filter((m: any) => m && m.enabled && (!m.role || m.role === 'system'))
-        .sort((a: any, b: any) => (a.order || 0) - (b.order || 0))
-        .map((m: any) => m.content).join('\n\n');
+    // 模块收集统一走 activeModules：启用 + 本模式生效（mode）+ 按 order；
+    // role='user' 的模块不进 system（它们去用户消息尾部，见 buildUser 里的 tailText）。
+    const mods = pickModules((PresetManager.getCurrentPreset() as any || {}).promptModules, 'chat');
+    if (mods.length > 0) {
+      sys = mods.filter((m: any) => moduleRole(m) === 'system').map((m: any) => m.content).join('\n\n');
     }
     if (!sys) sys = PresetManager.getActiveSystemPrompt();
     // 世界书：稳定块只放**原书条目原文**（比奇改过/停用/新增的一律去 user 区尾部的「临时修订」块，
@@ -893,6 +893,17 @@ export const ChatMode = {
     const ovCtx = this.overlayCtx();
     if (ovCtx) parts.push(ovCtx);
     parts.push('【作者】' + (instruction || '（没有新要求，接着往下演）'));
+    // 预设的尾部模块（role='user'）+ 思考要求兜底：插在【作者】之后、【格式】之前。
+    // 位置是实测定的：思考块放到【格式】之后（=最末尾）会把格式契约压掉——同一批实验里
+    // 27 轮有 9 轮整场台词丢引号；放在【格式】之前 → 漂移 3/18，与现状 2/12 持平（见 preset.ts 注释）。
+    try {
+      const _cfg: any = PresetManager.getActiveAPIConfig ? PresetManager.getActiveAPIConfig() : {};
+      const _tail = PresetManager.tailText('chat', {
+        thinkingOff: this.thinkingLevelOff(),
+        nativeReasoning: hasNativeReasoning(String((_cfg && _cfg.model) || '').toLowerCase())
+      });
+      if (_tail) parts.push(_tail);
+    } catch (e) { /* 尾部模块失败不影响演出 */ }
     // 格式重申放最末尾：与字数一样，只写在 system 里命中率会掉（实测），贴在用户消息尾部最有效。
     // 两句都是重灾区：漏引号 → 台词被当动作（淡色）；旁白忘了写「白：」→ 会被算在上一个角色头上。
     // 2026-09-25：分色规则改成"引号=台词、没引号=叙述"，所以这里把契约再钉一遍（含单字/短回应和心声）。

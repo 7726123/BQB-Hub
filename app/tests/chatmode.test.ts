@@ -1230,3 +1230,81 @@ describe('龙套角色（路人/同学A）：登记、名单与头像（2026-09-
     } finally { s.restore(); }
   });
 });
+
+// 尾部模块（2026-09-26）：预设的 role='user' 模块追加到用户消息，位置在【作者】之后、【格式】之前。
+// 位置是实测定的：思考块放到【格式】之后（=最末尾）会把格式契约压掉——同一批 27 轮里 9 轮整场台词
+// 丢引号（分色退回按内容猜）；放在【格式】之前 → 漂移 3/18，与现状 2/12 持平（见 preset.ts 注释）。
+describe('尾部模块：思考要求插在【作者】之后、【格式】之前', () => {
+  const origApi = () => (globalThis as any).StorageManager.get('apiConfig', null);
+  beforeEach(() => {
+    (globalThis as any).StorageManager.set('apiConfig', { apiKey: 'k', model: 'deepseek-v3', endpoint: 'http://x/v1' });
+    // 文件级桩把思考强度钉成 off（tailText 会因此跳过思考条款）；本组默认打开，off 的用例自己覆盖
+    g.App.thinkingLevel = () => 'medium';
+  });
+  afterEach(() => { (globalThis as any).StorageManager.set('apiConfig', origApi() || {}); });
+
+  function presetWith(mods: any[]) {
+    PresetManager.savePresets([{ id: PRESET_ID, name: '测试预设', prompts: [], promptModules: mods, systemPromptId: 'sp_default', isDefault: false, createdAt: 1 } as any]);
+    PresetManager.setCurrentPresetId(PRESET_ID);
+  }
+
+  it('顺序：演出记录 → 【作者】 → 思考要求 → 【格式】 → 【本轮目标】', () => {
+    seedBooks();
+    presetWith([
+      { id: 'm_style', name: '文风', content: '# 文风\n- 克制。', enabled: true, role: 'system', order: 8 },
+      { id: 'm_think', name: '思考要求·演出（尾部）', content: '【思考要求·测试】\n先看再写。', enabled: true, role: 'user', slot: 'think', mode: 'chat', order: 20 },
+    ]);
+    const user = ChatMode.buildUser('接着演');
+    const iAuthor = user.indexOf('【作者】');
+    const iThink = user.indexOf('【思考要求·测试】');
+    const iFmt = user.indexOf('【格式】');
+    expect(iAuthor).toBeGreaterThan(-1);
+    expect(iThink).toBeGreaterThan(iAuthor);
+    expect(iFmt).toBeGreaterThan(iThink);        // 格式契约必须在思考要求之后（最后读到）
+    expect(user.lastIndexOf('先看再写')).toBeLessThan(user.indexOf('【格式】'));
+    // 尾部模块不进 system
+    expect(ChatMode.buildSystem()).not.toContain('【思考要求·测试】');
+    expect(ChatMode.buildSystem()).toContain('克制');
+  });
+
+  it('mode 门控：续写专供的模块（system 与尾部）都不进演出提示词', () => {
+    seedBooks();
+    presetWith([
+      { id: 'm_novel_sys', name: '续写专用', content: '# 只在续写里出现', enabled: true, role: 'system', mode: 'novel', order: 5 },
+      { id: 'm_chat_sys', name: '演出专用', content: '# 只在演出里出现', enabled: true, role: 'system', mode: 'chat', order: 6 },
+      { id: 'm_novel_tail', name: '续写尾部', content: '【续写思考要求】', enabled: true, role: 'user', slot: 'think', mode: 'novel', order: 20 },
+      { id: 'm_chat_tail', name: '演出尾部', content: '【演出思考要求】', enabled: true, role: 'user', slot: 'think', mode: 'chat', order: 21 },
+    ]);
+    const sys = ChatMode.buildSystem();
+    const user = ChatMode.buildUser('接着演');
+    expect(sys).toContain('只在演出里出现');
+    expect(sys).not.toContain('只在续写里出现');
+    expect(user).toContain('【演出思考要求】');
+    expect(user).not.toContain('【续写思考要求】');
+  });
+
+  it('思考强度 off：思考要求整条不下发（普通尾部模块仍在，格式契约仍在最后）', () => {
+    seedBooks();
+    presetWith([
+      { id: 'm_plain_tail', name: '普通尾部', content: '【本轮附加】收尾停在动作上。', enabled: true, role: 'user', order: 10 },
+      { id: 'm_think', name: '思考要求·演出（尾部）', content: '【思考要求·测试】', enabled: true, role: 'user', slot: 'think', mode: 'chat', order: 20 },
+    ]);
+    const orig = g.App.thinkingLevel;
+    g.App.thinkingLevel = () => 'off';
+    try {
+      const user = ChatMode.buildUser('接着演');
+      expect(user).not.toContain('【思考要求·测试】');
+      expect(user).toContain('【本轮附加】收尾停在动作上。');
+      expect(user.indexOf('【本轮附加】收尾停在动作上。')).toBeLessThan(user.indexOf('【格式】'));
+    } finally { g.App.thinkingLevel = orig; }
+  });
+
+  it('预设没有尾部思考模块：走软件兜底（演出版文案，含"格式过一遍"），续写版文案不出现', () => {
+    seedBooks();
+    presetWith([{ id: 'm_style', name: '文风', content: '# 文风\n- 克制。', enabled: true, role: 'system', order: 8 }]);
+    const user = ChatMode.buildUser('接着演');
+    expect(user).toContain('开始演');
+    expect(user).toContain('格式过一遍');
+    expect(user).not.toContain('绝对禁止在思考里写正文草稿');   // 那是续写版，演出版不能禁（会丢引号）
+  });
+});
