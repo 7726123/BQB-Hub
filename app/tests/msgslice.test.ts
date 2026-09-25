@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { nodeRawLen, rawOffsetOf, selectedRawText, roundIndexOf, roundMembers, collectRoundDeletes, type MsgLike } from '../src/lib/msgslice';
+import { nodeRawLen, rawOffsetOf, nodeAtRawOffset, selectedRawText, roundIndexOf, roundMembers, collectRoundDeletes, type MsgLike } from '../src/lib/msgslice';
 
 // 构造与气泡 DOM 同形的假节点树：正文转义后按 \n → <br> 渲染
 function text(data: string) { return { nodeType: 3, data, nodeName: '#text', childNodes: [] }; }
@@ -51,6 +51,41 @@ describe('选区 → 原文切片（复制不丢换行）', () => {
 
   it('rawOffsetOf：元素节点的 offset 指子节点序号', () => {
     expect(rawOffsetOf(root, root, 2)).toBe(4); // "第一行"(3) + <br>(1)
+  });
+});
+
+// nodeAtRawOffset：rawOffsetOf 的逆运算（自绘选区高亮要靠它把原文下标变回 DOM 位置）
+describe('原文下标 → 节点位置（nodeAtRawOffset）', () => {
+  const raw = '第一行\n第二行\n第三行';
+  const root = el([text('第一行'), br(), text('第二行'), br(), text('第三行')]);
+
+  it('落在文本节点里：下标 → {node, offset}；与 rawOffsetOf 互为逆运算', () => {
+    const a = nodeAtRawOffset(root, 1)!;                     // "第一行" 的第 1 个字
+    expect(a.node.data).toBe('第一行');
+    expect(a.offset).toBe(1);
+    expect(rawOffsetOf(root, a.node, a.offset)).toBe(1);
+    const b = nodeAtRawOffset(root, 5)!;                     // 换行后 "第二行" 的第 1 个字
+    expect(b.node.data).toBe('第二行');
+    expect(b.offset).toBe(1);
+    expect(rawOffsetOf(root, b.node, b.offset)).toBe(5);
+  });
+
+  it('落在换行处：等价位置表达（文本节点末尾 / 换行后的文本节点开头），都能映射回同一下标', () => {
+    const at = nodeAtRawOffset(root, 3)!;                    // "第一行" 之后（= 那个换行处）
+    expect(rawOffsetOf(root, at.node, at.offset)).toBe(3);   // 位置等价即可（文本节点末尾也是合法边界）
+    const after = nodeAtRawOffset(root, 4)!;                 // 换行之后 = "第二行" 开头
+    expect(after.node.data).toBe('第二行');
+    expect(after.offset).toBe(0);
+    expect(rawOffsetOf(root, after.node, after.offset)).toBe(4);
+  });
+
+  it('越界/空文档：钳到末尾或退回根开头，不抛错', () => {
+    const end = nodeAtRawOffset(root, 999)!;
+    expect(end.node.data).toBe('第三行');
+    expect(end.offset).toBe(3);
+    const z = nodeAtRawOffset(el([]), 5)!;
+    expect(z.node.nodeName).toBe('DIV');
+    expect(z.offset).toBe(0);
   });
 });
 

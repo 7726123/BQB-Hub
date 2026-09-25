@@ -420,12 +420,12 @@ label{font-size:13px;color:var(--text-secondary);display:block;margin-bottom:4px
 #cwViewMenu>div{padding:8px 10px;border-radius:7px;cursor:pointer;white-space:nowrap;color:var(--text)}
 #cwViewMenu>div:hover{background:color-mix(in srgb,var(--primary) 12%,transparent);color:var(--primary)}
 /* 长按选择：浮条是 body 上的固定层（不进气泡 → 零布局位移）。
-   默认消息区**不可选**（user-select:none）：长按只出我们这条浮条，不冒系统复制菜单。
-   新 APK（1.5.99+）在原生侧屏蔽了系统选区菜单，并通过 NativeFeatures.canSelectText() 上报，
-   cardwriter.js 会给 <html> 加 .cw-native-sel-off → 这里放开选择：长按选中整条后可拖手柄选一段，
-   复制/删除仍走我们的浮条（用户 2026-09-25：希望能复制一段）。 */
+   消息区**永远不可选**（user-select:none）：完全不产生原生选区 → 系统那条「复制/全选」菜单不可能出现。
+   选区由应用自绘（长按选一句、按住滑动按字扩选、浮条「全选」整条），高亮用 .cw-sel-layer 里的半透明矩形。 */
 .cw-msg-text{-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
-html.cw-native-sel-off #cardwriterMessages,html.cw-native-sel-off .cw-msg-text{-webkit-user-select:text;user-select:text;-webkit-touch-callout:default}
+.cw-msg-text{position:relative}
+.cw-sel-layer{position:absolute;inset:0;pointer-events:none;z-index:1}
+.cw-sel-rect{position:absolute;background:color-mix(in srgb,var(--primary) 26%,transparent);border-radius:2px}
 .cw-sel-bar{position:fixed;z-index:1700;display:none;align-items:center;gap:2px;padding:4px;border-radius:11px;background:var(--bg-secondary);border:1px solid var(--border);box-shadow:0 8px 24px rgba(0,0,0,.22)}
 .cw-sel-bar button{font-size:12.5px;padding:6px 12px;border:0;border-radius:8px;background:transparent;color:var(--text);font-weight:600}
 .cw-sel-bar button:active{background:var(--bg-tertiary)}
@@ -1735,7 +1735,8 @@ html.cw-native-sel-off #cardwriterMessages,html.cw-native-sel-off .cw-msg-text{-
           </div>
           <!-- 长按选中正文后的操作浮条（固定层；随面板显示/隐藏） -->
           <div class="cw-sel-bar" id="cwSelBar">
-            <button onclick="CardWriterChat.selBarAction('copy')">复制</button>
+            <button id="cwSelCopyBtn" onclick="CardWriterChat.selBarAction('copy')">复制</button>
+            <button onclick="CardWriterChat.selBarAction('all')" title="选中这条气泡里的所有字">全选</button>
             <button class="danger" onclick="CardWriterChat.selBarAction('del')">删除</button>
             <button onclick="CardWriterChat.selBarAction('multi')">多选</button>
           </div>

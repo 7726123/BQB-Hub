@@ -43,6 +43,8 @@ beforeAll(async () => {
   // 原始实现快照：本文件早先的用例会把单例的 _syncDraftFromWorldbook 覆盖成 no-op 桩，
   // 镜像同步自己的用例需要先还原（与 cardwriter-init-unique 的 _realRefreshContext 同款做法）
   (anyG as { _realSyncDraft?: unknown })._realSyncDraft = (anyG.CardWriterChat as { _syncDraftFromWorldbook: unknown })._syncDraftFromWorldbook;
+  // 同上：长按用例里有把 _beginSelect 换桩计数的，后面用真实现的用例要先还原
+  (anyG as { _realBeginSelect?: unknown })._realBeginSelect = (anyG.CardWriterChat as { _beginSelect: unknown })._beginSelect;
 });
 
 const els = new Map<string, any>();
@@ -569,102 +571,101 @@ describe('轮次门控：设计轮不给工具、操作轮才给', () => {
   });
 });
 
-// 长按选择（2026-09-25 用户）：550ms 阈值太短，慢速滑动/按住看内容就误弹「复制/删除/多选」；
-// 而且长按会同时冒出**原生**的选区+复制菜单。现在：800ms + 位移 12px + 列表滚动即取消；
-// 消息区不可选（CSS）+ 不再程序化创建原生选区（改 .cw-sel 描边做视觉反馈）。
-describe('长按选择：阈值/取消/不出原生选区', () => {
+// 长按选择（2026-09-25 用户）：① 阈值放宽到 800ms、滑动/滚动取消；
+// ② 系统那条「复制/全选」菜单不要再出现、也不许"一点就全选中"——
+//    消息区永远 user-select:none，选区完全自绘：长按不动 = 选中手指下那一句，
+//    按住拖动 = 从按下那个字开始按字扩选，浮条「全选」= 整条（复制是原文切片，不受 DOM 影响）。
+describe('长按选择：自绘选区（不碰原生选择）', () => {
   function prime(c: any): void {
     c._isSending = false;
     c._multiMode = false;
     c._selIdx = -1;
+    const realBegin = (anyG as { _realBeginSelect?: any })._realBeginSelect;
+    if (realBegin) c._beginSelect = realBegin;   // 还原被前面用例换过的桩
+    c._selDrag = null;
+    c._selMoveHandler = null;   // 别把上一条用例绑的拖动监听带进来
     c._pressTimer = null;
-    c._positionSelBar = () => {};     // 只测长按判定，不测定位
-    c.messages = [{ role: 'assistant', content: '一二三四五' }];
+    c._positionSelBar = () => {};
+    c._paintSel = () => {};
+    c.messages = [{ role: 'assistant', content: '她说：器材室门口。然后就走了。' }];
   }
 
-  it('800ms 才选中：550ms 仍是未决，800ms 后出浮条（老 APK：只描边、不建原生选区）', () => {
+  it('阈值 800ms：550ms 不触发、800ms 进入自绘选区（且不创建原生选区）', () => {
     vi.useFakeTimers();
     try {
       const c = Cw();
       prime(c);
-      c._nativeSelOff = false;                       // 老 APK / 浏览器：没有原生能力
-      let selCalls = 0;
+      let begun: any = null;
       const getSel = vi.fn(() => null);
       (globalThis as any).window = { getSelection: getSel, innerWidth: 360, innerHeight: 640 };
-      const toggles: any[] = [];
-      const row = { classList: { toggle: (k: string, v: any) => toggles.push([k, v]) } };
-      els.set('cardwriterMessages', { querySelector: () => row });
-      const orig = c.selectMessage;
-      c.selectMessage = (i: any) => { selCalls++; orig.call(c, i); };
-      c.msgPressStart({ clientX: 10, clientY: 10, target: { closest: () => null } }, 0);
+      c._beginSelect = (i: any, x: any, y: any) => { begun = { i: i, x: x, y: y }; };
+      c.msgPressStart({ clientX: 10, clientY: 20, target: { closest: () => null } }, 0);
       vi.advanceTimersByTime(550);
-      expect(selCalls, '550ms 不该触发').toBe(0);
+      expect(begun, '550ms 不该触发').toBe(null);
       vi.advanceTimersByTime(250);
-      expect(selCalls, '800ms 应触发').toBe(1);
-      expect(getSel, '不应程序化创建原生选区').not.toHaveBeenCalled();
-      expect(toggles).toEqual([['cw-sel', true]]);
-      c._hideSelBar();
-      expect(toggles).toEqual([['cw-sel', true], ['cw-sel', false]]);
+      expect(begun).toEqual({ i: 0, x: 10, y: 20 });
+      expect(getSel, '不创建原生选区（系统菜单就无从出现）').not.toHaveBeenCalled();
     } finally { vi.useRealTimers(); }
   });
 
-  it('滑动（位移 >12px）与列表滚动都会取消未决长按', () => {
-    vi.useFakeTimers();
-    try {
-      const c = Cw();
-      prime(c);
-      c.msgPressStart({ clientX: 100, clientY: 100, target: { closest: () => null } }, 0);
-      c.msgPressMove({ clientX: 106, clientY: 104 });      // 小幅抖动不取消
-      expect(c._pressTimer == null).toBe(false);
-      c.msgPressMove({ clientX: 113, clientY: 100 });      // 13px → 取消
-      vi.advanceTimersByTime(1000);
-      expect(c._selIdx).toBe(-1);
-      // 滚动取消：即使手指没动，列表一滚也不该弹
-      c._selIdx = -1;
-      c.msgPressStart({ clientX: 10, clientY: 10, target: { closest: () => null } }, 0);
-      c.msgPressCancel();
-      vi.advanceTimersByTime(1000);
-      expect(c._selIdx).toBe(-1);
-    } finally { vi.useRealTimers(); }
-  });
-
-  it('新 APK（原生已屏蔽系统选区菜单）：程序化创建原生选区，可拖手柄选一段', () => {
+  it('长按不动选中手指下那一句；按住拖动按字扩选（含区间反转）', () => {
     const c = Cw();
     prime(c);
-    c._nativeSelOff = true;                          // NativeFeatures.canSelectText() === true
-    const range = { selectNodeContents: vi.fn() };
-    const sel = { removeAllRanges: vi.fn(), addRange: vi.fn() };
-    (globalThis as any).window = { getSelection: () => sel, innerWidth: 360, innerHeight: 640 };
-    (globalThis as any).document.createRange = () => range;
-    els.set('cardwriterMessages', { querySelector: () => ({ classList: { toggle: () => {} } }) });
-    c.selectMessage(0);
-    expect(range.selectNodeContents).toHaveBeenCalled();
-    expect(sel.addRange).toHaveBeenCalled();
+    c._offsetAt = () => 6;                       // 手指落在「器材室门口。」那一句里
+    c._beginSelect(0, 0, 0);
+    expect(c._selText).toBe('她说：器材室门口。');   // 长按不动 = 手指下那一句（到句末标点为止）
+    expect(c._selDrag.moved).toBe(false);
+    c._selDrag.cur = 10; c._selDrag.moved = true; c._applySel();   // 拖到下标 10 → 从按下的第 6 字起
+    expect(c._selText).toBe('门口。然');
+    c._selDrag.cur = 3; c._applySel();                            // 反向拖回按下点之前 → 区间反转
+    expect(c._selText).toBe('器材室');
   });
 
-  it('页面里的消息区默认不可选、滚动会取消长按，且新 APK 有放开选择的分支（防回归）', () => {
+  it('「全选」= 整条气泡的所有字；浮条复制文案带字数', () => {
+    const c = Cw();
+    prime(c);
+    const labels: string[] = [];
+    c._copyText = (t: string, okMsg?: string) => { labels.push(String(okMsg || '')); };
+    c.selectMessage(0);
+    expect(c._selText).toBe('她说：器材室门口。然后就走了。');
+    expect(c._selDrag.all).toBe(true);
+    c.selBarAction('copy');
+    expect(labels[0]).toContain('字');
+  });
+
+  it('拖动用 touchmove/pointermove（触摸滚动时 pointermove 会被 cancel），松手停监听', () => {
+    const c = Cw();
+    prime(c);
+    const added: string[] = [], removed: string[] = [];
+    const doc: any = (globalThis as any).document;
+    const origAdd = doc.addEventListener, origRemove = doc.removeEventListener;
+    doc.addEventListener = (t: string) => added.push(t);
+    doc.removeEventListener = (t: string) => removed.push(t);
+    try {
+      c._offsetAt = () => 0;
+      c._beginSelect(0, 0, 0);
+      expect(added).toContain('touchmove');
+      expect(added).toContain('pointermove');
+      c.msgPressEnd();
+      expect(removed).toContain('touchmove');
+      expect(removed).toContain('pointermove');
+    } finally { doc.addEventListener = origAdd; doc.removeEventListener = origRemove; }
+  });
+
+  it('页面：消息区永远不可选 + 浮条有「全选」+ 自绘高亮层（防回归）', () => {
     const fs = require('node:fs');
     const path = require('node:path');
     const html = fs.readFileSync(path.resolve(__dirname, '..', '..', 'web', 'index.html'), 'utf8');
     expect(html).toMatch(/#cardwriterMessages\{[^}]*user-select:none/);
-    expect(html).toContain('id="cardwriterMessages" onscroll="CardWriterChat.msgPressCancel()"');
     expect(html).toMatch(/\.cw-msg-text\{[^}]*user-select:none/);
-    expect(html).toContain('html.cw-native-sel-off #cardwriterMessages');
-    // 原生探针 + Java 侧的选区菜单屏蔽都得在（否则放开选择会连系统菜单一起回来）
-    const cw = fs.readFileSync(path.resolve(__dirname, '..', 'src', 'domain', 'cardwriter.ts'), 'utf8');
-    expect(cw).toContain('NativeFeatures');
-    expect(cw).toContain('cw-native-sel-off');
-    const java = fs.readFileSync(path.resolve(__dirname, '..', '..', 'android', 'app', 'src', 'main', 'java', 'com', 'novelwriter', 'app', 'MainActivity.java'), 'utf8');
-    // 原生侧：按需屏蔽系统选区菜单（onWindowStartingActionMode 返回 null）+ 能力探针
-    expect(java).toContain('onWindowStartingActionMode');
-    expect(java).toContain('canSelectText');
-    expect(java).toContain('setSuppressSystemMenu');
+    // 原生放开选择的分支必须不存在（它会让系统「复制/全选」菜单回来 —— 1.5.99 的真实故障）
+    expect(html).not.toContain('cw-native-sel-off');
+    expect(html).toContain('cw-sel-layer');
+    expect(html).toContain("selBarAction('all')");
+    expect(html).toContain('id="cardwriterMessages" onscroll="CardWriterChat.msgPressCancel()"');
   });
 });
 
-// 写卡 ↔ 世界书：两边维护同一本书（2026-09-25 用户：改了世界书，写卡这边还是旧内容；
-// 改了写卡，世界书也没跟着变——应该完全共同维护一本）。写卡这侧改成**镜像拉取**：
-// 名字/内容/类型/顺序全部以世界书为准（含"世界书里删掉的条目"），世界书一变就对齐。
 describe('写卡工作副本 = 世界书镜像（以世界书为准）', () => {
   function prime(c: any): void {
     const real = (anyG as { _realSyncDraft?: any })._realSyncDraft;

@@ -2,7 +2,7 @@ import { SM } from '../infra/gate';
 import { adaptTavernLorebook, type TavernPolicy } from './tavern-adapter';
 import { WorldBookManager } from './worldbook';
 import { CharacterManager } from './character';
-import { selectedRawText, roundIndexOf, collectRoundDeletes } from '../lib/msgslice';
+import { selectedRawText, rawOffsetOf, nodeAtRawOffset, roundIndexOf, collectRoundDeletes } from '../lib/msgslice';
 import { renderMdStrong } from '../lib/mdtext';
 
 // 安全提示：本模块在 app.js 之前加载，加载期（init/_load）触发的兜底提示不能依赖
@@ -89,7 +89,8 @@ const CardWriterChat: CardWriterChatShape = {
   // 文本选择（长按气泡选中整条 → 浮条 复制/删除/多选）
   _selIdx: -1, // 当前选中的消息下标（-1 = 无）
   _selText: '', // 当前选区对应的原文（复制直接用它：Range.toString 会丢换行）
-  _nativeSelOff: false, // 原生侧已屏蔽系统选区菜单（新 APK 的能力探针）→ 才创建原生选区、允许拖选片段
+  _selDrag: null as any, // 自绘选区拖动态：{ i, anchor, cur, start, end, moved, all }（原文下标）
+  _selMoveHandler: null as any, // 拖动期间的 touchmove/pointermove 监听（长按到点后绑定）
   _viewMenuOutside: null as any, // 「查看」下拉的「点空白关闭」监听器
   // 多选删除（QQ 式：勾选整轮，批量删）
   _multiMode: false,
@@ -190,20 +191,10 @@ const CardWriterChat: CardWriterChatShape = {
   },
 
   init() {
-    // 原生能力探测（一次）：新 APK 在 Java 侧屏蔽了系统选区菜单（MainActivity 的
-    // setCustomSelectionActionModeCallback）+ 通过 NativeFeatures.canSelectText() 上报 →
-    // 给 <html> 加 .cw-native-sel-off 放开消息区选择（CSS 分支见 index.html），长按后可拖手柄选一段。
-    // 老 APK / 浏览器里没有这个对象：保持"消息区不可选"，长按只出我们的浮条（不冒系统复制菜单）。
-    try {
-      const nf: any = (window as any).NativeFeatures;
-      const canSelect = !!(nf && typeof nf.canSelectText === 'function' && nf.canSelectText() === true);
-      this._nativeSelOff = canSelect;
-      if (canSelect && document.documentElement && document.documentElement.classList) {
-        document.documentElement.classList.add('cw-native-sel-off');
-      }
-    } catch (e) { this._nativeSelOff = false; }
-    // 系统选区菜单的**按需**屏蔽：手指落在写卡消息区时才让原生屏蔽（那一处长按只要应用自己的浮条），
-    // 落在网页输入框（API Key、聊天输入框…）上时必须放开——那里还要系统「粘贴」菜单。
+    // 系统选区菜单的**按需**屏蔽（安全网）：手指落在写卡消息区时才让原生屏蔽——消息区永远
+    // user-select:none（我们的长按完全不产生原生选区），但万一某台设备的 WebView 仍弹系统菜单，
+    // 这层能压住；手指落在网页输入框（API Key、聊天输入框…）上时必须放开，那里还要「粘贴」菜单。
+    // 注：只有 1.5.99+ 的 APK 提供 NativeFeatures；老 APK / 浏览器没有这个对象，直接跳过。
     try {
       const nf: any = (window as any).NativeFeatures;
       if (nf && typeof nf.setSuppressSystemMenu === 'function') {
@@ -1258,6 +1249,8 @@ const CardWriterChat: CardWriterChatShape = {
 
   renderMessages(isStreaming: any) {
     this._syncSendState(); // 发送键双态：生成中显示为「暂停」（请求卡死时它是唯一的自救入口）
+    // 重渲染会把自绘选区的高亮层一起换掉 → 选区还在就重画一次（流式之外的刷新也会走这里）
+    const _keepSel = this._selDrag;
     const container = document.getElementById('cardwriterMessages');
     if (!container) return;
     if (this.messages.length === 0) {
@@ -1357,6 +1350,10 @@ const CardWriterChat: CardWriterChatShape = {
     }
     const prevScrollTop = container.scrollTop;
     container.innerHTML = html;
+    // 重建把自绘选区的高亮层一起换掉了 → 选区还在就重画（并让浮条跟着新位置）
+    if (_keepSel && this._selDrag) {
+      try { this._paintSel(this._selDrag.i, this._selDrag.start, this._selDrag.end); this._positionSelBar(); } catch (e) { /* 画不出来不影响复制 */ }
+    }
     // 重建会把 scrollTop 归零：在底部则跟随最新，否则恢复原位置
     // （多选勾选/取消会频繁重建，不恢复的话每点一条列表就跳回顶部）
     if (isAtBottom) container.scrollTop = container.scrollHeight;
@@ -1436,7 +1433,7 @@ const CardWriterChat: CardWriterChatShape = {
     this._pressTimer = setTimeout(function () {
       self._pressTimer = null;
       if (self._pressMoved || self._isSending) return;
-      self.selectMessage(i);
+      self._beginSelect(i, self._pressStartX, self._pressStartY);
     }, 800);
   },
   msgPressMove(e: any) {
@@ -1447,6 +1444,8 @@ const CardWriterChat: CardWriterChatShape = {
   msgPressEnd() {
     // 松手时定时器还在 = 短点击：取消长按判定（点击不受影响）
     if (this._pressTimer != null) { clearTimeout(this._pressTimer); this._pressTimer = null; }
+    // 松手 = 选区定型：停掉拖动监听（浮条与高亮留着，点「复制」复制选中的那段）
+    this._unbindSelDrag();
   },
   // 列表滚动（手指在气泡上滑动、或惯性滚动）→ 立即取消未决的长按：滑动绝不该弹出复制/删除
   msgPressCancel() {
@@ -1465,32 +1464,174 @@ const CardWriterChat: CardWriterChatShape = {
     return String((m && m.content) || '');
   },
 
-  // 长按入口：选中整条正文 → 出浮条（复制 / 删除 / 多选）。
-  // 原生能力：新 APK（1.5.99+）在 Java 侧屏蔽了系统选区菜单，并通过 NativeFeatures.canSelectText() 上报；
-  // 这时（且只有这时）才程序化创建原生选区 → 系统手柄出现，用户可以拖手柄改成"只选一段"，
-  // 浮条的复制会跟着 selectionchange 复制那一段（见 onSelectionChange / selectedRawText）。
-  // 老 APK / 浏览器里没有该能力：消息区 CSS 不可选（见 index.html），这里只给描边反馈，复制=整条
-  // —— 否则系统的选区手柄 + 复制菜单会和我们的浮条一起冒出来（用户 2026-09-25 反馈）。
-  selectMessage(i: any) {
-    if (this._selIdx >= 0 && this._selIdx !== i) this._markSelRow(this._selIdx, false);
+  // 长按入口（800ms 到点）：**自绘选区**开头 —— 长按不动 = 选中手指下那一句，
+  // 接着按住拖动 = 从按下那个字开始按字扩选（见 _bindSelDrag），浮条「全选」= 整条。
+  // 完全不碰原生选择（消息区永远 user-select:none）：所以系统那条「复制/全选」菜单不会再冒出来，
+  // 也不会出现"一点就全选中"（2026-09-25 用户反馈的两点）。
+  _beginSelect(i: any, x: any, y: any) {
+    const raw = this._msgRaw(i);
+    const off0 = this._offsetAt(i, x, y);
+    const off = off0 >= 0 ? Math.max(0, Math.min(off0, raw.length)) : 0;
+    if (this._selIdx >= 0 && this._selIdx !== i) { this._markSelRow(this._selIdx, false); this._clearSelPaint(this._selIdx); }
     this._selIdx = i;
-    this._selText = this._msgRaw(i);
     this._markSelRow(i, true);
-    if (this._nativeSelOff) {
-      const el: any = this._msgTextEl(i);
-      try {
-        const sel = window.getSelection && window.getSelection();
-        const doc: any = document;
-        if (el && sel && doc.createRange) {
-          const range = doc.createRange();
-          range.selectNodeContents(el);
-          sel.removeAllRanges();
-          sel.addRange(range);
-        }
-      } catch (e) { /* 选区失败不致命：复制仍走整条兜底 */ }
+    this._selDrag = { i: i, anchor: off, cur: off, moved: false, start: off, end: off };
+    this._bindSelDrag();
+    this._applySel();
+  },
+
+  // 「全选」这条（浮条按钮 / 程序化调用）
+  selectMessage(i: any) {
+    const raw = this._msgRaw(i);
+    if (this._selIdx >= 0 && this._selIdx !== i) { this._markSelRow(this._selIdx, false); this._clearSelPaint(this._selIdx); }
+    this._selIdx = i;
+    this._markSelRow(i, true);
+    this._selDrag = { i: i, anchor: 0, cur: raw.length, moved: true, all: true, start: 0, end: raw.length };
+    this._unbindSelDrag();
+    this._applySel();
+  },
+
+  // 屏幕坐标 → 原文下标；落在气泡外按方向钳到条首/条尾；命中不了返回 -1（调用方保持原值）
+  _offsetAt(i: any, x: any, y: any): number {
+    const root: any = this._msgTextEl(i);
+    if (!root) return -1;
+    const raw = this._msgRaw(i);
+    let rect: any = null;
+    try { rect = root.getBoundingClientRect ? root.getBoundingClientRect() : null; } catch (e) { rect = null; }
+    if (rect && rect.height > 0) {
+      if (y < rect.top) return 0;
+      if (y > rect.bottom) return raw.length;
     }
+    try {
+      const doc: any = document;
+      let node: any = null, offset = 0;
+      if (doc.caretRangeFromPoint) {
+        const r = doc.caretRangeFromPoint(x, y);
+        if (r) { node = r.startContainer; offset = r.startOffset; }
+      } else if (doc.caretPositionFromPoint) {
+        const p = doc.caretPositionFromPoint(x, y);
+        if (p) { node = p.offsetNode; offset = p.offset; }
+      }
+      if (!node) return -1;
+      const off = rawOffsetOf(root, node, offset);
+      if (off < 0) return -1;
+      return Math.max(0, Math.min(off, raw.length));
+    } catch (e) { return -1; }
+  },
+
+  // 手指下那一句的范围（句子分隔：句末标点与换行）
+  _sentenceSpan(raw: any, idx: any): { start: number; end: number } {
+    const s = String(raw || '');
+    const at = Math.max(0, Math.min(Number(idx) || 0, s.length));
+    let start = 0, end = s.length;
+    for (let i = at - 1; i >= 0; i--) { if (/[。！？…\n]/.test(s[i])) { start = i + 1; break; } }
+    for (let i = at; i < s.length; i++) { if (/[。！？…\n]/.test(s[i])) { end = i + 1; break; } }
+    while (start < end && /\s/.test(s[start])) start++;
+    return { start: start, end: end };
+  },
+
+  // 选区变了 → 更新 _selText、高亮、浮条文案与位置
+  _applySel() {
+    const d = this._selDrag;
+    if (!d) return;
+    const raw = this._msgRaw(d.i);
+    let a = d.anchor, b = d.cur;
+    if (!d.moved && !d.all) { const sp = this._sentenceSpan(raw, d.anchor); a = sp.start; b = sp.end; }  // 长按不动 = 选一句
+    if (a > b) { const t = a; a = b; b = t; }
+    a = Math.max(0, Math.min(a, raw.length));
+    b = Math.max(0, Math.min(b, raw.length));
+    d.start = a; d.end = b;
+    this._selText = raw.slice(a, b);
+    this._paintSel(d.i, a, b);
+    this._updateSelBarLabel();
     this._positionSelBar();
   },
+
+  // 拖动期间监听：touchmove 在触摸滚动时仍会来（pointermove 会被 cancel），所以两个都听
+  _bindSelDrag() {
+    if (this._selMoveHandler) return;
+    const self = this;
+    const onMove = (e: any) => {
+      const d = self._selDrag;
+      if (!d) return;
+      let x = 0, y = 0;
+      if (e.touches && e.touches.length) { x = e.touches[0].clientX; y = e.touches[0].clientY; }
+      else if (e.clientX != null) { x = e.clientX; y = e.clientY; }
+      else return;
+      const off = self._offsetAt(d.i, x, y);
+      if (off < 0) return;
+      if (off !== d.cur) { d.moved = true; d.cur = off; self._applySel(); }
+    };
+    this._selMoveHandler = onMove;
+    try {
+      document.addEventListener('touchmove', onMove, { passive: true } as any);
+      document.addEventListener('pointermove', onMove);
+    } catch (e) { /* ignore */ }
+  },
+  _unbindSelDrag() {
+    if (!this._selMoveHandler) return;
+    try {
+      document.removeEventListener('touchmove', this._selMoveHandler);
+      document.removeEventListener('pointermove', this._selMoveHandler);
+    } catch (e) { /* ignore */ }
+    this._selMoveHandler = null;
+  },
+
+  // 自绘高亮：按原文区间构造 Range → getClientRects() → 在正文层里贴一层半透明矩形。
+  // 不动消息 DOM（流式重绘/重新渲染都不会错位），也不产生任何原生选区。
+  _selLayer(el: any) {
+    if (!el || !el.querySelector) return null;
+    let layer: any = el.querySelector('.cw-sel-layer');
+    if (!layer) {
+      layer = document.createElement('div');
+      layer.className = 'cw-sel-layer';
+      el.appendChild(layer);
+    }
+    return layer;
+  },
+  _paintSel(i: any, start: any, end: any) {
+    const el: any = this._msgTextEl(i);
+    if (!el) return;
+    const layer: any = this._selLayer(el);
+    if (!layer) return;
+    layer.innerHTML = '';
+    if (!(end > start)) return;
+    try {
+      const a = nodeAtRawOffset(el, start), b = nodeAtRawOffset(el, end);
+      if (!a || !b) return;
+      const range: any = (document as any).createRange();
+      range.setStart(a.node, a.offset);
+      range.setEnd(b.node, b.offset);
+      const rects: any = range.getClientRects ? range.getClientRects() : [];
+      const base: any = el.getBoundingClientRect();
+      for (let k = 0; k < rects.length; k++) {
+        const r = rects[k];
+        if (!r || !(r.width > 0) || !(r.height > 0)) continue;
+        const div: any = document.createElement('div');
+        div.className = 'cw-sel-rect';
+        div.style.left = (r.left - base.left) + 'px';
+        div.style.top = (r.top - base.top) + 'px';
+        div.style.width = r.width + 'px';
+        div.style.height = r.height + 'px';
+        layer.appendChild(div);
+      }
+    } catch (e) { /* 画不出来不影响复制（复制用原文切片 _selText） */ }
+  },
+  _clearSelPaint(i: any) {
+    try {
+      const el: any = this._msgTextEl(i);
+      const layer: any = el && el.querySelector ? el.querySelector('.cw-sel-layer') : null;
+      if (layer && layer.parentNode) layer.parentNode.removeChild(layer);
+    } catch (e) { /* ignore */ }
+  },
+  // 浮条上的「复制」带上字数：用户一眼看到选中了多少
+  _updateSelBarLabel() {
+    const btn = document.getElementById('cwSelCopyBtn');
+    if (!btn) return;
+    const n = String(this._selText || '').replace(/\s/g, '').length;
+    btn.textContent = n > 0 ? '复制 ' + n + ' 字' : '复制';
+  },
+
   _selRowEl(i: any) {
     const box = document.getElementById('cardwriterMessages');
     if (!box || !box.querySelector) return null;
@@ -1525,7 +1666,9 @@ const CardWriterChat: CardWriterChatShape = {
   },
 
   _hideSelBar() {
-    if (this._selIdx >= 0) this._markSelRow(this._selIdx, false);
+    if (this._selIdx >= 0) { this._markSelRow(this._selIdx, false); this._clearSelPaint(this._selIdx); }
+    this._selDrag = null;
+    this._unbindSelDrag();
     this._selIdx = -1;
     this._selText = '';
     const bar = document.getElementById('cwSelBar');
@@ -1568,7 +1711,13 @@ const CardWriterChat: CardWriterChatShape = {
     if (act === 'copy') {
       const text = this._selText || (i >= 0 ? this._msgRaw(i) : '');
       if (!text) { App.toast('没有可复制的内容'); return; }
-      this._copyText(text);
+      const n = text.replace(/\s/g, '').length;
+      this._copyText(text, n > 0 ? '已复制 ' + n + ' 字' : '');
+      return;
+    }
+    if (act === 'all') {
+      if (i < 0) return;
+      this.selectMessage(i);   // 全选这条气泡的所有字
       return;
     }
     if (act === 'del') {
@@ -1583,8 +1732,8 @@ const CardWriterChat: CardWriterChatShape = {
     }
   },
 
-  _copyText(text: string) {
-    const ok = () => App.toast('已复制');
+  _copyText(text: string, okMsg?: string) {
+    const ok = () => App.toast(okMsg || '已复制');
     try {
       const nav: any = navigator;
       if (nav && nav.clipboard && nav.clipboard.writeText) {

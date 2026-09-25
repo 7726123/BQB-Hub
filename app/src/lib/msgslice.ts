@@ -45,6 +45,44 @@ export function rawOffsetOf(root: any, node: any, offset: number): number {
   return found;
 }
 
+// 原文下标 → 节点内位置（rawOffsetOf 的逆运算：自绘选区高亮用它构造 Range）。
+// 返回 { node, offset } 供 range.setStart/setEnd 使用；越界钳到末尾；空文档返回 null。
+export function nodeAtRawOffset(root: any, rawIdx: number): { node: any; offset: number } | null {
+  if (!root) return null;
+  let want = Math.max(0, Math.floor(Number(rawIdx) || 0));
+  let found: { node: any; offset: number } | null = null;
+  let lastText: any = null;
+  const visit = (n: any) => {
+    if (found || !n) return;
+    if (n.nodeType === 3) {
+      const len = String(n.data == null ? '' : n.data).length;
+      lastText = n;
+      if (want <= len) { found = { node: n, offset: want }; return; }
+      want -= len;
+      return;
+    }
+    if (String(n.nodeName || '').toUpperCase() === 'BR') {
+      const parent = n.parentNode;
+      if (want <= 0 && parent && parent.childNodes) {
+        // 位置正好落在这个换行前 → 用父节点的子下标表达（Range 的边界可以是子元素下标）
+        let idx = 0;
+        while (idx < parent.childNodes.length && parent.childNodes[idx] !== n) idx++;
+        found = { node: parent, offset: idx };
+        return;
+      }
+      want -= 1;
+      return;
+    }
+    const kids = (n.childNodes || []) as any[];
+    for (let i = 0; i < kids.length; i++) { visit(kids[i]); if (found) return; }
+  };
+  visit(root);
+  if (found) return found;
+  // 超出末尾 → 落在最后一个文本节点末尾（没有文本节点就落回根节点开头）
+  if (lastText) return { node: lastText, offset: String(lastText.data == null ? '' : lastText.data).length };
+  return { node: root, offset: 0 };
+}
+
 // 选区覆盖的原文（端点映射失败 → 退回整条）
 export function selectedRawText(root: any, raw: string, range: any): string {
   const s = String(raw == null ? '' : raw);
