@@ -420,9 +420,12 @@ label{font-size:13px;color:var(--text-secondary);display:block;margin-bottom:4px
 #cwViewMenu>div{padding:8px 10px;border-radius:7px;cursor:pointer;white-space:nowrap;color:var(--text)}
 #cwViewMenu>div:hover{background:color-mix(in srgb,var(--primary) 12%,transparent);color:var(--primary)}
 /* 长按选择：浮条是 body 上的固定层（不进气泡 → 零布局位移）。
-   消息区整体**不可选**（user-select:none）：长按不再触发系统的选区/复制菜单，只出我们这条浮条
-   （用户 2026-09-25：原生的复制菜单会和浮条一起冒出来）。代价：不能用系统手柄拖选片段，复制=整条。 */
+   默认消息区**不可选**（user-select:none）：长按只出我们这条浮条，不冒系统复制菜单。
+   新 APK（1.5.99+）在原生侧屏蔽了系统选区菜单，并通过 NativeFeatures.canSelectText() 上报，
+   cardwriter.js 会给 <html> 加 .cw-native-sel-off → 这里放开选择：长按选中整条后可拖手柄选一段，
+   复制/删除仍走我们的浮条（用户 2026-09-25：希望能复制一段）。 */
 .cw-msg-text{-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
+html.cw-native-sel-off #cardwriterMessages,html.cw-native-sel-off .cw-msg-text{-webkit-user-select:text;user-select:text;-webkit-touch-callout:default}
 .cw-sel-bar{position:fixed;z-index:1700;display:none;align-items:center;gap:2px;padding:4px;border-radius:11px;background:var(--bg-secondary);border:1px solid var(--border);box-shadow:0 8px 24px rgba(0,0,0,.22)}
 .cw-sel-bar button{font-size:12.5px;padding:6px 12px;border:0;border-radius:8px;background:transparent;color:var(--text);font-weight:600}
 .cw-sel-bar button:active{background:var(--bg-tertiary)}
@@ -2081,7 +2084,7 @@ label{font-size:13px;color:var(--text-secondary);display:block;margin-bottom:4px
     <button type="button" class="bs-skip" id="bootSplashSkip">稍后</button>
   </div>
 </div>
-<script id="bootMain" data-src="modules/main.js?v=3420036107-158"></script>
+<script id="bootMain" data-src="modules/main.js?v=3070801548-160"></script>
 <script>
 (function () {
   var el = document.getElementById('bootSplash');

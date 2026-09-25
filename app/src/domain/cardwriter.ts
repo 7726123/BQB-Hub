@@ -89,6 +89,7 @@ const CardWriterChat: CardWriterChatShape = {
   // 文本选择（长按气泡选中整条 → 浮条 复制/删除/多选）
   _selIdx: -1, // 当前选中的消息下标（-1 = 无）
   _selText: '', // 当前选区对应的原文（复制直接用它：Range.toString 会丢换行）
+  _nativeSelOff: false, // 原生侧已屏蔽系统选区菜单（新 APK 的能力探针）→ 才创建原生选区、允许拖选片段
   _viewMenuOutside: null as any, // 「查看」下拉的「点空白关闭」监听器
   // 多选删除（QQ 式：勾选整轮，批量删）
   _multiMode: false,
@@ -189,6 +190,31 @@ const CardWriterChat: CardWriterChatShape = {
   },
 
   init() {
+    // 原生能力探测（一次）：新 APK 在 Java 侧屏蔽了系统选区菜单（MainActivity 的
+    // setCustomSelectionActionModeCallback）+ 通过 NativeFeatures.canSelectText() 上报 →
+    // 给 <html> 加 .cw-native-sel-off 放开消息区选择（CSS 分支见 index.html），长按后可拖手柄选一段。
+    // 老 APK / 浏览器里没有这个对象：保持"消息区不可选"，长按只出我们的浮条（不冒系统复制菜单）。
+    try {
+      const nf: any = (window as any).NativeFeatures;
+      const canSelect = !!(nf && typeof nf.canSelectText === 'function' && nf.canSelectText() === true);
+      this._nativeSelOff = canSelect;
+      if (canSelect && document.documentElement && document.documentElement.classList) {
+        document.documentElement.classList.add('cw-native-sel-off');
+      }
+    } catch (e) { this._nativeSelOff = false; }
+    // 系统选区菜单的**按需**屏蔽：手指落在写卡消息区时才让原生屏蔽（那一处长按只要应用自己的浮条），
+    // 落在网页输入框（API Key、聊天输入框…）上时必须放开——那里还要系统「粘贴」菜单。
+    try {
+      const nf: any = (window as any).NativeFeatures;
+      if (nf && typeof nf.setSuppressSystemMenu === 'function') {
+        const mark = (e: any) => {
+          const tg: any = e && e.target;
+          const inMsgs = !!(tg && tg.closest && tg.closest('#cardwriterMessages'));
+          try { nf.setSuppressSystemMenu(inMsgs); } catch (err) { /* 原生调用失败不影响交互 */ }
+        };
+        document.addEventListener('pointerdown', mark, true);
+      }
+    } catch (e) { /* 老 APK / 浏览器：没有这个能力，保持默认（系统菜单照旧） */ }
     // 进入写卡面板（侧边栏入口或右侧 tab）时：重载本书讨论历史 + 刷新上下文
     document.addEventListener('click', (e) => {
       const btn = e.target && e.target.closest ? e.target.closest('[data-tab="cardwriter"],[data-view="cardwriter"]') : null;
@@ -1439,15 +1465,30 @@ const CardWriterChat: CardWriterChatShape = {
     return String((m && m.content) || '');
   },
 
-  // 长按入口：选中整条正文 → 出浮条（复制 = 整条）。
-  // 2026-09-25 用户要求：不要再冒**原生**的选区/复制菜单（长按会同时弹出系统那套 + 我们这条浮条）。
-  // 做法：消息区 CSS user-select:none（见 index.html）+ 这里不再程序化创建原生选区，
-  // 视觉反馈改用 .cw-sel 描边。代价：不能用系统手柄拖选片段（复制=整条；多选可整轮处理）。
+  // 长按入口：选中整条正文 → 出浮条（复制 / 删除 / 多选）。
+  // 原生能力：新 APK（1.5.99+）在 Java 侧屏蔽了系统选区菜单，并通过 NativeFeatures.canSelectText() 上报；
+  // 这时（且只有这时）才程序化创建原生选区 → 系统手柄出现，用户可以拖手柄改成"只选一段"，
+  // 浮条的复制会跟着 selectionchange 复制那一段（见 onSelectionChange / selectedRawText）。
+  // 老 APK / 浏览器里没有该能力：消息区 CSS 不可选（见 index.html），这里只给描边反馈，复制=整条
+  // —— 否则系统的选区手柄 + 复制菜单会和我们的浮条一起冒出来（用户 2026-09-25 反馈）。
   selectMessage(i: any) {
     if (this._selIdx >= 0 && this._selIdx !== i) this._markSelRow(this._selIdx, false);
     this._selIdx = i;
     this._selText = this._msgRaw(i);
     this._markSelRow(i, true);
+    if (this._nativeSelOff) {
+      const el: any = this._msgTextEl(i);
+      try {
+        const sel = window.getSelection && window.getSelection();
+        const doc: any = document;
+        if (el && sel && doc.createRange) {
+          const range = doc.createRange();
+          range.selectNodeContents(el);
+          sel.removeAllRanges();
+          sel.addRange(range);
+        }
+      } catch (e) { /* 选区失败不致命：复制仍走整条兜底 */ }
+    }
     this._positionSelBar();
   },
   _selRowEl(i: any) {

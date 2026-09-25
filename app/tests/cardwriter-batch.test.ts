@@ -582,11 +582,12 @@ describe('长按选择：阈值/取消/不出原生选区', () => {
     c.messages = [{ role: 'assistant', content: '一二三四五' }];
   }
 
-  it('800ms 才选中：550ms 仍是未决，800ms 后出浮条且只做描边、不建原生选区', () => {
+  it('800ms 才选中：550ms 仍是未决，800ms 后出浮条（老 APK：只描边、不建原生选区）', () => {
     vi.useFakeTimers();
     try {
       const c = Cw();
       prime(c);
+      c._nativeSelOff = false;                       // 老 APK / 浏览器：没有原生能力
       let selCalls = 0;
       const getSel = vi.fn(() => null);
       (globalThis as any).window = { getSelection: getSel, innerWidth: 360, innerHeight: 640 };
@@ -627,14 +628,37 @@ describe('长按选择：阈值/取消/不出原生选区', () => {
     } finally { vi.useRealTimers(); }
   });
 
-  it('页面里的消息区不可选、且滚动会取消长按（防回归）', () => {
+  it('新 APK（原生已屏蔽系统选区菜单）：程序化创建原生选区，可拖手柄选一段', () => {
+    const c = Cw();
+    prime(c);
+    c._nativeSelOff = true;                          // NativeFeatures.canSelectText() === true
+    const range = { selectNodeContents: vi.fn() };
+    const sel = { removeAllRanges: vi.fn(), addRange: vi.fn() };
+    (globalThis as any).window = { getSelection: () => sel, innerWidth: 360, innerHeight: 640 };
+    (globalThis as any).document.createRange = () => range;
+    els.set('cardwriterMessages', { querySelector: () => ({ classList: { toggle: () => {} } }) });
+    c.selectMessage(0);
+    expect(range.selectNodeContents).toHaveBeenCalled();
+    expect(sel.addRange).toHaveBeenCalled();
+  });
+
+  it('页面里的消息区默认不可选、滚动会取消长按，且新 APK 有放开选择的分支（防回归）', () => {
     const fs = require('node:fs');
     const path = require('node:path');
     const html = fs.readFileSync(path.resolve(__dirname, '..', '..', 'web', 'index.html'), 'utf8');
     expect(html).toMatch(/#cardwriterMessages\{[^}]*user-select:none/);
     expect(html).toContain('id="cardwriterMessages" onscroll="CardWriterChat.msgPressCancel()"');
     expect(html).toMatch(/\.cw-msg-text\{[^}]*user-select:none/);
-    expect(html).not.toMatch(/\.cw-msg-text\{[^}]*user-select:text/);
+    expect(html).toContain('html.cw-native-sel-off #cardwriterMessages');
+    // 原生探针 + Java 侧的选区菜单屏蔽都得在（否则放开选择会连系统菜单一起回来）
+    const cw = fs.readFileSync(path.resolve(__dirname, '..', 'src', 'domain', 'cardwriter.ts'), 'utf8');
+    expect(cw).toContain('NativeFeatures');
+    expect(cw).toContain('cw-native-sel-off');
+    const java = fs.readFileSync(path.resolve(__dirname, '..', '..', 'android', 'app', 'src', 'main', 'java', 'com', 'novelwriter', 'app', 'MainActivity.java'), 'utf8');
+    // 原生侧：按需屏蔽系统选区菜单（onWindowStartingActionMode 返回 null）+ 能力探针
+    expect(java).toContain('onWindowStartingActionMode');
+    expect(java).toContain('canSelectText');
+    expect(java).toContain('setSuppressSystemMenu');
   });
 });
 

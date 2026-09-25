@@ -6,7 +6,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { parseBubbles, analyzeParse, stripSpeakerPrefixes, NARRATOR } from '../src/lib/bubble';
-import { chatFormatBlock, chatRoster } from '../src/domain/chatprompt';
+import { chatFormatBlock, chatRoster, CHAT_BLOCK_VERSION } from '../src/domain/chatprompt';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const fixture = (name: string) => readFileSync(resolve(here, 'fixtures', name), 'utf8');
@@ -280,15 +280,28 @@ describe('漂移兜底：台词分色与旁白另起（真机反馈）', () => {
     expect(parseBubbles('林薇 我还没拆。门被带上了一半。', AI)[0].blocks.map(x => x.type)).toEqual(['say']);
   });
 
-  it('短回复（≤6 字）与"回答上一句提问"的句子，即使整轮带引号也按台词', () => {
+  // 2026-09-25 用户要求「说话内容用「」、其他正常，然后按引号解析」：只要整轮有引号，就一律按引号分色
+  //（引号=台词、没引号=叙述），不再按内容猜。代价：模型漏引号的短回应会变淡色 —— 由提示词（v5 硬要求
+  // 含单字/短回应）压住；残检见 chat-qa 的遵循度测算。
+  it('整轮带引号时按引号分色：没引号的短回应/祈使句一律算叙述（不再按内容猜）', () => {
     const raw = '林叶：「我包呢。」\n林薇：器材室门口。\n林叶：「他去哪儿了。」\n林薇：操场那边；跑着。';
     const bs = parseBubbles(raw, AI);
-    expect(bs[1].blocks.map(x => x.type)).toEqual(['say']);        // 器材室门口。
-    expect(bs[3].blocks.map(x => x.type)).toEqual(['say']);        // 回答上一句 → 台词
+    expect(bs[1].blocks.map(x => x.type)).toEqual(['act']);        // 器材室门口。（漏引号 → 叙述色）
+    expect(bs[3].blocks.map(x => x.type)).toEqual(['act']);
   });
 
-  it('「别」的祈使判定：灯别全关是说话；别的名字/告别不是', () => {
-    expect(parseBubbles('林叶：「嗯。」\n苏老师：灯别全关，值日的留下。', AI)[1].blocks.map(x => x.type)).toEqual(['say']);
+  it('漏引号的短回应在"整轮都没引号"时仍会被兜底成台词（漂移轮不变）', () => {
+    const raw = '林叶 我包呢\n林薇 器材室门口。\n林叶 他去哪儿了\n林薇 操场那边；跑着。';
+    const bs = parseBubbles(raw, AI);
+    expect(bs[1].blocks.map(x => x.type)).toEqual(['say']);        // 没有引号可依据 → 短回答仍按台词
+    expect(bs[3].blocks.map(x => x.type)).toEqual(['say']);
+  });
+
+  it('「别」的祈使判定：整轮没引号时灯别全关算说话；别的名字/告别不算', () => {
+    // 整轮无引号（真漂移）→ 兜底按内容判：祈使句算台词
+    expect(parseBubbles('林叶 嗯\n苏老师 灯别全关，值日的留下。', AI)[1].blocks.map(x => x.type)).toEqual(['say']);
+    // 整轮有引号 → 一律按引号：没引号的都是叙述
+    expect(parseBubbles('林叶：「嗯。」\n苏老师：灯别全关，值日的留下。', AI)[1].blocks.map(x => x.type)).toEqual(['act']);
     const b = parseBubbles('林叶：「嗯。」\n信封上写着别的名字。', AI);
     expect(b[0].blocks.map(x => x.type)).toEqual(['say', 'act']);
   });
@@ -520,6 +533,16 @@ describe('格式块：名单/主角/字数渲染', () => {
     expect(blk).toContain('不要跟在某个角色的台词后面');   // 白行独立（用户报的"旁白挂在角色话尾"）
     expect(blk).toContain('作者的输入不会显示给读者');
     expect(blk).not.toContain('不要复述同一句话');          // 旧规则（作者输入已经显示过）已作废
+  });
+
+  // 2026-09-25 用户：「让说话内容用「」、其他正常，然后按引号解析」——契约要写死，含单字回应与心声两条边界。
+  it('格式块：引号契约写死（全轮零例外/单字回应/心声不加引号/输出前自检）', () => {
+    const blk = chatFormatBlock({ roster: ROSTER, protagonist: '林叶', lengthWords: 2500 });
+    expect(blk).toContain('硬要求：全轮零例外');
+    expect(blk).toContain('「嗯。」「哦。」「知道了。」');       // 单字/短回应最容易漏引号
+    expect(blk).toContain('心里想的、没出声的');
+    expect(blk).toContain('输出前自检一遍');
+    expect(CHAT_BLOCK_VERSION).toBeGreaterThanOrEqual(5);
   });
 
   // 用户 2026-09-25：「希望让一些不存在世界书的角色说话，比如路人，或者"同学a"这样的」

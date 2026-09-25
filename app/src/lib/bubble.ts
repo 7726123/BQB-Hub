@@ -574,13 +574,15 @@ export function parseBubbles(raw: string, opts: ParseOpts = {}): Bubble[] {
     const src: ScanBlock[] = bareIsSay
       ? scanned.blocks
       : _unswallowNarration(_demoteQuotedTerms(scanned.blocks), scanned.open);
-    // 漂移兜底①：AI 输出、角色气泡、整段一个引号都没有 → 裸文本逐句分色（台词深、叙述淡）。
-    // 引号只在"有"的时候才说明模型在正常格式上，（）/* 造成的非语言块不动。
-    const speechify = !bareIsSay && !!cur.speaker && cur.speaker !== NARRATOR
-      && !/[「」『』“”"]/.test(body);
     // 整轮里有没有**中文引号**（模型这一轮是否按格式给对白加引号）。只认「」『』“”：
     // 半角 " 常出现在正常叙述里（`最后一个"叶"的捺`），拿它当信号会把整轮判反。
     const roundQuoted = /[「」『』“”]/.test(text);
+    // 漂移兜底①（**只在整轮一个引号都没有时**才用）：模型完全没按格式给对白加引号，只能逐句按内容猜台词。
+    // 2026-09-25 用户要求「说话内容用「」、其他正常，然后按引号解析」+ 真机测算：整轮有引号时一律按引号
+    // 分色（引号=台词、没引号=叙述）；否则"整条没有引号的叙述气泡"（主角第一人称叙述常常如此）会被
+    // 内容启发式染深——实测 3 轮 362 句里有 64 句（≈18%）叙述被误染成台词色，这就是"分得不清楚"。
+    const speechify = !bareIsSay && !!cur.speaker && cur.speaker !== NARRATOR
+      && !roundQuoted;
     // 这个气泡的说话人就是第一人称叙述者（主角）吗？——决定"我…"的长句按叙述还是台词着色
     const narrBubble = !!opts.narrator && cur.speaker === opts.narrator;
     // 这条气泡是在回答上一个气泡的提问吗？（上一气泡是别人说的、末尾一句带疑问）

@@ -1,6 +1,6 @@
 {
-  "versionCode": 158,
-  "versionName": "1.5.98",
-  "note": "本次更新：更新机制优化，版本更新可以更快生效；另含若干体验优化与问题修复。",
-  "apk": "novel-writer-158.apk"
+  "versionCode": 160,
+  "versionName": "1.5.99",
+  "note": "本次更新：对话模式的台词显示更清晰，写卡与世界书的修改会互相同步，另含若干体验优化与问题修复。",
+  "apk": "novel-writer-160.apk"
 }
