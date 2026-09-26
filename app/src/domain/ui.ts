@@ -1700,12 +1700,7 @@ const UIManager: UIManagerShape = {
     document.getElementById('variablesFullscreen')!.style.display = 'none';
   },
 
-  switchVarMode(m: any) {
-    this._varViewMode = (m === 'chat') ? 'chat' : 'novel';
-    this.renderVariablesPage();
-  },
-
-  /** 输入栏上侧那颗箭头的角标：本模式的变量条数（0 不显示）。两条输入栏各一份，一起刷。 */
+  /** 输入栏上侧那个人字旁的角标：本模式的变量条数（0 不显示）。两条输入栏各一份，一起刷。 */
   refreshVarBadge() {
     try {
       var nv = StatusVars.count('novel');
@@ -1719,19 +1714,16 @@ const UIManager: UIManagerShape = {
     } catch (e) { /* ignore */ }
   },
 
+  /**
+   * 变量页（**纯查看**：只有「从哪打开就是哪个模式」的列表，没有切换/复制/清空/编辑入口）。
+   * 值由模型每轮维护；撤回续写/演出会回退、重置本书会清空（不在这里给按钮）。
+   */
   renderVariablesPage() {
     var listEl = document.getElementById('variablesList');
     var countEl = document.getElementById('varPageCount');
     var statusEl = document.getElementById('varPageStatus');
     if (!listEl) return;
     var mode: any = this._varViewMode;
-    var self = this;
-    try {
-      var sw = document.getElementById('varModeSwitch');
-      if (sw) Array.prototype.forEach.call(sw.querySelectorAll('button'), function (b: any) {
-        b.classList.toggle('active', b.getAttribute('data-vmode') === mode);
-      });
-    } catch (e) { /* ignore */ }
     try {
       var entries = StatusVars.entries(mode);
       var vals = StatusVars.values(mode);
@@ -1740,10 +1732,10 @@ const UIManager: UIManagerShape = {
       if (countEl) countEl.textContent = entries.length > 0 ? (entries.length + ' 个 · ' + label) : '';
       if (statusEl) {
         statusEl.textContent = entries.length === 0
-          ? '还没有启用的「变量」条目'
+          ? (label + '模式：还没有启用的「变量」条目')
           : (snap.at
-            ? ('最后更新：' + fmtVarTime(snap.at) + ' · ' + label + '模式的回报')
-            : '还没有收到回报（下一轮生成之后出现）');
+            ? (label + '模式 · 最后更新：' + fmtVarTime(snap.at))
+            : (label + '模式：还没有收到回报（下一轮生成之后出现）'));
       }
       if (entries.length === 0) {
         listEl.innerHTML =
@@ -1751,7 +1743,7 @@ const UIManager: UIManagerShape = {
           '这本书还没有启用中的<b>「变量」</b>条目。<br>' +
           '在世界书里新建一个类型为「变量」的条目：<b>名称＝变量名</b>（如「任务数量」），<b>内容＝给模型的讲解</b>（它是什么、怎么变化、范围或失败条件，可以用 <code>{{user}}</code> 指代主角），<b>注入开关＝启用/停用这一条</b>。<br>' +
           '启用后，每轮生成都会把讲解和当前值发给模型；模型在正文之后按软件给定的格式回报新值，软件收进这里，并且<b>不会留在正文里</b>。' +
-          '</div>' + this._varEntryButtons();
+          '</div>';
         return;
       }
       var html = '';
@@ -1765,106 +1757,18 @@ const UIManager: UIManagerShape = {
           (String(e.content || '').trim() ? '<div class="var-item-note">' + htmlEscape(String(e.content).trim()) + '</div>' : '') +
           '</div>';
       });
+      // 未登记：模型回报了值、但书里已经没有同名条目（改名/删除后的残留）。只提示，不给操作。
       var unreg = StatusVars.unregistered(mode);
       if (unreg.length > 0) {
-        html += '<div style="margin:14px 2px 6px;font-size:12px;font-weight:700;color:var(--text-muted);">未登记（模型回报了、但书里没有同名条目：改过名或删过了）</div>';
-        unreg.forEach(function (u: any) {
-          html += '<div class="var-item"><div class="var-item-head"><span class="var-item-name">' + htmlEscape(u.name) + '</span>' +
-            '<span class="var-item-val">' + htmlEscape(u.v) + '</span></div></div>';
-        });
+        html += '<div style="margin:12px 2px 0;font-size:12px;color:var(--text-muted);line-height:1.9;">' +
+          '未登记（模型回报了、但书里没有同名条目）：' +
+          unreg.map(function (u: any) { return htmlEscape(u.name) + '＝' + htmlEscape(u.v); }).join('；') +
+          '</div>';
       }
-      html += '<div style="margin:14px 2px 2px;">' + this._varEntryButtons() + '</div>';
       listEl.innerHTML = html;
     } catch (e) {
       listEl.innerHTML = '<div style="padding:16px;color:var(--text-muted);font-size:13px;">变量页渲染失败</div>';
     }
-  },
-
-  /** 变量页底部那颗按钮：书里还没有变量条目 → 一键新建（带示例讲解）；已有 → 去世界书编辑 */
-  _varEntryButtons(): string {
-    var list: any[] = [];
-    try { list = (((WorldBookManager.getActive() || {}).entries) || []).filter(function (e: any) { return e && e.type === '变量'; }); } catch (e) { list = []; }
-    if (list.length === 0) {
-      return '<button class="ghost-btn" onclick="UIManager.createVarEntry()" style="width:100%;">新建变量条目（自动填一份示例讲解）</button>';
-    }
-    return '<button class="ghost-btn" onclick="UIManager.openVarEntryList()" style="width:100%;">编辑变量条目（' + list.length + ' 条）</button>';
-  },
-
-  /** 一键新建变量条目：填示例名称/讲解，随后打开条目编辑弹窗让用户改（不直接生效到正文） */
-  createVarEntry() {
-    var wb = WorldBookManager.getActive();
-    if (!wb) { App.toast('请先选择一个世界书'); return; }
-    var tpl = '说明这个变量是什么、怎么变化、范围或失败条件（这段每轮都会发给模型，可以用 {{user}} 指代主角）。\n' +
-      '例如：每月 10 次，用完为止；每过一个月补满 10 次；月底还没做完就判定失败。';
-    var entry = WorldBookManager.addEntry(wb.id, { type: '变量', name: '任务数量', content: tpl, inject: true });
-    try { this.renderWBEntries(); this.renderWbShelf(); this.renderWBSwitch(); } catch (e) { /* ignore */ }
-    this.closeVariablesPage();
-    if (entry) this.showWBEntryModal(entry.id);
-    App.toast('已新建变量条目：把名称改成变量名、内容改成你的讲解');
-  },
-
-  /** 变量条目不止一条时先回世界书页（列表里能逐条开关/编辑），只有一条就直接开编辑 */
-  openVarEntryList() {
-    var list: any[] = [];
-    try { list = (((WorldBookManager.getActive() || {}).entries) || []).filter(function (e: any) { return e && e.type === '变量'; }); } catch (e) { list = []; }
-    this.closeVariablesPage();
-    if (list.length === 1) { this.showWBEntryModal(list[0].id); return; }
-    try { if (typeof MobileUI !== 'undefined' && MobileUI.switchView) MobileUI.switchView('world'); } catch (e) { /* ignore */ }
-    try { this.renderWBEntries(); } catch (e) { /* ignore */ }
-  },
-
-  copyVars() {
-    var mode: any = this._varViewMode;
-    var lines: string[] = [];
-    try {
-      var vals = StatusVars.values(mode);
-      StatusVars.entries(mode).forEach(function (e: any) {
-        var n = String(e.name || '').trim();
-        var hit = vals[n];
-        lines.push(n + '：' + ((hit && hit.v) ? String(hit.v) : '（暂无）'));
-      });
-      StatusVars.unregistered(mode).forEach(function (u: any) { lines.push(u.name + '：' + u.v + '（未登记）'); });
-    } catch (e) { /* ignore */ }
-    if (lines.length === 0) { App.toast('当前模式没有变量'); return; }
-    this._copyPlainText(lines.join('\n'), '已复制 ' + lines.length + ' 行变量');
-  },
-
-  clearVars() {
-    var mode: any = this._varViewMode;
-    var label = mode === 'chat' ? '对话' : '小说';
-    this.showConfirm('清空「' + label + '」模式的变量值？（世界书里的变量条目不受影响，下一轮生成会重新回报）', function () {
-      try { StatusVars.clear(mode); } catch (e) { /* ignore */ }
-      UIManager.renderVariablesPage();
-      UIManager.refreshVarBadge();
-      App.toast('已清空' + label + '模式的变量值');
-    });
-  },
-
-  // 复制纯文本：优先剪贴板 API，失败退回临时 textarea（与写卡页同款兜底）
-  _copyPlainText(text: string, okMsg?: string) {
-    var t = String(text == null ? '' : text);
-    var ok = function () { if (okMsg) App.toast(okMsg); };
-    try {
-      var nav: any = navigator;
-      if (nav && nav.clipboard && nav.clipboard.writeText) {
-        nav.clipboard.writeText(t).then(ok).catch(function () { UIManager._copyPlainFallback(t); ok(); });
-        return;
-      }
-    } catch (e) { /* 落兜底 */ }
-    this._copyPlainFallback(t);
-    ok();
-  },
-  _copyPlainFallback(text: string) {
-    try {
-      var ta = document.createElement('textarea');
-      ta.value = text;
-      ta.style.position = 'fixed';
-      ta.style.opacity = '0';
-      document.body.appendChild(ta);
-      ta.select();
-      document.execCommand('copy');
-      document.body.removeChild(ta);
-    } catch (e) { App.toast('复制失败，可长按选择'); }
   },
 
   /** Agent 页编辑：改未变更条 → overlay.modified；改临时条 → overlay 本体；原书零触碰 */
