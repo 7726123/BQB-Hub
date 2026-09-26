@@ -7,6 +7,7 @@ import '../src/infra/storage';
 import { parseStatusBlock, stripStatusBlocks, createStatusStreamFilter } from '../src/lib/status-block';
 import { StatusVars } from '../src/domain/statusvars';
 import { WorldBookManager as WBM } from '../src/domain/worldbook';
+import { SettingSyncManager } from '../src/domain/settingsync';
 import { VariableManager } from '../src/lib/variables';
 import { ChatMode } from '../src/domain/chatmode';
 import { APIHandler } from '../src/domain/api';
@@ -291,6 +292,27 @@ describe('StatusVars：条目读取 / 注入块 / 收集落盘', () => {
     const es = WBM.getActive()!.entries;
     expect(es.find((e: any) => e.id === 'v1')!.type).toBe('变量');
     expect(es.find((e: any) => e.id === 'w1')!.type).toBe('其他');
+  });
+
+  it('比奇生效时读「生效条目」，且读完把模式切回原样（不许把比奇面板的模式改掉）', () => {
+    seed([V1]);
+    const SSM: any = SettingSyncManager;
+    const orig = { isActive: SSM.isActive, getEffectiveEntries: SSM.getEffectiveEntries, mode: SSM.mode, setMode: SSM.setMode };
+    const calls: string[] = [];
+    SSM.isActive = () => true;
+    SSM.getEffectiveEntries = () => [
+      { id: 'ov1', type: '变量', name: '临时变量', content: '比奇临时加的' },
+      { id: 'ov2', type: '变量', name: '被停用的', content: 'x', inject: false },
+    ];
+    SSM.mode = () => 'novel';
+    SSM.setMode = (m: string) => { calls.push(m); };
+    try {
+      expect(StatusVars.names('chat')).toEqual(['临时变量']);
+      expect(calls).toEqual(['chat', 'novel']);     // 切过去读 → 立刻切回
+      calls.length = 0;
+      expect(StatusVars.names('novel')).toEqual(['临时变量']);
+      expect(calls).toEqual([]);                     // 模式本来就对 → 一次都不切
+    } finally { Object.assign(SSM, orig); }
   });
 });
 

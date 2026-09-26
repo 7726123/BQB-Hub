@@ -35,13 +35,20 @@ export const StatusVars = {
     try { SM().set(this._key, all); } catch (e) { /* 存储失败不影响生成 */ }
   },
 
-  /** 启用中的变量条目（按书内顺序；比奇生效时用「生效条目」，停用/改过的都算数） */
+  /** 启用中的变量条目（按书内顺序；比奇生效时用「生效条目」，停用/改过/临时新增的都算数）。
+   *  读 overlay 需要把 SettingSyncManager 切到该模式，**读完立刻切回**（同步流程内还原）——
+   *  否则一次徽标刷新（它要同时数小说/对话两份）就会把比奇面板的模式悄悄改掉，之后它按模式读 overlay 会读错一份。 */
   entries(mode: StatusMode): any[] {
     let list: any[] = [];
+    let prev: any = null;
     try {
       if (SettingSyncManager.isActive() && typeof SettingSyncManager.getEffectiveEntries === 'function') {
-        try { SettingSyncManager.setMode(mode); } catch (e) { /* ignore */ }
-        list = SettingSyncManager.getEffectiveEntries() || [];
+        try {
+          prev = SettingSyncManager.mode();
+          if (prev !== mode) SettingSyncManager.setMode(mode);
+        } catch (e) { prev = null; }
+        try { list = SettingSyncManager.getEffectiveEntries() || []; }
+        finally { if (prev && prev !== mode) { try { SettingSyncManager.setMode(prev); } catch (e) { /* ignore */ } } }
       } else {
         const wb = WorldBookManager.getActive();
         list = (wb && wb.entries) || [];
