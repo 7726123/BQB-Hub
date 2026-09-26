@@ -310,4 +310,37 @@ describe('length 截断 toast 门控', () => {
     expect(toasts.some((m) => m.includes('最大输出'))).toBe(false);
     (globalThis as unknown as Record<string, unknown>).App = { toast: () => {}, getPricingConfig: () => ({ input: 1, cached: 0.1, output: 2 }) };
   });
+  it('采样参数：预设自带的 0 惩罚项必须真的发 0（`|| 默认值` 会把它吞掉）', async () => {
+    // 2026-09-26 与酒馆预设对齐时发现：`parseFloat('0') || 0.4` → 0.4，
+    // 于是"预设里 0/0 的惩罚项"导进来仍然发 0.4/0.3。
+    sm().set('apiConfig', { endpoint: 'https://t/v1', apiKey: 'k', model: 'm', temperature: 0.9, topP: 0.95, presencePenalty: 0.4, frequencyPenalty: 0.3 });
+    let bodySent: Record<string, unknown> | null = null;
+    (globalThis as unknown as { fetch: unknown }).fetch = vi.fn().mockImplementation((_u: string, init: { body: string }) => {
+      bodySent = JSON.parse(String(init.body || '{}'));
+      return Promise.resolve(sseResponse([{ choices: [{ delta: { content: 'ok' } }] }, '[DONE]']));
+    });
+    const PSM = (globalThis as unknown as { PresetManager: any }).PresetManager;
+    // 预设自带 sampler（= 导入酒馆预设时存下来的那份）→ 生效配置覆盖全局
+    const presets = PSM.getPresets();
+    presets.push({ id: 'p_sampler', name: '带采样参数的预设', promptModules: [], createdAt: 1, sampler: { temperature: 1, topP: 0.95, presencePenalty: 0, frequencyPenalty: 0, reasoningEffort: 'medium' } });
+    PSM.savePresets(presets);
+    PSM.setCurrentPresetId('p_sampler');
+    await API.fetchCompletions([{ role: 'user', content: 'x' }], () => {}, () => {}, vi.fn(), { callLabel: 'generate' });
+    expect(bodySent).not.toBeNull();
+    const b = bodySent as unknown as Record<string, number>;
+    expect(b.temperature).toBe(1);
+    expect(b.presence_penalty).toBe(0);
+    expect(b.frequency_penalty).toBe(0);
+    expect(b.top_p).toBe(0.95);
+    expect(b.reasoning_effort).toBe('medium');   // 用户没显式选思考档位 → 跟预设
+    // 全局配置里显式的 0 同样要发 0（不是只有预设那条路）
+    PSM.setCurrentPresetId(null);
+    PSM.savePresets(PSM.getPresets().filter((p: any) => p.id !== 'p_sampler'));
+    sm().set('apiConfig', { endpoint: 'https://t/v1', apiKey: 'k', model: 'm', presencePenalty: 0, frequencyPenalty: 0 });
+    await API.fetchCompletions([{ role: 'user', content: 'x' }], () => {}, () => {}, vi.fn(), { callLabel: 'generate' });
+    const b2 = bodySent as unknown as Record<string, number>;
+    expect(b2.presence_penalty).toBe(0);
+    expect(b2.frequency_penalty).toBe(0);
+    expect(b2.temperature).toBe(0.9);            // 没给 → 用默认
+  });
 });

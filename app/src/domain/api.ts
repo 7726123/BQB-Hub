@@ -181,6 +181,13 @@ function _toolBridgeAssistantText(): string {
 }
 
 // 读取思考档位（'auto'|'off'|'low'|'medium'|'high'），兼容旧 boolean（true→auto 保持原行为，false→off）
+/** 数值或默认值：只有"取不到数"（undefined/null/''/非数字）才用默认——0 是合法值（惩罚项 0） */
+function _numOr(v: unknown, d: number): number {
+  if (v === undefined || v === null || v === '') return d;
+  const n = parseFloat(String(v));
+  return isFinite(n) ? n : d;
+}
+
 function _thinkingLevelFromConfig(cfgVal: unknown): string {
   if (cfgVal === undefined || cfgVal === null) return 'auto';
   if (typeof cfgVal === 'boolean') return cfgVal ? 'auto' : 'off';
@@ -692,7 +699,13 @@ export const APIHandler = {
     onError: (msg: string) => void,
     overrides: FetchOverrides = {}
   ): Promise<void> {
-    const apiConfig = (overrides.apiConfig || PresetManager.getActiveAPIConfig()) as Record<string, string | number | undefined>;
+    // 配置解析：优先调用方传的 → 当前预设的「生效配置」（全局配置 + 预设自带采样参数，
+    // 见 preset.ts getEffectiveAPIConfig）→ 全局配置。老实现直接读全局，导入的酒馆预设
+    // 那一套 temperature/top_p/惩罚/思考强度全丢（实测：预设 1/0.95/0/0/medium 发成 0.9/0.95/0.4/0.3/无）。
+    const _pm: any = (typeof PresetManager !== 'undefined') ? PresetManager : null;
+    const apiConfig = (overrides.apiConfig
+      || (_pm && typeof _pm.getEffectiveAPIConfig === 'function' ? _pm.getEffectiveAPIConfig() : null)
+      || (_pm ? _pm.getActiveAPIConfig() : {})) as Record<string, string | number | undefined>;
     const endpoint = sanitizeEndpointUrl(apiConfig.endpoint || 'https://api.deepseek.com/v1') || 'https://api.deepseek.com/v1';
     const apiKey = String(apiConfig.apiKey || '');
     const modelId = String(apiConfig.model || '');
@@ -765,11 +778,14 @@ export const APIHandler = {
     messages = normalizeOutgoingMessages(messages, _compat);
     const body: Record<string, unknown> = {
       model: modelId || 'deepseek-v4-flash', messages: messages,
-      temperature: overrides.temperature != null ? overrides.temperature : (parseFloat(String(apiConfig.temperature)) || 0.9),
+      // 采样参数：先看调用方覆盖 → 配置里的值（预设自带参数会经 getEffectiveAPIConfig 合进来）。
+      // 注意用 _numOr 而不是 `|| 默认值`：`parseFloat('0') || 0.4` 会把**合法的 0** 吞掉——
+      // 酒馆预设的惩罚项默认就是 0/0，实测导进来仍然发 0.4/0.3（2026-09-26 与预设对齐时发现）。
+      temperature: overrides.temperature != null ? overrides.temperature : _numOr(apiConfig.temperature, 0.9),
       max_tokens: overrides.maxTokens || DEFAULT_MAX_TOKENS,
-      top_p: parseFloat(String(apiConfig.topP)) || 0.95,
-      presence_penalty: parseFloat(String(apiConfig.presencePenalty)) || 0.4,
-      frequency_penalty: parseFloat(String(apiConfig.frequencyPenalty)) || 0.3,
+      top_p: _numOr(apiConfig.topP, 0.95),
+      presence_penalty: _numOr(apiConfig.presencePenalty, 0.4),
+      frequency_penalty: _numOr(apiConfig.frequencyPenalty, 0.3),
       stream: true,
       // 流式下默认不返回 usage，显式要求在最后一个 chunk 带 usage（含 cached_tokens）。
       stream_options: { include_usage: true },

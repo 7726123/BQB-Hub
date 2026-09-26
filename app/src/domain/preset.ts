@@ -448,6 +448,43 @@ export function moduleAppliesTo(m: any, mode: PresetMode): boolean {
   return mm === 'both' || mm === mode;
 }
 
+// 预设自带思维链的识别签名（2026-09-26，对齐酒馆预设）：
+// 酒馆导入的模块没有 slot 概念，而软件只在"本模式有启用的思维链模块"时才不补自己的兜底条款。
+// 不认出来的话，梦鲸这类预设会出现**两套思维链要求互相打架**（软件兜底"≤2000 字、别发散"
+// vs 预设"逐字以 <｜begin▁of▁thinking｜>吾有一梦…开始、走完四大步"）——实测思考长度忽长忽短。
+// 只认内容里出现思维链骨架的模块；「写作模式」这种只**引用**思维链（`</thought_of_chain>`）的不算
+// （它同时装着文风/字数/格式，被当成思维链会让"思考关闭"时整块不发）。
+const COT_SIGNATURE = /<thought_of_chain>|<thinking_step|【思维模式要求】|【思维链要求】|【思考要求】/;
+
+/** 这条模块内容是不是一份思维链要求（酒馆预设里那种 <thought_of_chain> 规格书） */
+export function moduleLooksLikeCot(content: unknown): boolean {
+  const s = String(content == null ? '' : content);
+  return COT_SIGNATURE.test(s);
+}
+
+/**
+ * 酒馆预设的 reasoning_effort → 本软件的思考档位（auto/off/low/medium/high）。
+ * 导入时存进预设（sampler.reasoningEffort），请求时按"用户没显式选过就跟预设"生效。
+ */
+export function stReasoningToLevel(v: unknown): '' | 'off' | 'low' | 'medium' | 'high' {
+  if (v === undefined || v === null) return '';
+  if (typeof v === 'boolean') return v ? 'medium' : 'off';
+  const s = String(v).trim().toLowerCase();
+  if (!s || s === 'auto' || s === 'default') return '';
+  if (s === 'none' || s === 'off' || s === 'disabled' || s === 'false' || s === '0') return 'off';
+  if (s === 'minimal' || s === 'low' || s === 'lowest' || s === '1') return 'low';
+  if (s === 'medium' || s === 'mid' || s === 'normal' || s === '2') return 'medium';
+  if (s === 'high' || s === 'max' || s === 'highest' || s === 'xhigh' || s === '3') return 'high';
+  return '';
+}
+
+/** 本模式的启用模块里有没有"自带思维链"（显式 slot='think' 或以内容签名认出来） */
+export function hasOwnThinkSpec(mods: any): boolean {
+  return (Array.isArray(mods) ? mods : []).some(function (m: any) {
+    return moduleSlot(m) === 'think' || moduleLooksLikeCot(m && m.content);
+  });
+}
+
 // 当前模式生效的启用模块（按 order）。纯函数：调用方传自己已经拿到的 promptModules
 // （app.ts / chatmode.ts 都只依赖这个函数，不必依赖 PresetManager 的方法形状——测试桩友好）。
 export function pickModules(mods: any, mode: PresetMode): any[] {
@@ -465,6 +502,8 @@ export function pickModules(mods: any, mode: PresetMode): any[] {
 // ② role='user' 的条目接成「尾部模块」（它原本就是用户消息，近端位置）；其余（system/assistant）归一到 system。
 //    老实现里 role≠system 的模块在注入时被**静默丢弃**（列表里还标着 system），
 //    导入酒馆预设会因此丢掉大半内容——梦鲸那套 39 条非空条目里 12 条是 user（约 7.5KB）。
+// ③ 思维链模块（内容里带 <thought_of_chain>/【思维模式要求】等骨架的）标记 slot='think'：
+//    软件据此不再补自己的思考条款（两套思维链打架 → 思考长度不稳），且"思考强度 off"时不下发它。
 export function stPromptsToModules(cfg: any): any[] {
   const raw = (cfg && Array.isArray(cfg.prompts)) ? cfg.prompts : [];
   const po = (cfg && cfg.prompt_order && cfg.prompt_order[0] && cfg.prompt_order[0].order) || [];
@@ -477,14 +516,17 @@ export function stPromptsToModules(cfg: any): any[] {
     .filter((m: any) => m && m.content && String(m.content).trim())
     .map((m: any, i: number) => {
       const info = usePo ? poMap[String(m.identifier || '')] : undefined;
-      return {
+      const role = m.role === 'user' ? 'user' : 'system';
+      const out: any = {
         id: 'mod_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6) + '_' + i,
         name: m.name || String(m.content).split('\n')[0].trim().slice(0, 40) || ('提示项 ' + (i + 1)),
         content: m.content,
         enabled: info ? info.enabled : (m.enabled !== false),
-        role: m.role === 'user' ? 'user' : 'system',
+        role: role,
         order: info ? info.idx : (m.injection_order != null ? m.injection_order : i)
       };
+      if (role === 'user' && moduleLooksLikeCot(m.content)) out.slot = 'think';
+      return out;
     });
 }
 
@@ -771,8 +813,11 @@ export const PresetManager = {
       const mods = this.activeModules(mode).filter((m: any) => moduleRole(m) === 'user');
       const thinkOk = !!opts.nativeReasoning && !opts.thinkingOff;
       const out: string[] = [];
-      const ownThink = mods.some((m: any) => moduleSlot(m) === 'think');
-      if (!ownThink && thinkOk) out.push(THINK_TAIL_FALLBACK[mode]);
+      // 预设自带思维链（显式 slot='think'，或内容里带思维链骨架被认出来）→ **不补**软件兜底。
+      // 2026-09-26：这条判据原来只看 slot，酒馆导入的模块没有 slot → 梦鲸那类预设会出现
+      // 软件兜底"≤2000 字/别发散" 和预设自带"走完四大步/逐字输出开篇"两套要求同时下发，
+      // 思考长度忽长忽短（用户实测"非常不稳定"）。
+      if (!hasOwnThinkSpec(mods) && thinkOk) out.push(THINK_TAIL_FALLBACK[mode]);
       mods.forEach((m: any) => {
         if (moduleSlot(m) === 'think' && !thinkOk) return;   // 思考关了/无原生通道 → 整条不发
         const c = String(m.content || '').trim();
@@ -791,6 +836,28 @@ export const PresetManager = {
 
   getActiveAPIConfig(): Record<string, unknown> {
     return SM().get<Record<string, unknown>>('apiConfig', {}) ?? {};
+  },
+
+  // 请求真正要用的配置 = 全局配置 + **当前预设自带的采样参数**（酒馆语义：切预设就换参数）。
+  // 只在有值时覆盖；思考档位仅在用户没显式选过（auto/未设置）时跟预设的 reasoning_effort 走。
+  // 说明：max_tokens 不跟预设（本软件一律按端点能接受的最大值发，见 api.ts DEFAULT_MAX_TOKENS），
+  // 免得预设里 30000 这类值把长思考/长正文截断。
+  getEffectiveAPIConfig(): Record<string, unknown> {
+    const cfg: Record<string, unknown> = Object.assign({}, this.getActiveAPIConfig());
+    try {
+      const p: any = this.getCurrentPreset();
+      const s = p && p.sampler;
+      if (s && typeof s === 'object') {
+        if (s.temperature != null) cfg.temperature = s.temperature;
+        if (s.topP != null) cfg.topP = s.topP;
+        if (s.presencePenalty != null) cfg.presencePenalty = s.presencePenalty;
+        if (s.frequencyPenalty != null) cfg.frequencyPenalty = s.frequencyPenalty;
+        const cur = cfg.deepseekThinking;
+        const untouched = cur === undefined || cur === null || cur === '' || cur === 'auto' || cur === true;
+        if (s.reasoningEffort && untouched) cfg.deepseekThinking = s.reasoningEffort;
+      }
+    } catch (e) { /* 取预设失败：用全局配置 */ }
+    return cfg;
   },
 
   applyPreset(presetId: string | null): void {

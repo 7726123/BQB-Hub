@@ -25,7 +25,8 @@ import { UpdateManager } from './update';
 import * as TavernAdapter from './tavern-adapter';
 import { ClientLog } from './clientlog';
 import { sanitizeEndpointUrl, chatCompletionsUrl } from '../lib/endpoint';
-import { moduleRole, moduleSlot, pickModules, stPromptsToModules, nativeModulesToModules } from './preset';
+import { moduleRole, moduleSlot, pickModules, stPromptsToModules, nativeModulesToModules, stReasoningToLevel } from './preset';
+import { expandStMacros, expandStMacroText, createStMacroCtx } from '../lib/stmacros';
 import { StatusVars } from './statusvars';
 
 // 价格表默认值（人民币/百万 token）：DeepSeek V4.1 峰时价。
@@ -74,27 +75,22 @@ export interface AppShape {
 // 接口化标注 + 拆分进行中（见 docs/single-bundle-refactor.md）。
 // 尾部由 build-legacy.mjs 自动追加全局挂载（IIFE 产物内顶层声明不可见）。
 // ==================== 酒馆(SillyTavern)模板语法展开 ====================
-// 预设里大量使用 {{setvar::KEY::值}} / {{getvar::KEY}} / {{//注释}} / ${占位符}，
-// DeepSeek 能顺着模板读，豆包等模型看不懂这些语法，导致思维链指令缺失。
-// 这里在请求发出前统一展开：收集所有 setvar 声明，把 getvar 引用替换为实际值，
-// 删除 setvar 声明与注释，去掉 ${...} 外壳保留内部文字。
+// 展开逻辑本体搬到 lib/stmacros.ts（纯函数、可单测）：支持 setvar/addvar/getvar/lastUserMessage/
+// trim/random/注释/{{char}}/{{user}}/${...}，**嵌套安全 + 递归展开**。
+// 2026-09-26 换轨原因（梦鲸思客V4 思维链只剩 95 字）：旧实现的两条正则遇到 setvar 值里嵌套的 `}}`
+// 会提前收尾、且不递归；只认 setvar/getvar，`{{addvar}}`/`{{trim}}`/`{{lastUserMessage}}`
+// 会以字面宏发给模型（实测 8 处残留）。详见 lib/stmacros.ts 顶部注释。
 function _collectSTVars(messages: any) {
-  var vars = {} as Record<string, any>;
+  var ctx = createStMacroCtx({});
   for (var i = 0; i < messages.length; i++) {
     var s = messages[i].content;
     if (typeof s !== 'string') continue;
-    var re = /\{\{setvar::([\s\S]*?)::([\s\S]*?)\}\}/g;
-var m: any;
-    while ((m = re.exec(s)) !== null) {
-      var k = m[1].trim();
-      if (k) vars[k] = m[2];
-    }
+    try { expandStMacroText(s, ctx); } catch (e) { /* 单条消息展开失败：跳过 */ }
   }
-  return vars;
+  return ctx.vars;
 }
 
-function _expandSTInMessages(messages: any) {
-  var vars = _collectSTVars(messages);
+function _expandSTInMessages(messages: any, opts?: { lastUserMessage?: string }) {
   // 世界书里真有一个叫 User/user 的角色时，user 是这张卡里的正经角色名：裸 user 不展开
   // （{{user}}/{user} 带花括号，是明确的占位符写法，照旧展开）
   var _userIsRealName = false;
@@ -102,54 +98,29 @@ function _expandSTInMessages(messages: any) {
     var _wbA: any = (typeof WorldBookManager !== 'undefined' && WorldBookManager && WorldBookManager.getActive) ? WorldBookManager.getActive() : null;
     _userIsRealName = hasUserNamedEntry((_wbA && _wbA.entries) || []);
   } catch (e) { /* 取书失败：按"没有"处理 */ }
-  for (var i = 0; i < messages.length; i++) {
-    if (typeof messages[i].content !== 'string') continue;
-    var t = messages[i].content;
-    // getvar 引用 → 展开为消息内 setvar 的值；未声明时回退查世界书运行时变量
-    // （原生预设把变量收敛进顶层 variables 导入后，这里才能取到值）
-    t = t.replace(/\{\{getvar::([\s\S]*?)\}\}/g, function (_: any, k: any) {
-      var key = k.trim();
-      if (vars.hasOwnProperty(key)) return vars[key] || '';
-      try {
-        var _gv = VariableManager.get(key);
-        if (_gv !== '' && _gv !== undefined) return _gv;
-      } catch(e) {}
-      return '';
-    });
-    // setvar 声明块 → 删除（值已通过 getvar 使用）
-    t = t.replace(/\{\{setvar::[\s\S]*?\}\}/g, '');
-    // {{//...}} 注释 → 删除
-    t = t.replace(/\{\{\/\/([\s\S]*?)\}\}/g, '');
-    // {{char}} → 其他角色（酒馆的 NPC；写作场景里是主角之外的互动角色）
-    t = t.replace(/\{\{char\}\}/gi, '其他角色');
-    // {{user}}/{user} → 主角名（世界书条目/角色卡里的主角占位符）：写卡 agent 按规则原样保留
-    // 占位符，落到具体名字只在这一层发生——换主角名后所有条目自动跟着变。
-    // 函数式替换：名字里含 $ 时字符串替换会把 $& 之类当替换模式。
-    var _puName = '主角';
-    try {
-      var _pu = (App && App.getProtagonist) ? App.getProtagonist() : null;
-      if (_pu && _pu.name) _puName = _pu.name;
-    } catch (e) { /* App 尚未就绪时退回「主角」 */ }
-    t = t.replace(/\{\{\s*user\s*\}\}/gi, function () { return _puName; });
-    t = t.replace(/\{\s*user\s*\}/gi, function () { return _puName; });
-    // 裸 user（酒馆卡/预设里也常这么写）只在它是**独立单词**时算占位符：username / user_name /
-    // superuser 这类英文词一个字母都不动（旧实现是在预设 systemPrompt 上 /user/gi 无词边界替换，
-    // 实际写成了带退格字节的坏正则、根本不匹配，2026-09-25 查 user 占位符时一并下线）。
-    // 正文块（作者自己写的原文，可能几万字）不碰：正文里出现英文单词 user 是作者的原文，不是占位符；
-    // 占位符只可能出现在设定/预设里（世界书条目、角色卡、预设模块）。
-    if (!_userIsRealName && t.indexOf('## 正文（历史 + 最新进度') !== 0) {
-      t = t.replace(/(^|[^A-Za-z0-9_])(?:user)(?![A-Za-z0-9_])/gi, function (_: any, pre: any) { return pre + _puName; });
-    }
-    // {{random::A|B|C}} → 随机取一个选项
-    t = t.replace(/\{\{random::([\s\S]*?)\}\}/gi, function (_: any, opts: any) {
-      var arr = opts.split('|').map(function (s: any) { return s.trim(); }).filter(Boolean);
-      return arr.length > 0 ? arr[Math.floor(Math.random() * arr.length)] : '';
-    });
-    // ${...} 占位符 → 去掉外壳，保留内部说明文字
-    t = t.replace(/\$\{([\s\S]*?)\}/g, function (_: any, inner: any) { return inner.trim(); });
-    t = t.replace(/\n{3,}/g, '\n\n');
-    messages[i].content = t;
-  }
+  var _puName = '主角';
+  try {
+    var _pu = (App && App.getProtagonist) ? App.getProtagonist() : null;
+    if (_pu && _pu.name) _puName = _pu.name;
+  } catch (e) { /* App 尚未就绪时退回「主角」 */ }
+  expandStMacros(messages, {
+    lastUserMessage: (opts && opts.lastUserMessage) || '',
+    userName: _puName,
+    charName: '其他角色',
+    userIsRealName: _userIsRealName,
+    // getvar 未声明时的兜底：世界书运行时变量（老行为保留）
+    lookup: function (k: string) {
+      try { var v = VariableManager.get(k); return (v === '' || v === undefined || v === null) ? '' : String(v); } catch (e) { return ''; }
+    },
+    // 酒馆的全局变量：本软件映射到同一份运行时变量
+    globalGet: function (k: string) {
+      try { var v = VariableManager.get(k); return (v === undefined || v === null) ? '' : String(v); } catch (e) { return ''; }
+    },
+    globalSet: function (k: string, v: string) { try { VariableManager.set(k, v); } catch (e) { /* ignore */ } },
+    // 正文块（作者自己写的原文，可能几万字）不做裸 user 替换：
+    // 正文里出现英文单词 user 是作者的原文，不是占位符；占位符只可能出现在设定/预设里。
+    skipBareUser: function (c: string) { return String(c).indexOf('## 正文（历史 + 最新进度') === 0; },
+  });
 }
 
 // 未闭合思考块的归属：固定「保留在思考框」（思考不外露，也不进正文）。
@@ -1674,8 +1645,10 @@ const App: AppShape = {
       if (_varBlk) _userParts.push(_varBlk);
     } catch (e) { /* 变量块失败不影响生成 */ }
     messages.push({ role: 'user', content: _userParts.join('\n\n') });
-    // 展开预设里的酒馆模板语法（setvar/getvar/{{//}}/${...}），让豆包等模型看到完整指令
-    _expandSTInMessages(messages);
+    // 展开预设里的酒馆模板语法（setvar/addvar/getvar/lastUserMessage/{{//}}/${...}）：
+    // lastUserMessage 传本轮作者输入——预设里 <dreamer_input>{{lastUserMessage}}</dreamer_input>
+    // 这类格子靠它填（酒馆里等于"最后一条用户消息"，不展开的话那一格是空的）。
+    _expandSTInMessages(messages, { lastUserMessage: userInstruction });
     EditorManager._thinkingRequired = _thinkingRequired && !_hasNativeReasoning;
     // 已生成的文字落盘（「停止」与「连接中断」共用）：
     // 断线（切后台被系统掐掉连接等）不该让用户白等一场——已经看到的正文必须留在编辑器里，
@@ -2832,6 +2805,20 @@ const stripped = _preProcessed.replace(/^#{1,3}\s+.*(\n|$)/gm, '').trim(); var _
         while (presets.find(ep => ep.name === finalName)) { n++; finalName = baseName + ' (' + n + ')'; }
         const newId = 'preset_' + Date.now() + '_' + Math.random().toString(36).slice(2,6);
         const _newPreset = { id: newId, name: finalName, systemPromptId: p.systemPromptId || null, isDefault: false, createdAt: Date.now() };
+        // 采样参数跟随预设（酒馆语义：切预设就换温度/top_p/惩罚/思考强度）：
+        // 导入时把预设自带的取样参数存进预设，请求时由 PresetManager.getEffectiveAPIConfig()
+        // 覆盖全局配置。max_tokens 不跟（本软件按端点能接受的最大值发，防预设值把长思考截断）。
+        {
+          const _s: any = {};
+          const _num = function (v: any) { const n = parseFloat(String(v)); return isFinite(n) ? n : null; };
+          const _t = _num(cfg.temperature); if (_t !== null) _s.temperature = _t;
+          const _tp = _num((cfg as any).topP != null ? (cfg as any).topP : (cfg as any).top_p); if (_tp !== null) _s.topP = _tp;
+          const _pp = _num((cfg as any).presencePenalty != null ? (cfg as any).presencePenalty : (cfg as any).presence_penalty); if (_pp !== null) _s.presencePenalty = _pp;
+          const _fp = _num((cfg as any).frequencyPenalty != null ? (cfg as any).frequencyPenalty : (cfg as any).frequency_penalty); if (_fp !== null) _s.frequencyPenalty = _fp;
+          const _lv = stReasoningToLevel((p as any).reasoning_effort != null ? (p as any).reasoning_effort : (cfg as any).reasoning_effort);
+          if (_lv) _s.reasoningEffort = _lv;
+          if (Object.keys(_s).length > 0) (_newPreset as any).sampler = _s;
+        }
         // 原生预设格式：预设自带文本正则（regexScripts）跟随预设，切换预设时自动生效
         if (p._stRegexRules && p._stRegexRules.length > 0) (_newPreset as any).regexScripts = p._stRegexRules;
         if (p.promptModules && Array.isArray(p.promptModules) && p.promptModules.length > 0) {

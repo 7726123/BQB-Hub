@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import '../src/infra/storage';
 import '../src/domain/preset';
-import { MINIMAL_PRESET_MODULES, MINIMAL_PRESET_PATCHES, THINK_TAIL_FALLBACK, stPromptsToModules, nativeModulesToModules } from '../src/domain/preset';
+import { MINIMAL_PRESET_MODULES, MINIMAL_PRESET_PATCHES, THINK_TAIL_FALLBACK, stPromptsToModules, nativeModulesToModules, moduleLooksLikeCot, stReasoningToLevel } from '../src/domain/preset';
 import { RegexEngine as RE } from '../src/lib/regex'; // P3-A：regex 不再挂全局，直接 import
 
 type SM = import('../src/infra/storage').StorageManagerClass;
@@ -698,5 +698,91 @@ describe('酒馆预设导入映射（stPromptsToModules / nativeModulesToModules
     expect(out[0].slot).toBe('think');
     expect('mode' in out[1]).toBe(false);
     expect('slot' in out[1]).toBe(false);
+  });
+});
+// 2026-09-26（梦鲸思客V4 事件）：酒馆预设自带的思维链必须被认出来，否则软件会在它后面再补一条
+// 自己的思考条款（"≤2000 字、别发散"），两套要求打架 → 用户看到的"思维链非常不稳定"。
+describe('预设自带思维链的识别与采样参数跟随（酒馆对齐）', () => {
+  beforeEach(() => {
+    for (const k of ['presets', 'systemPrompts', 'currentPresetId', 'currentSysPromptId', 'apiConfig', 'regexRules',
+      'builtinMinimalPresetV1', 'minimalPresetLateModulesV1', 'minimalPresetLateModulesV2', 'minimalPresetLateModulesV3', 'minimalPresetLateModulesV4', 'minimalPresetForceSyncDone']) sm().remove(k);
+  });
+  const setMods = (mods: any[]) => {
+    PSM.savePresets([{ id: 'p_cot', name: '思维链测试', prompts: [], promptModules: mods, systemPromptId: 'sp_default', isDefault: false, createdAt: 1 } as any]);
+    PSM.setCurrentPresetId('p_cot');
+  };
+  const tailMod = (id: string, content: string, extra: any = {}) => ({ id, name: id, content, enabled: true, role: 'user', order: 9, ...extra });
+
+  it('moduleLooksLikeCot：只认思维链骨架；只引用 </thought_of_chain> 的"写作模式"不算', () => {
+    expect(moduleLooksLikeCot('{{setvar::cot::\n【思维模式要求】\n<thought_of_chain>\n…')).toBe(true);
+    expect(moduleLooksLikeCot('【思考要求】按清单过一遍')).toBe(true);
+    expect(moduleLooksLikeCot('梦鲸思客，开始根据"</thought_of_chain>"进行思考，最终输出内容必须为一个xml文档。')).toBe(false);
+    expect(moduleLooksLikeCot('# 文风设定：白话')).toBe(false);
+  });
+
+  it('启用模块里有自带思维链（内容签名认出来，没有 slot） → 不再插软件兜底', () => {
+    setMods([
+      tailMod('t1', '{{setvar::cot::\n【思维模式要求】\n<thought_of_chain>\n终、定乾坤\n}}'),
+      tailMod('t2', '【写作要求】{{getvar::cot}}'),
+    ]);
+    const out = PSM.tailText('novel', { nativeReasoning: true });
+    expect(out).not.toContain(THINK_TAIL_FALLBACK.novel);   // 关键：兜底不再叠加
+    expect(out).toContain('【写作要求】');
+  });
+
+  it('思维链模块关掉 / 只有普通尾部模块 → 兜底照旧（老行为不变）', () => {
+    setMods([
+      tailMod('t1', '{{setvar::cot::\n【思维模式要求】\n<thought_of_chain>\n}}', { enabled: false }),
+      tailMod('t2', '【本轮附加】收尾停在动作上。'),
+    ]);
+    const out = PSM.tailText('novel', { nativeReasoning: true });
+    expect(out).toContain(THINK_TAIL_FALLBACK.novel);
+  });
+
+  it('导入酒馆预设：思维链条目自动打上 slot=think（思考关闭时不发它）；写作模式不打', () => {
+    const out = stPromptsToModules({
+      prompts: [
+        { identifier: 'a', name: '默认思维链', role: 'user', content: '{{setvar::cot::<thought_of_chain>…}}' },
+        { identifier: 'b', name: '写作模式', role: 'user', content: '根据"</thought_of_chain>"思考' },
+        { identifier: 'c', name: '梦境思客', role: 'system', content: '你本无名' },
+      ],
+      prompt_order: [{ order: [{ identifier: 'a', enabled: true }, { identifier: 'b', enabled: true }, { identifier: 'c', enabled: true }] }],
+    });
+    const byName = Object.fromEntries(out.map((m: any) => [m.name, m]));
+    expect(byName['默认思维链'].slot).toBe('think');
+    expect('slot' in byName['写作模式']).toBe(false);
+    expect('slot' in byName['梦境思客']).toBe(false);
+  });
+
+  it('stReasoningToLevel：酒馆 reasoning_effort → 本软件思考档位', () => {
+    expect(stReasoningToLevel('medium')).toBe('medium');
+    expect(stReasoningToLevel('low')).toBe('low');
+    expect(stReasoningToLevel('minimal')).toBe('low');
+    expect(stReasoningToLevel('high')).toBe('high');
+    expect(stReasoningToLevel('max')).toBe('high');
+    expect(stReasoningToLevel('none')).toBe('off');
+    expect(stReasoningToLevel('auto')).toBe('');
+    expect(stReasoningToLevel(undefined)).toBe('');
+  });
+
+  it('getEffectiveAPIConfig：预设采样参数覆盖全局；用户显式选过思考档位则以用户为准', () => {
+    PSM.initDefaults();
+    sm().set('apiConfig', { endpoint: 'https://x.test/v1', apiKey: 'k', model: 'm', temperature: 0.9, topP: 0.95, presencePenalty: 0.4, frequencyPenalty: 0.3, deepseekThinking: 'auto' });
+    const presets = PSM.getPresets();
+    (presets[0] as any).sampler = { temperature: 1, topP: 0.95, presencePenalty: 0, frequencyPenalty: 0, reasoningEffort: 'medium' };
+    PSM.savePresets(presets);
+    const eff = PSM.getEffectiveAPIConfig();
+    expect(eff.temperature).toBe(1);
+    expect(eff.presencePenalty).toBe(0);
+    expect(eff.frequencyPenalty).toBe(0);
+    expect(eff.deepseekThinking).toBe('medium');            // 用户没选过 → 跟预设
+    expect(eff.endpoint).toBe('https://x.test/v1');         // 端点等仍来自全局
+    // 用户显式选过 low → 预设不得覆盖
+    sm().set('apiConfig', Object.assign({}, PSM.getActiveAPIConfig(), { deepseekThinking: 'low' }));
+    expect(PSM.getEffectiveAPIConfig().deepseekThinking).toBe('low');
+    // 没有 sampler 的预设：完全等于全局配置
+    const p2 = PSM.getPresets(); delete (p2[0] as any).sampler; PSM.savePresets(p2);
+    expect(PSM.getEffectiveAPIConfig().temperature).toBe(0.9);
+    expect(PSM.getEffectiveAPIConfig().deepseekThinking).toBe('low');
   });
 });

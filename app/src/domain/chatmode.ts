@@ -945,7 +945,9 @@ export const ChatMode = {
     ];
     try {
       const ex = (globalThis as any)._expandSTInMessages;
-      if (typeof ex === 'function') ex(msgs);   // 世界书/预设里的酒馆宏（{{user}} 等）
+      // 世界书/预设里的酒馆宏（{{user}}/{{addvar}}/{{lastUserMessage}} 等）：
+      // lastUserMessage 传本轮作者要求（预设里 <dreamer_input>{{lastUserMessage}}</dreamer_input> 靠它填）
+      if (typeof ex === 'function') ex(msgs, { lastUserMessage: instruction });
     } catch (e) { /* 宏展开失败不影响生成 */ }
     return msgs;
   },
