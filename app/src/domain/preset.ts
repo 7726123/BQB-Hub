@@ -875,7 +875,13 @@ function minimalPreset(): Preset {
 }
 
 export const PresetManager = {
-  _regexBackup: null as RegexRule[] | null,
+  // 正则与预设绑定（2026-09-26 用户要求"换了预设就要换这部分正则"）：
+  //   预设自带 regexScripts（原生预设/导入的酒馆预设都有）→ 切到它就换上它那套；
+  //   切到不带正则的预设 → 还回"用户自己的那套"（持久化备份，重启后也算数）。
+  // 旧实现只在内存里备份一次，重启后切到不带正则的预设会**留着上一个预设的正则**（用户报的漏用）。
+  _regexBackup: null as RegexRule[] | null,   // 兼容老代码/测试的字段（现在以 storage 为准）
+  _regexOwnerKey: 'regexRulesOwner',
+  _regexBackupKey: 'regexRulesBackup',
 
   getPresets(): Preset[] { return SM().get<Preset[]>('presets', []) ?? []; },
   savePresets(presets: Preset[]): void { SM().set('presets', presets); },
@@ -977,17 +983,43 @@ export const PresetManager = {
 
   _applyPresetRegex(preset: Preset): void {
     try {
-      if (preset.regexScripts && preset.regexScripts.length > 0) {
-        // 首次从全局切到预设正则时记住全局（仅记一次，切到其它带正则预设不覆盖备份）
-        if (!this._regexBackup) this._regexBackup = RegexEngine.getRules();
-        const mapped = (preset.regexScripts as RegexRule[]).map(function (r, i) { return { ...r, order: i }; });
-        RegexEngine.saveRules(mapped);
-      } else if (this._regexBackup) {
-        RegexEngine.saveRules(this._regexBackup);
-        this._regexBackup = null;
+      const ownerKey = this._regexOwnerKey;
+      const backupKey = this._regexBackupKey;
+      const owner = SM().get<string | null>(ownerKey, null);
+      const own: RegexRule[] = (preset && (preset as any).regexScripts) ? (preset as any).regexScripts : [];
+      if (own.length > 0 && preset && preset.id) {
+        // 换预设：先把"用户自己的规则"持久化存一份（只在没有 owner 时存，
+        // 免得把上一个预设的规则误当成用户的存下来）。
+        // 另外把"明显来自某个预设"的规则剔出去（老的导入路径会把酒馆预设的正则直接写进全局，
+        // 那份残留不该被当成用户自己的规则备份下来——否则切到不带正则的预设时又把它带回来了）。
+        if (owner !== preset.id && !owner) {
+          const _all = RegexEngine.getRules();
+          const _others = this.getPresets().filter(function (p: any) { return p && p.regexScripts && p.regexScripts.length; });
+          const _own = _all.filter(function (r: RegexRule) {
+            if (/^(st_|mjr_)/.test(String(r.id || ''))) return false;
+            return !_others.some(function (p: any) {
+              return (p.regexScripts as RegexRule[]).some(function (x: RegexRule) { return x.findRegex === r.findRegex && x.replaceString === r.replaceString; });
+            });
+          });
+          SM().set(backupKey, _own);
+        }
+        if (owner !== preset.id) SM().set(ownerKey, preset.id);
+        RegexEngine.saveRules(own.map(function (r: RegexRule, i: number) { return { ...r, order: i }; }));
+      } else if (owner) {
+        // 切到不带正则的预设（或没有当前预设）：还回用户自己的那份
+        const backup = SM().get<RegexRule[] | null>(backupKey, null);
+        if (Array.isArray(backup)) RegexEngine.saveRules(backup);
+        SM().set(ownerKey, null);
       }
+      this._regexBackup = null;
       UIManager.renderRegexRules?.();
     } catch (e) { console.warn('[Preset] regex switch failed:', e); }
+  },
+
+  // 启动时同步一次：让"正则跟预设绑定"在重启后也成立。旧实现只在切换预设那一刻生效，
+  // 重启后若当前预设不带正则，上一版留在全局的那套会继续生效（切预设都清不掉）。
+  syncPresetRegex(): void {
+    this._applyPresetRegex(this.getCurrentPreset() as Preset);
   },
 
   // 新建空预设：只有名字，没有任何模块/正则（模块由用户在「模块管理」里自己加）。

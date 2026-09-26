@@ -3,6 +3,7 @@ import '../src/infra/storage';
 import '../src/domain/preset';
 import { MINIMAL_PRESET_MODULES, MINIMAL_PRESET_PATCHES, THINK_TAIL_FALLBACK, stPromptsToModules, nativeModulesToModules, moduleLooksLikeCot, moduleIsCotSpec, stReasoningToLevel, samplerFromJson, stRegexScriptsToRules } from '../src/domain/preset';
 import { RegexEngine as RE } from '../src/lib/regex'; // P3-A：regex 不再挂全局，直接 import
+import { RegexEngine } from '../src/lib/regex';
 
 type SM = import('../src/infra/storage').StorageManagerClass;
 const sm = () => (globalThis as unknown as { StorageManager: SM }).StorageManager;
@@ -704,7 +705,7 @@ describe('酒馆预设导入映射（stPromptsToModules / nativeModulesToModules
 // 自己的思考条款（"≤2000 字、别发散"），两套要求打架 → 用户看到的"思维链非常不稳定"。
 describe('预设自带思维链的识别与采样参数跟随（酒馆对齐）', () => {
   beforeEach(() => {
-    for (const k of ['presets', 'systemPrompts', 'currentPresetId', 'currentSysPromptId', 'apiConfig', 'regexRules',
+    for (const k of ['presets', 'systemPrompts', 'currentPresetId', 'currentSysPromptId', 'apiConfig', 'regexRules', 'regexRulesOwner', 'regexRulesBackup',
       'builtinMinimalPresetV1', 'minimalPresetLateModulesV1', 'minimalPresetLateModulesV2', 'minimalPresetLateModulesV3', 'minimalPresetLateModulesV4', 'minimalPresetForceSyncDone']) sm().remove(k);
   });
   const setMods = (mods: any[]) => {
@@ -765,6 +766,34 @@ describe('预设自带思维链的识别与采样参数跟随（酒馆对齐）'
     expect(byName['默认思维链'].slot).toBe('think');
     expect('slot' in byName['写作模式']).toBe(false);
     expect('slot' in byName['梦境思客']).toBe(false);
+  });
+
+  it('正则跟预设绑定：切到带正则的预设换上它那套，切走还回用户自己的（重启后也算数）', () => {
+    // 用户自己的那套（无预设绑定时生效）
+    RegexEngine.saveRules([{ id: 'user1', name: '用户自己的', findRegex: '/a/g', replaceString: 'b', timing: 'after', enabled: true, order: 0 }]);
+    PSM.savePresets([
+      { id: 'p_a', name: '带正则的预设', promptModules: [], createdAt: 1, regexScripts: [{ id: 'ra', name: 'A的规则', findRegex: '/x/g', replaceString: '', timing: 'after', enabled: true }] } as any,
+      { id: 'p_b', name: '不带正则的预设', promptModules: [], createdAt: 2 } as any,
+    ]);
+    PSM.setCurrentPresetId('p_a');
+    PSM.syncPresetRegex();
+    expect(RegexEngine.getRules().map((r) => r.name)).toEqual(['A的规则']);
+    expect(sm().get('regexRulesOwner', null)).toBe('p_a');
+    expect((sm().get('regexRulesBackup', []) as any[]).map((r) => r.name)).toEqual(['用户自己的']);
+    // 切到不带正则的预设 → 还回用户自己的那份，owner 清空
+    PSM.setCurrentPresetId('p_b');
+    PSM.syncPresetRegex();
+    expect(RegexEngine.getRules().map((r) => r.name)).toEqual(['用户自己的']);
+    expect(sm().get('regexRulesOwner', null)).toBe(null);
+    // 再切回 → 又是 A 那套（备份不会被 A 的规则覆盖）
+    PSM.setCurrentPresetId('p_a');
+    PSM.syncPresetRegex();
+    expect(RegexEngine.getRules().map((r) => r.name)).toEqual(['A的规则']);
+    expect((sm().get('regexRulesBackup', []) as any[]).map((r) => r.name)).toEqual(['用户自己的']);
+    // 模拟"重启后仍然绑定着 p_a，但用户已切到 p_b"：owner 还在 → sync 一次就该还回用户那份
+    sm().set('currentPresetId', 'p_b');
+    PSM.syncPresetRegex();
+    expect(RegexEngine.getRules().map((r) => r.name)).toEqual(['用户自己的']);
   });
 
   it('stRegexScriptsToRules：酒馆正则搬进来（跳过 HTML 美化 / 提示词专用 / 已关闭）', () => {

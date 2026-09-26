@@ -405,6 +405,9 @@ const App: AppShape = {
     } catch(e) {
       if (RegexEngine.getRules().length === 0) RegexEngine.saveRules(_defaultRules);
     }
+    // 正则跟预设绑定：启动时同步一次——上一版只在"切换预设"那一刻生效，重启后若当前预设
+    // 不带正则，上一版留在全局的那套会继续生效（切预设都清不掉）。
+    try { PresetManager.syncPresetRegex(); } catch (e) { /* ignore */ }
     // 存量规则改名：去掉「去八股词」名称里的第三方来源标注（词表与行为一字未动；
     // 用户自己改过名的按原样保留，只精确匹配旧名）
     try {
