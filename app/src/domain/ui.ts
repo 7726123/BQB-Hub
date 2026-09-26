@@ -1757,14 +1757,6 @@ const UIManager: UIManagerShape = {
           (String(e.content || '').trim() ? '<div class="var-item-note">' + htmlEscape(String(e.content).trim()) + '</div>' : '') +
           '</div>';
       });
-      // 未登记：模型回报了值、但书里已经没有同名条目（改名/删除后的残留）。只提示，不给操作。
-      var unreg = StatusVars.unregistered(mode);
-      if (unreg.length > 0) {
-        html += '<div style="margin:12px 2px 0;font-size:12px;color:var(--text-muted);line-height:1.9;">' +
-          '未登记（模型回报了、但书里没有同名条目）：' +
-          unreg.map(function (u: any) { return htmlEscape(u.name) + '＝' + htmlEscape(u.v); }).join('；') +
-          '</div>';
-      }
       listEl.innerHTML = html;
     } catch (e) {
       listEl.innerHTML = '<div style="padding:16px;color:var(--text-muted);font-size:13px;">变量页渲染失败</div>';

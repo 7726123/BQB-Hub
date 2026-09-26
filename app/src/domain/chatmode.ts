@@ -157,6 +157,9 @@ export const ChatMode = {
       self._lastInstruction = '';
       self._reasoningChars = 0;
       self._scrollOnce = true;
+      // 世界书「变量」：演出记录清空了，对话模式那份变量值也一起清（与"撤回一轮"同语义；
+      // 小说模式那份不动——这里清的是对话模式的记录）
+      try { StatusVars.clear('chat'); } catch (e) { /* ignore */ }
       try { smSet(self._ctxFromKey(), 0); } catch (e) { /* 水位线归零失败不影响清空 */ }
       self.render();
       try { App.toast('已清空演出记录'); } catch (e) { /* ignore */ }

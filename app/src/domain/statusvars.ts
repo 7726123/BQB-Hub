@@ -94,6 +94,7 @@ export const StatusVars = {
     const names = list.map(function (e: any) { return String(e.name || '').trim(); });
     let out = '【变量（每轮必须回报）】\n' +
       '正文写完后，另起一行按下面格式回报这几个变量的最新值：一行一个，每个都要写（即使这一轮没有变化）；' +
+      '**变量名逐字照抄下面的模板**（含括号，一个字都不要改、不要新增别的变量）；' +
       '不要写解释、不要写进思考，也不要在别处重复。\n' +
       '<status>\n' + names.map(function (n) { return n + '：xx'; }).join('\n') + '\n</status>\n' +
       '值是清单（多项）时写在键行下面，每项一行。';
@@ -118,8 +119,7 @@ export const StatusVars = {
     if (names.length === 0) return src;
     const res = parseStatusBlock(src, names);
     if (!res) return src;
-    const all = res.hits.concat(res.extra);
-    if (all.length > 0) this._store(mode, all, res.raw);
+    if (res.hits.length > 0) this._store(mode, res.hits, res.raw);
     return res.text;
   },
 
@@ -134,6 +134,11 @@ export const StatusVars = {
       : emptySnap();
     const now = Date.now();
     hits.forEach(function (h) { snap.values[h.name] = { v: h.value, at: now }; });
+    // 只留"启用中的变量"那份：改过名/删掉/停用过的残留值不再攒着（面板不显示未登记，攒着只会让
+    // {{getvar::}} 和存储里留脏键）。本轮漏写的变量仍保留旧值（上面只是覆盖命中的那些）。
+    const keep: Record<string, boolean> = {};
+    this.names(mode).forEach(function (n) { keep[n] = true; });
+    Object.keys(snap.values).forEach(function (k) { if (!keep[k]) delete snap.values[k]; });
     if (raw) snap.raw = raw;
     snap.at = now;
     all[wbId][mode] = snap;
@@ -187,18 +192,6 @@ export const StatusVars = {
     if (!(wbId in all)) return;
     delete all[wbId];
     this._write(all);
-  },
-
-  /** 面板用：模型回报了值、但节点里已经没有对应条目的键（改名/删条目后的残留），不丢、单独列出 */
-  unregistered(mode: StatusMode): { name: string; v: string; at: number }[] {
-    const known: Record<string, boolean> = {};
-    this.names(mode).forEach(function (n) { known[n] = true; });
-    const vals = this.values(mode);
-    const out: { name: string; v: string; at: number }[] = [];
-    Object.keys(vals).forEach(function (k) {
-      if (!known[k]) out.push({ name: k, v: String(vals[k].v || ''), at: Number(vals[k].at) || 0 });
-    });
-    return out;
   },
 };
 

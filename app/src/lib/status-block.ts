@@ -23,12 +23,10 @@ const TAG_HOLD_MAX = 16;
 
 export interface StatusHit { name: string; value: string }
 export interface StatusParseResult {
-  /** 原文块（诊断/面板「原文」用；兜底路径为收集到的那些行） */
+  /** 原文块（诊断用；兜底路径为收集到的那些行） */
   raw: string;
-  /** 启用中的变量名 → 值；同名取最后一次出现，顺序按首次出现 */
+  /** 启用中的变量名（一律是官方名）→ 值；同名取最后一次出现，顺序按首次出现 */
   hits: StatusHit[];
-  /** 块里出现、但书里没有同名条目的键（改名/停用后的残留、模型自己加的字段）——不丢，面板单独列出 */
-  extra: StatusHit[];
   /** 剥离后的正文 */
   text: string;
 }
@@ -43,44 +41,76 @@ function cleanValue(s: string): string {
   if (m) v = m[1].trim();
   return v;
 }
-/** 「未登记」键的形状要求（比启用中的名字严得多：正文里带冒号的散文行别被当成野变量收进来） */
-const EXTRA_NAME_RE = /^[\w\u4e00-\u9fa5\-+#·]{1,16}$/;
+/**
+ * 名字的"规范化"形态：去掉空白与各种括号后比较。
+ * 模型回报时会自己改名字的写法——漏掉右括号（实测：条目「手里的现金（日元）」被写成
+ * 「手里的现金（日元=48000」）、括号换半角、名字里多一个空格。这些都应该落回同一个变量，
+ * 而不是变成"一个不存在的变量"。
+ */
+function canonName(s: string): string {
+  return String(s || '').replace(/[\s（）()【】\[\]「」『』{}<>]/g, '');
+}
 
-/** 这一行是不是「名字：值」（通用形状；是否启用中的变量名由调用方判定） */
-function matchKeyLine(line: string): { name: string; value: string } | null {
+/** 这一行是不是「名字<分隔符>值」：冒号/全角冒号，以及模型爱写错的等号（实测 手里的现金（日元=48000） */
+function matchKeyLine(line: string): { name: string; value: string; loose: boolean } | null {
   // 行首允许缩进 / 项目符号 / 井号小标题；名字限 40 字内（变量名不会长）
-  const m = /^[ \t]*(?:[-*•·]\s*)?(?:#{1,6}\s*)?([^\n]{1,40}?)[ \t]*[:：][ \t]?([\s\S]*)$/.exec(String(line || ''));
+  const m = /^[ \t]*(?:[-*•·]\s*)?(?:#{1,6}\s*)?([^\n]{1,40}?)[ \t]*([:：=＝])[ \t]?([\s\S]*)$/.exec(String(line || ''));
   if (!m) return null;
   const name = cleanName(m[1]);
   if (!name) return null;
-  return { name: name, value: String(m[2] == null ? '' : m[2]) };
+  const sep = m[2];
+  return { name: name, value: String(m[3] == null ? '' : m[3]), loose: sep === '=' || sep === '＝' };
+}
+
+/**
+ * 把回报里的名字解析成"官方变量名"。三级放宽：
+ *   ① 精确（去首尾括号/加粗等标记后）  ② 规范化（去掉全部空白与括号）  ③ 包含（fuzzy：一方包含另一方，至少 3 字）
+ * ③ 只在标签块里启用——块外（兜底行簇）是在正文上猜，放宽会误吃散文行。两者的名字都要求唯一命中。
+ */
+function resolveName(cand: string, allowed: Map<string, string>, fuzzy: boolean): string | null {
+  if (allowed.has(cand)) return allowed.get(cand)!;
+  const c = canonName(cand);
+  if (!c) return null;
+  const exactCanon: string[] = [];
+  for (const [key, official] of allowed) { if (canonName(key) === c) exactCanon.push(official); }
+  if (exactCanon.length === 1) return exactCanon[0];
+  if (!fuzzy || c.length < 3) return null;
+  const contains: string[] = [];
+  for (const [key, official] of allowed) {
+    const k = canonName(key);
+    if (k.length < 3) continue;
+    if (k.indexOf(c) >= 0 || c.indexOf(k) >= 0) contains.push(official);
+  }
+  return contains.length === 1 ? contains[0] : null;
 }
 
 /**
  * 块内逐行解析：`名字：值` 起一条，其后到下一个名字行（或块尾）的行并入该条的值（支持多行值）。
- * name 命中 allowed → hits；否则 → extra（照更严的形状收，见 EXTRA_NAME_RE）。
+ * 名字命中启用中的变量（精确或规范化）→ 记到 outHits，并统一记成**官方变量名**（面板/存储都按它找）；
+ * 命中不了的（模型自己加的字段、散文行）一律不入库也不显示——用户明确不要「未登记」那一块。
  */
-function parseBlockLines(inner: string, allowed: Set<string>, outHits: StatusHit[], outExtra: StatusHit[]): void {
+function parseBlockLines(inner: string, allowed: Map<string, string>, outHits: StatusHit[]): void {
   const lines = String(inner || '').split('\n');
-  let cur: { name: string; value: string; known: boolean } | null = null;
+  let cur: { name: string; value: string } | null = null;
   const flush = function () {
     if (!cur) return;
     const v = cleanValue(cur.value);
-    if (v) (cur.known ? outHits : outExtra).push({ name: cur.name, value: v });
+    if (v) outHits.push({ name: cur.name, value: v });
     cur = null;
   };
   for (let i = 0; i < lines.length; i++) {
     const hit = matchKeyLine(lines[i]);
     if (hit) {
-      const known = allowed.has(hit.name);
-      // 未登记的键：名字要像"变量名"，值也不能是句子（散文行的特征是句末标点）
-      const plausibleExtra = !known && EXTRA_NAME_RE.test(hit.name) && !/[。！？!?]\s*$/.test(cleanValue(hit.value));
-      if (known || plausibleExtra) {
+      const official = resolveName(hit.name, allowed, true);
+      if (official) {
         flush();
-        cur = { name: hit.name, value: hit.value, known: known };
+        cur = { name: official, value: hit.value };
         continue;
       }
-      // 既不是启用中的变量、也不像未登记键（像散文行）→ 当普通文本行，并入当前条目
+      // 认不出这个键：冒号行（模型自己加的字段）整行丢掉——不能并进上一个变量的多行值，
+      // 否则会把值污染成"6\n心情：不错"。但**等号行**宽一点：清单项里写「- 找到钥匙 = 已完成」
+      // 也会命中"名字=值"的形状，那种要当普通文本行留在当前变量的多行值里。
+      if (!hit.loose) continue;
     }
     if (cur) cur.value += '\n' + lines[i];
   }
@@ -112,12 +142,12 @@ function isHeaderLine(line: string): boolean {
 export function parseStatusBlock(text: string, names: string[]): StatusParseResult | null {
   const src = String(text == null ? '' : text);
   if (!src) return null;
-  const allowed = new Set<string>();
-  (names || []).forEach(function (n) { const c = cleanName(n); if (c) allowed.add(c); });
+  // 官方变量名 → 规范化名（比较用）；命中后一律记官方名，面板/存储/{{getvar::}} 都按它找
+  const allowed = new Map<string, string>();
+  (names || []).forEach(function (n) { const c = cleanName(n); if (c) allowed.set(c, String(n).trim()); });
   if (allowed.size === 0) return null;
   let out = src;
   const hits: StatusHit[] = [];
-  const extra: StatusHit[] = [];
   const raws: string[] = [];
   // --- 主路径：标签块（逐个剥离；未闭合块 → 到文末） ---
   for (;;) {
@@ -127,12 +157,12 @@ export function parseStatusBlock(text: string, names: string[]): StatusParseResu
     const cm = STATUS_CLOSE_RE.exec(after);
     const before = out.slice(0, om.index);
     if (cm) {
-      parseBlockLines(after.slice(0, cm.index), allowed, hits, extra);
+      parseBlockLines(after.slice(0, cm.index), allowed, hits);
       raws.push(out.slice(om.index, om.index + om[0].length + cm.index + cm[0].length));
       out = before + after.slice(cm.index + cm[0].length);
     } else {
       // 漏闭标记：按"块独占正文末尾"的契约剥到文末（editor 的流式过滤器同规则）
-      parseBlockLines(after, allowed, hits, extra);
+      parseBlockLines(after, allowed, hits);
       raws.push(out.slice(om.index));
       out = before;
     }
@@ -146,7 +176,9 @@ export function parseStatusBlock(text: string, names: string[]): StatusParseResu
     const idx: number[] = [];
     const knownAt = function (k: number) {
       const m = matchKeyLine(lines[k]);
-      return (m && allowed.has(m.name)) ? m : null;
+      if (!m) return null;
+      const official = resolveName(m.name, allowed, false);
+      return official ? { name: official, value: m.value } : null;
     };
     while (i >= 0) {
       if (!lines[i].trim()) { i--; continue; }         // 簇内允许空行
@@ -179,7 +211,7 @@ export function parseStatusBlock(text: string, names: string[]): StatusParseResu
     }
   }
   if (raws.length === 0) return null;
-  return { raw: raws.join('\n\n').trim(), hits: dedupLastWins(hits), extra: dedupLastWins(extra), text: out };
+  return { raw: raws.join('\n\n').trim(), hits: dedupLastWins(hits), text: out };
 }
 
 /** 只要剥离、不要值（对话模式渲染侧等只需要"别显示出来"的场合） */

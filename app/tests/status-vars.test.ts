@@ -80,19 +80,51 @@ describe('变量回报块：解析与剥离（纯函数）', () => {
     expect(r.text).toBe('正文。\n');
   });
 
-  it('块里出现没登记的键（模型自己加的字段）→ 进 extra，不并进上一个变量的多行值', () => {
-    const src = '正文。<status>\n任务数量：6\n心情：不错\n</status>';
+  it('块里出现没登记的键（模型自己加的字段）→ 整行丢掉，不污染上一个变量的值', () => {
+    const src = '正文。<status>\n任务数量：6\n心情：不错\n金钱：120\n</status>';
     const r = parseStatusBlock(src, NAMES)!;
-    expect(r.hits.map(h => h.name + '=' + h.value)).toEqual(['任务数量=6']);
-    expect(r.extra.map(h => h.name + '=' + h.value)).toEqual(['心情=不错']);
+    expect(r.hits.map(h => h.name + '=' + h.value)).toEqual(['任务数量=6', '金钱=120']);
     expect(r.text).toBe('正文。');
   });
 
-  it('块里的散文行（带句末标点）不被当野变量收进来', () => {
+  it('块里的散文行（形如「键：值」但键不认识）同样丢掉，不并进上一个变量', () => {
     const src = '正文。<status>\n任务数量：6\n她看了我一眼：没说话。\n</status>';
     const r = parseStatusBlock(src, NAMES)!;
-    expect(r.extra).toEqual([]);
-    expect(r.hits.map(h => h.name + '=' + h.value)).toEqual(['任务数量=6\n她看了我一眼：没说话。']);
+    expect(r.hits.map(h => h.name + '=' + h.value)).toEqual(['任务数量=6']);
+  });
+
+  it('名字写法被模型改坏也能对上（漏右括号 / 半角括号 / 等号当分隔符）', () => {
+    // 真机：条目「手里的现金（日元）」被写成 `手里的现金（日元=48000`（漏右括号 + 用等号）
+    const names = ['手里的现金（日元）'];
+    for (const line of ['手里的现金（日元=48000', '手里的现金（日元）：48000', '手里的现金(日元)＝48000', '手里的现金（日元） = 48000']) {
+      const r = parseStatusBlock('正文。\n<status>\n' + line + '\n</status>', names)!;
+      expect(r.hits.map(h => h.name + '=' + h.value)).toEqual(['手里的现金（日元）=48000']);
+      expect(r.text.trim()).toBe('正文。');
+    }
+  });
+
+  it('标签块里还容忍"名字被截短/去括号"（唯一命中才认）', () => {
+    const names = ['手里的现金（日元）', '任务数量'];
+    for (const line of ['手里的现金：48000', '手里的现金（日元）：48000', '手里的现金（日元）余额：48000']) {
+      const r = parseStatusBlock('正文。\n<status>\n' + line + '\n</status>', names)!;
+      expect(r.hits.map(h => h.name + '=' + h.value)).toEqual(['手里的现金（日元）=48000']);
+    }
+    // 命中不唯一 → 不猜（两个变量都含"现金"时，写"现金："不认）
+    expect(parseStatusBlock('正文。<status>\n现金：1\n</status>', ['手里的现金', '桌上的现金'])).toEqual({
+      raw: '<status>\n现金：1\n</status>', hits: [], text: '正文。',
+    });
+  });
+
+  it('块外（兜底行簇）不放宽：正文里"名字被截短 + 冒号"的行不会被误吃', () => {
+    const names = ['手里的现金（日元）'];
+    expect(parseStatusBlock('苏黎点头。\n\n手里的现金：不多了。\n', names)).toBeNull();
+  });
+
+  it('兜底行簇里也用同一套名字解析（漏标签 + 名字写法坏）', () => {
+    const names = ['手里的现金（日元）'];
+    const r = parseStatusBlock('苏黎点头。\n\n手里的现金（日元=48000\n', names)!;
+    expect(r.hits.map(h => h.name + '=' + h.value)).toEqual(['手里的现金（日元）=48000']);
+    expect(r.text.trim()).toBe('苏黎点头。');
   });
 
   it('中文标签 <状态栏> 与漏闭标记（剥到文末）', () => {
@@ -223,13 +255,25 @@ describe('StatusVars：条目读取 / 注入块 / 收集落盘', () => {
     expect(blk2).toContain('当前值：120');
   });
 
-  it('本轮漏写某个变量 → 那一条保留旧值；写了没登记的键 → 进「未登记」', () => {
+  it('本轮漏写某个变量 → 那一条保留旧值；模型自己加的字段直接丢掉（面板不再有「未登记」）', () => {
     seed([V1, V2]);
     StatusVars.capture('novel', '<status>\n任务数量：7\n金钱：120\n</status>');
     StatusVars.capture('novel', '<status>\n任务数量：6\n心情：不错\n</status>');
     expect(StatusVars.values('novel')['任务数量'].v).toBe('6');
-    expect(StatusVars.values('novel')['金钱'].v).toBe('120');   // 本轮没写 → 保留
-    expect(StatusVars.unregistered('novel').map(u => u.name)).toEqual(['心情']);
+    expect(StatusVars.values('novel')['金钱'].v).toBe('120');              // 本轮没写 → 保留
+    expect(Object.keys(StatusVars.values('novel')).sort()).toEqual(['任务数量', '金钱']);  // 没有「心情」
+  });
+
+  it('值只留启用中的变量：改名/停用后的旧键在下一次回报时被清掉', () => {
+    seed([V1, V2]);
+    StatusVars.capture('novel', '<status>\n任务数量：7\n金钱：120\n</status>');
+    // 停用「金钱」条目（inject=false）→ 它的值不再注入；下一次回报时清掉残留键
+    const all = WBM.getAll();
+    all.find((w: any) => w.id === WBM.getActiveId())!.entries.find((e: any) => e.id === 'v2')!.inject = false;
+    WBM.saveAll(all);
+    StatusVars.capture('novel', '<status>\n任务数量：5\n</status>');
+    expect(StatusVars.values('novel')['任务数量'].v).toBe('5');
+    expect(StatusVars.values('novel')['金钱']).toBeUndefined();
   });
 
   it('按「书 × 模式」隔离：小说/对话各一份，换书互不影响', () => {
