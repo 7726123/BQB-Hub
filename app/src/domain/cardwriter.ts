@@ -973,12 +973,24 @@ const CardWriterChat: CardWriterChatShape = {
     }
     if (t.name === 'upsert_entry') {
       if (!a.name) return '工具调用参数无效：缺少条目名，请重写输入后重新调用';
-      const type = a.type || '其他';
+      const entryList = draft.entries || [];
+      // 没传 type 时**先按名字找已有的那条**（任意类型）并保持它的类型：否则会另建一条同名「其他」条目，
+      // 于是世界书里出现"变量条目 + 同名其他条目"两条（用户看到重复/类型变了，还以为条目被改坏了）。
+      if (!a.type) {
+        const byName = entryList.findIndex((x: any) => x.name === a.name);
+        if (byName >= 0) {
+          const keepType = entryList[byName].type || '其他';
+          entryList[byName] = { type: keepType, name: a.name, content: a.content || '' };
+          return '更新条目：' + a.name + '（沿用类型「' + keepType + '」）';
+        }
+        entryList.push({ type: '其他', name: a.name, content: a.content || '' });
+        return '新增条目：' + a.name;
+      }
+      const type = a.type;
       // 变量条目：名称会被当成回报格式里的键（模型按「名称：值」回报），带冒号/换行会把格式打乱
       if (type === '变量' && /[:：\n\r]/.test(String(a.name))) {
         return '工具调用参数无效：变量名里不能有冒号或换行（模型按「名称：值」回报），请改成「任务数量」这种写法后重试';
       }
-      const entryList = draft.entries || [];
       if (type === '初始') {
         // 「初始」每本书唯一：已存在初始条目（无论叫什么名字）一律更新它，
         // 防止 AI 换个条目名就新增第二条（两条初始会在正文为空时重复注入）
@@ -2339,7 +2351,16 @@ const CardWriterChat: CardWriterChatShape = {
     draftEntries.forEach(function (de: any) {
       if (de.type === '角色') return; // 旧格式草稿防御：角色条目由 _loadDraft 迁移到 characters
       if (de.type === '初始') { initLast = { type: de.type, name: de.name, content: de.content }; return; }
-      allItems.push({ type: de.type || '其他', name: de.name, content: de.content });
+      // 草稿这行没写类型时**沿用世界书里同名条目的类型**，别默认成「其他」：写卡是"以草稿为准"整表重建，
+      // 一旦这里默认成「其他」，同名条目的类型就被悄悄降级了（用户报过"原本是变量条目，变成了其他条目"）。
+      // 草稿显式写了类型（包括显式「其他」）时以草稿为准——改类型是用户/agent 的明确意图。
+      let type = de.type;
+      if (!type) {
+        const same = oldMap['变量:' + (de.name || '')] || oldMap['世界观:' + (de.name || '')] ||
+          oldMap['初始:' + (de.name || '')] || oldMap['其他:' + (de.name || '')];
+        type = (same && same.type) || '其他';
+      }
+      allItems.push({ type: type, name: de.name, content: de.content });
     });
     if (initLast) allItems.push(initLast);
     draftChars.forEach(function (c: any) {

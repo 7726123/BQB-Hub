@@ -1024,3 +1024,40 @@ describe('写卡支持「变量」条目', () => {
     expect(WB_BOOKS[0].entries[WB_BOOKS[0].entries.length - 1].type).toBe('变量');
   });
 });
+
+// 类型降级回归（用户报过"原本是变量条目，变成了其他条目"）：
+// 写卡是"以草稿为准整表重建"，任何"没写类型就默认成其他"的路径都会悄悄改掉世界书里那条的类型。
+describe('条目类型不许被悄悄降级', () => {
+  it('直写世界书：草稿那行没写类型 → 沿用世界书里同名条目的类型（变量不会被写成其他）', () => {
+    const c = prime();
+    WB_BOOKS = [{ id: 'wb1', name: '测试书', entries: [{ id: 'v1', type: '变量', name: '手里的现金（日元）', content: '现金。', inject: true }] }];
+    c._draft = { characters: [], entries: [{ name: '手里的现金（日元）', content: '现金（日元）。' }], deleted: [] };   // 注意：没写 type
+    c._getTargetId = () => 'wb1';
+    c._snapshotNow = () => {};
+    c._saveDraft = () => {};
+    c.refreshContext = () => {};
+    const r = c._doWriteToWorldbook();
+    expect(String(r)).toContain('已写入世界书');
+    const v = WB_BOOKS[0].entries.find((e: any) => e.name === '手里的现金（日元）');
+    expect(v.type).toBe('变量');                       // 降级前会是「其他」
+    expect(v.content).toBe('现金（日元）。');
+  });
+
+  it('upsert_entry 没传 type：按名字更新原条目并沿用它的类型（不另建同名「其他」）', () => {
+    const c = prime();
+    c._draft = { characters: [], entries: [{ type: '变量', name: '任务数量', content: '每月 10 次。' }], deleted: [] };
+    const r = c._executeToolResult({ name: 'upsert_entry', arguments: { name: '任务数量', content: '每月 12 次。' } });
+    expect(r.ok).toBe(true);
+    expect(String(r.message)).toContain('沿用类型「变量」');
+    expect(c._draft.entries).toHaveLength(1);           // 没有多出一条同名的「其他」
+    expect(c._draft.entries[0]).toMatchObject({ type: '变量', name: '任务数量', content: '每月 12 次。' });
+  });
+
+  it('upsert_entry 显式传 type：以显式类型为准（改类型是明确意图）', () => {
+    const c = prime();
+    c._draft = { characters: [], entries: [{ type: '变量', name: '任务数量', content: 'x' }], deleted: [] };
+    const r = c._executeToolResult({ name: 'upsert_entry', arguments: { type: '其他', name: '任务数量', content: 'y' } });
+    expect(r.ok).toBe(true);
+    expect(c._draft.entries.map((e: any) => e.type)).toEqual(['变量', '其他']);   // 显式类型不同 → 新旧各一条（既有语义）
+  });
+});
