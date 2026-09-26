@@ -1130,3 +1130,76 @@ describe('条目类型不许被悄悄降级', () => {
     expect(c._draft.entries.map((e: any) => e.type)).toEqual(['变量', '其他']);   // 显式类型不同 → 新旧各一条（既有语义）
   });
 });
+
+// 写卡思考纪律（2026-09-26 晚，用户反馈"思考几万字、左右脑互搏"）：
+// - 内容收在独立的「思考纪律」分块（可编辑、可清空），**不拼进** base/method 那一大段 system；
+// - 每轮作为**最后一条** system 消息注入（位置＝生成点前；写作端实测：同一段思考要求放 system 前部
+//   思考中位约 3689 字，放消息末尾约 600 字，所以位置本身就是措施的一半）；
+// - 授权判断补「检查只做一遍 / 判定完即执行」，验收清单不再要求逐条汇报——长思考主要耗在反复推翻自己。
+describe('写卡思考纪律：预设分块可编辑 + 钉在请求最后一条', () => {
+  function primeForSend(c: any): void {
+    c._getTargetId = () => 'wb1';
+    c._saveDraft = () => {};
+    c.renderDraft = () => {};
+    c.renderMessages = () => {};
+    c._snapshotNow = () => {};
+    c._syncDraftFromWorldbook = () => {};
+    c._recentHistory = () => [];
+    c.refreshContext = function () { (this as any)._context = { wb: { id: 'wb1' }, bookName: '测试书', charsText: '', charCount: 0, worldSetting: true, wbParts: [] }; };
+    c._draft = { characters: [], entries: [entry('世界观', '世界观', '这是一个剑与魔法的世界')] };
+  }
+
+  it('默认分块：think 有内容、版本 ≥26；base 写明"检查只做一遍/判定完即执行/不逐条汇报"', () => {
+    const b = Cw()._defaultBlocks();
+    expect(b.__version).toBeGreaterThanOrEqual(26);
+    expect(String(b.think)).toContain('【思考纪律');
+    expect(String(b.think)).toContain('不要预写草稿');
+    expect(String(b.think)).toContain('判断只做一遍');
+    expect(String(b.base)).toContain('检查只做一遍');
+    expect(String(b.base)).toContain('判定完即执行');
+    expect(String(b.base)).toContain('不必在回复里逐条汇报');
+    // think 不属于 system 常驻段（它单独作为最后一条消息发）
+    expect(String(Cw()._composePresetText(b))).not.toContain('【思考纪律');
+  });
+
+  it('发送时 think 贴在用户消息之后（近端）；设计轮说明仍压最末；清空分块后不再注入', async () => {
+    const c = Cw();
+    primeForSend(c);
+    // preset.ts 被动态 import 时会把 globalThis.PresetManager 换成真模块（本文件后面的用例先把它导进来了），
+    // 这里重新装上桩：本用例只看消息装配，不关心真实配置来源。
+    anyG.PresetManager = { getActiveAPIConfig: () => ({ endpoint: 'https://x.test/v1', apiKey: 'k', model: 'm' }) };
+    let captured: any = null;
+    anyG.APIHandler = {
+      fetchCompletions: (msgs: any, _onChunk: any, onDone: any) => {
+        captured = msgs;
+        onDone('', false, '');
+        return Promise.resolve();
+      },
+    };
+    const idxOf = (s: string) => captured.findIndex((m: any) => String(m.content || '').indexOf(s) >= 0);
+
+    // 设计轮：纪律消息在用户消息之后（近端）；「本轮：设计轮」说明仍压最末
+    // （_designTurn 由 sendMessage 判定，这里直接调 _callAPI，所以显式设定）
+    c._designTurn = true;
+    await c._callAPI('看一下设定');
+    expect(idxOf('【思考纪律')).toBeGreaterThan(captured.map((m: any) => m.role).lastIndexOf('user'));
+    expect(String(captured[captured.length - 1].content)).toContain('【本轮：设计轮');
+
+    // 操作轮：纪律就是最后一条（贴着生成点）
+    c._designTurn = false;
+    captured = null;
+    await c._callAPI('写入吧');
+    expect(String(captured[captured.length - 1].content)).toContain('【思考纪律');
+
+    // 用户把该分块清空 → 完全不注入
+    anyG.StorageManager = {
+      get: (k: string, d: unknown) => (k === 'cwPresetBlocks'
+        ? { base: '基础指令', method: '', selfcheck: '', think: '', nsfw: '', handgun: '', __version: 26 }
+        : d),
+      set: () => undefined, remove: () => undefined,
+    };
+    captured = null;
+    await c._callAPI('写入吧');
+    expect(captured.some((m: any) => String(m.content || '').indexOf('【思考纪律') >= 0)).toBe(false);
+  });
+});
