@@ -36,6 +36,14 @@ const _BATCH_MAX_ITEMS = 10;
 // 8 轮时「5 个调用/轮 × 9 轮 = 45 次」根本清不完上百条的大卡；提到 24 轮后配合批量参数，
 // 200 条级别的清理与改造能在一条消息里跑完。代价是最坏墙钟变长（每请求超时 5 分钟）。
 const _MAX_AGENT_ROUNDS = 24;
+// 设计轮（用户这一条没给写入/操作指令）里允许的工具轮数上限：只留一轮提交 + 一轮收尾文字。
+// 2026-09-26 用户：工具必须**随时可用**——前端靠关键词判"要不要给工具"，判漏时模型没有工具可用，
+// 却仍按提示词里的工具说明输出「已写入」→ 世界书其实一个字都没写（用户看到"报已写入但没写入"）。
+// 所以门控从「给不给工具」改成「只限轮数」：设计轮也能调工具，但最多一轮，不允许连环多轮。
+const _DESIGN_TOOL_ROUNDS = 1;
+// 会改世界书的工具（其余 lookup_book / read_current_book_json / read_adapter_doc /
+// adapt_tavern_lorebook 是只读工具：它们返回 ok=true 只说明"读到了"，不代表写过任何东西）
+const _WRITE_TOOLS = ['apply_character', 'delete_character', 'update_worldview', 'upsert_entry', 'delete_entry', 'set_entry_type'];
 export interface CardWriterChatShape {
   [k: string]: any;
   messages?: any;
@@ -81,7 +89,9 @@ const CardWriterChat: CardWriterChatShape = {
   _draft: null, // 世界书工作副本（世界书当前内容的模型；改动即时写回真实世界书，见 _doWriteToWorldbook）
   _draftTimer: null,
   _summarizing: false,
-  _designTurn: false, // 本轮是设计轮（用户没给写入/操作指令）：不提供任何工具、不写入，只输出设计
+  _designTurn: false, // 本轮是设计轮（用户没给写入/操作指令）：工具照给，只限制轮数（最多一轮提交），提示词软约束不许擅自写入
+  _toolRounds: 0, // 本条消息已经发生的工具轮数（设计轮据此收到 _DESIGN_TOOL_ROUNDS 轮内）
+  _writeOk: false, // 本轮是否有**成功写进世界书**的工具调用（只读工具不算；假「已写入」兜底据此判定）
   // 断线可续跑：本轮被系统中断（切后台/锁屏）时保留"重发这一轮"的闭包。
   // 已执行的工具调用是即时写库的、且工具调用只在整轮流完后才执行，所以重发同一轮是幂等的。
   _pausedResume: null,
@@ -470,14 +480,18 @@ const CardWriterChat: CardWriterChatShape = {
     const input = document.getElementById('cardwriterInput');
     const text = input!.value.trim();
     if (!text) return;
-    // 轮次模式：用户这一条给了写入/操作指令 → 操作轮（提供工具，可多轮提交变更）；
-    // 否则 = 设计轮（讨论/构思/征询）：**不提供任何工具**，一轮出设计就停。
-    // （2026-09-25 用户要求：设计阶段不要多轮循环、不要直接写入，那样又慢又容易被擅自改书）
+    // 轮次模式（软）：用户这一条给了写入/操作指令 → 操作轮（可多轮提交变更）；
+    // 否则 = 设计轮（讨论/构思/征询）：**工具照给**，只是提示词按设计轮口径、并且最多提交一轮。
+    // 2026-09-26 用户要求：不要用关键词匹配决定"给不给工具"——判漏时（用户其实是要写入）
+    // 模型手里没有工具，却照提示词说「已写入/已保存」，实际一个字都没写。工具永远给，
+    // 靠提示词软约束 + 设计轮轮数上限（_DESIGN_TOOL_ROUNDS）来避免设计阶段多轮循环和擅自写入。
     this._designTurn = !this._hasWriteIntent(text);
     input!.value = '';
     if (typeof App !== 'undefined' && App.resetChatInput) App.resetChatInput(input!);
     this._toolsHandled = false; // 本轮是否已通过工具提交变更（防止重复解析文字清单）
     this._toolsOk = false; // 本轮是否有**成功**的工具调用（收尾文案据此区分"已写入"与"没提交成功"）
+    this._writeOk = false; // 本轮是否有成功的**写**工具调用（只读工具不算）
+    this._toolRounds = 0; // 本条消息已发生的工具轮数
     this._fixCount = 0; // 完成声明一致性纠正次数（最多 1 次，防死循环）
     this._repeatKey = null; // 重复调用守卫：上一轮工具调用链（相同工具+相同参数连续重复计数）
     this._repeatCount = 0;
@@ -546,14 +560,15 @@ const CardWriterChat: CardWriterChatShape = {
     const historyMsgs = this._recentHistory();
     for (let i = 0; i < historyMsgs.length; i++) messages.push(historyMsgs[i]);
 
-    // 设计轮（用户没给写入/操作指令）：本轮不提供工具，模型只能出设计、一轮就结束。
+    // 设计轮（用户没给写入/操作指令）：**工具照给**（只作兜底），但口头把口径收紧到设计轮。
     // 指令贴在历史之后 = 模型最后看到的话；同时 system 与历史的前缀不动（不拖累缓存命中）。
     if (this._designTurn) {
       messages.push({
-        role: 'system', content: '【本轮：设计轮（没有写入授权）】用户这一条没有让你写入/修改世界书。'
-          + '本轮**没有任何工具可用**：不要调用工具、不要声称「已写入/已修改/已保存」，回复里也不要出现 status/origin 这类内部标记。'
-          + '只输出设计本身——设定草案、角色人设文字稿、方案要点、建议与需要用户拍板的问题——把这一轮说透就停，不要连环追问。'
-          + '用户明确说「写入吧/就这样/按这个改/继续」之后，下一轮才提交。'
+        role: 'system', content: '【本轮：设计轮】用户这一条看起来只是讨论/构思，没有明确让你写入世界书。'
+          + '默认只输出设计本身——设定草案、角色人设文字稿、方案要点、建议与需要用户拍板的问题——把这一轮说透就停，不要连环追问。'
+          + '工具仍然可用，但只作兜底：如果你判断用户这一条其实有明确的写入/修改指令，就直接调用工具（不要空口说「已写入」）；'
+          + '**设计轮最多提交一轮工具**（这一轮里用并行 tool_calls 一次交完，最多 5 个调用），不要多轮循环打磨——剩余内容用文字说明，等用户说「继续」再提交。'
+          + '没有真的收到 {"ok":true} 的工具结果，就不许出现「已写入/已修改/已保存」，回复里也不要出现 status/origin 这类内部标记。'
       });
     }
 
@@ -582,21 +597,29 @@ const CardWriterChat: CardWriterChatShape = {
       // 强行写入，造成"先讨论后写入"和"多轮重复回答"；模型不调工具就自然结束。
       const requestMessages = messages;
       const runTurn = async (msgs: any, round: any) => {
-        if (round > _MAX_AGENT_ROUNDS) {
+        // 设计轮收紧轮数：最多提交一轮工具（多出的调用在 _handleTools 里被拒），再留一轮收尾文字；
+        // 操作轮仍是 _MAX_AGENT_ROUNDS（大卡批量改造要跑很多轮）。
+        const maxRounds = this._designTurn ? _DESIGN_TOOL_ROUNDS + 1 : _MAX_AGENT_ROUNDS;
+        if (round > maxRounds) {
           // 工具轮数用尽：按已有输出收尾。已写入世界书的变更不会丢，让用户发一句「继续」接着跑
-          // 剩下的（大卡改造一条消息跑不完是正常的）。用 _toolsOk 而不是 _toolsHandled：
-          // 后者在任何工具调用（哪怕全部失败）后都为 true，会误报「变更已写入世界书」。
+          // 剩下的（大卡改造一条消息跑不完是正常的）。用 _writeOk 而不是 _toolsHandled：
+          // 后者在任何工具调用（哪怕全部失败）后都为 true，会误报「变更已写入世界书」；
+          // 也别用 _toolsOk——只读工具（read_current_book_json 等）成功也会把它置位。
           this._isSending = false;
           this._statusText = '';
           if (!this.messages[assistantIdx].content) {
-            this.messages[assistantIdx].content = this._toolsOk
-              ? '（已达工具调用轮数上限（' + _MAX_AGENT_ROUNDS + ' 轮），已写入的变更都保留着——发一句「继续」我接着处理剩下的）'
-              : '（已达工具调用轮数上限（' + _MAX_AGENT_ROUNDS + ' 轮），本轮没有成功提交变更——发一句「继续」重试，或减少单次处理量）';
+            this.messages[assistantIdx].content = this._writeOk
+              ? (this._designTurn
+                ? '（设计轮最多一轮工具提交，已写入的变更都保留着——还有没处理完的说一句「继续」，我接着做）'
+                : '（已达工具调用轮数上限（' + _MAX_AGENT_ROUNDS + ' 轮），已写入的变更都保留着——发一句「继续」我接着处理剩下的）')
+              : (this._designTurn
+                ? '（设计轮最多一轮工具提交，本轮没有成功提交任何变更——发一句「继续」重试）'
+                : '（已达工具调用轮数上限（' + _MAX_AGENT_ROUNDS + ' 轮），本轮没有成功提交变更——发一句「继续」重试，或减少单次处理量）');
           }
           this._clearPausedMarker(); // 轮数用尽也算本轮收尾：不留「待继续」按钮（提示里已让用户发「继续」）
           this._save();
           this.renderMessages();
-          if (!this._designTurn && !this._toolsOk) {
+          if (!this._designTurn && !this._writeOk) {
             App.toast('AI 未能通过工具提交变更，可再发一次确认');
           }
           return;
@@ -689,9 +712,10 @@ const CardWriterChat: CardWriterChatShape = {
             onApiError,
             {
               temperature: 0.8, callLabel: 'cardwriter',
-              // 工具只在操作轮提供：设计轮一律不提供（模型无从调用 → 一轮出设计就结束，
-              // 不会多轮循环、也不会擅自写入；见 _designTurn）
-              ...(this._designTurn ? {} : { tools: this._tools() }),
+              // 工具**常开**（2026-09-26 用户）：设计轮也给，否则关键词判漏时模型没有工具可用、
+              // 却照提示词说「已写入」而实际没写。设计阶段的多轮只在提示词里软约束
+              // （【本轮：设计轮】+ 上面那条收尾提醒），轮数由 maxRounds 兜底。
+              tools: this._tools(),
               // 总超时 300s；空闲超时 120s。写卡 system prompt 最大且网关（如 opencode.ai）是思考型
     // 模型转发：实测长思考期间可静默 66s+ 才继续吐流（idle 45s 会误杀报「请求失败」）
     timeout: 300000, idleTimeout: 120000,
@@ -720,9 +744,10 @@ const CardWriterChat: CardWriterChatShape = {
               onTools: (tools: any) => {
                 turnHadTools = true;
                 this._lastTurnTools = tools.map(function (t: any) { return t.name; });
+                this._toolRounds = (this._toolRounds || 0) + 1;
                 // 完全访问模式：模型调工具直接执行（"做不做"完全由模型判断，
                 // 预设【授权判断/调用前自检】软约束负责引导；前端不做任何关键词拦截）
-                this._statusText = '正在应用第 ' + (round + 1) + '/' + _MAX_AGENT_ROUNDS + ' 轮 · ' + tools.length + ' 项变更…';
+                this._statusText = '正在应用第 ' + (round + 1) + '/' + maxRounds + ' 轮 · ' + tools.length + ' 项变更…';
                 const results = this._handleTools(tools, userText);
                 // 重复调用守卫（deepseek-harness repeat-tool-reminder 移植）：
                 // 相同工具+相同参数连续调用（说明没进展）→ 注入提醒，不拦截
@@ -746,6 +771,14 @@ const CardWriterChat: CardWriterChatShape = {
                   msgs.push({ role: 'tool', tool_call_id: t.id || ('call_' + i), content: results[i] || 'ok' });
                 });
                 if (repeatReminder) msgs.push({ role: 'system', content: repeatReminder });
+                // 设计轮的软收尾：工具已经提交过一轮了，下一轮只该输出文字（工具还在，但别再多轮循环）
+                if (this._designTurn && this._toolRounds >= _DESIGN_TOOL_ROUNDS) {
+                  msgs.push({
+                    role: 'system', content: '【设计轮·收尾】工具提交已经执行完（结果见上）。设计轮最多一轮提交：'
+                      + '现在**不要再调用任何工具**，直接用文字把结论和剩余设计讲清楚；还有没提交完的内容，用文字说明，'
+                      + '让用户回一句「继续」再提交。'
+                  });
+                }
                 // turnText 变量每轮重置（最终轮文字由 onChunk/onDone 写入气泡）
                 turnText = '';
                 resolve(runTurn(msgs, round + 1));
@@ -762,6 +795,20 @@ const CardWriterChat: CardWriterChatShape = {
       // 条（spinner + 文案），空内容不渲染气泡，见 renderMessages。
       };
       await runTurn(requestMessages, 0);
+      // 假「已写入」兜底（2026-09-26 用户报的正是这个：AI 说已写入，世界书其实没变）：
+      // 整条消息跑完后，模型嘴里说「已写入/已保存」但一次成功的写工具调用都没有 → 在气泡里点破。
+      // 工具常开后这只是保险丝（判漏写入意图、模型空口声称、写工具全失败三种情况都由它兜住）。
+      {
+        const _final = this.messages[assistantIdx];
+        if (_final && !this._writeOk && this._claimsWrite(_final.content)) {
+          _final.content = String(_final.content || '').trim()
+            + '\n\n（系统核对：这条消息里没有任何成功的写入操作——世界书没有变化，上面「已写入」的说法不成立。'
+            + '再发一句「写入吧」我重试；如果反复这样，把要说的话说得更直接一点，或检查设置里的 API 是否支持工具调用。）';
+          this._save();
+          this.renderMessages();
+          if (!_cwHidden()) App.toast('AI 声称已写入，但实际没有提交任何变更——世界书未改变');
+        }
+      }
     } catch (e) {
       // 兜底：任何未捕获异常都必须释放发送锁，否则后续再也无法发送
       this._isSending = false;
@@ -901,10 +948,13 @@ const CardWriterChat: CardWriterChatShape = {
   // ==================== 轮次意图（操作轮 / 设计轮） ====================
 
   // 用户这一条消息是不是"让我动手"（写入/修改/整理/继续跑批）？
-  // 是 → 操作轮：提供工具、允许 agent 多轮提交；否 → 设计轮：**不提供任何工具**，一轮出设计。
-  // 2026-09-25 用户要求：设计阶段（讨论/构思）就该只输出设计，不要多轮循环、不要直接写入——
-  // 又慢又容易擅自改书。工具能否调用不再只靠提示词约束，前端直接不给。
-  // 判据两层：① 征询/讨论语气优先 → 一律不算操作（宁可不给工具）；② 剩下的话里要有明确动作词。
+  // 是 → 操作轮：允许 agent 多轮提交；否 → 设计轮：**工具照给**，但提示词按设计轮口径 +
+  // 最多一轮提交（_DESIGN_TOOL_ROUNDS）。
+  // 2026-09-25 用户要求：设计阶段（讨论/构思）只输出设计，不要多轮循环、不要直接写入。
+  // 2026-09-26 用户修正：**不能用这个判定来决定"给不给工具"**——判漏（用户其实是要写入）时
+  // 模型手里没有工具，却照提示词说「已写入」，世界书一个字都没变（前端判定只能当软口径的输入，
+  // 不能当开关；见 _DESIGN_TOOL_ROUNDS 与 _claimsWrite 的兜底）。
+  // 判据两层：① 征询/讨论语气优先 → 一律不算操作；② 剩下的话里要有明确动作词。
   // 边界：错判成设计轮 = 这轮不写、下一句「写入吧」就补上；错判成操作轮 = 可能擅自改用户的书，
   // 所以动作词只收明确的（不含"你来定/你决定/自由发挥/你看着办"这类构思授权词）。
   _hasWriteIntent(text: any) {
@@ -1227,7 +1277,19 @@ const CardWriterChat: CardWriterChatShape = {
 
   // 执行模型输出的工具调用（完全访问模式：onTools 已直接调用，此处执行并返回结构化结果）
   _handleTools(tools: any, userText: any) {
+    // 设计轮的硬保险（不是"不给工具"，而是"最多一轮提交"）：第一轮照执行，之后多出来的调用
+    // 一律不执行并**明确告知模型**（ok=false + 原因）——静默吞掉才会重演"说写了其实没写"。
+    if (this._designTurn && (this._toolRounds || 0) > _DESIGN_TOOL_ROUNDS) {
+      try { if (!_cwHidden()) cwToast('设计轮最多提交一轮变更，多出的调用已跳过（已提交的都在）'); } catch (e) { /* ignore */ }
+      const blocked = tools.map(function () {
+        return JSON.stringify({ ok: false, message: '失败：设计轮最多一轮工具提交，本次调用未执行（软件限制）。请用文字说明剩余内容，让用户回一句「继续」再提交。' });
+      });
+      this._lastToolResults = blocked.map(function (r) { return JSON.parse(r); });
+      this.renderDraft();
+      return blocked;
+    }
     this._toolsHandled = true; // 已通过工具提交变更
+    let writeOk = false; // 本轮是否有写工具真的成功（只读工具不算）
     // 工具结果结构化 JSON 回传（成熟 agent 协议）：模型精确判断成功/失败，失败时自动修正
     const results = tools.map((t: any) => {
       // 参数 JSON 解析失败：把解析错误原文回传给模型（区别于「缺少参数」——模型看不到
@@ -1239,13 +1301,11 @@ const CardWriterChat: CardWriterChatShape = {
         return JSON.stringify({ ok: false, message: '失败：工具参数不是合法 JSON（' + t.argsError + '）——请重新输出该调用，arguments 必须是合法 JSON（字符串内的引号/换行需转义）' });
       }
       const r = this._executeToolResult(t);
+      if (r.ok && _WRITE_TOOLS.indexOf(String(t.name)) >= 0) writeOk = true;
       return (r.failed && r.failed.length)
         ? JSON.stringify({ ok: r.ok, message: r.message, failed: r.failed })
         : JSON.stringify({ ok: r.ok, message: r.message });
     });
-    // 记录执行结果 ok 状态（完成声明校验用：模型声称成功但实际失败 → 纠正）
-    // _toolsOk：任意一条调用真的成功过——轮数用尽时的收尾文案据此区分「已写入」与「没提交成功」
-    if (!this._toolsOk && results.some(function (r: any) { try { return !!JSON.parse(r).ok; } catch (e) { return false; } })) this._toolsOk = true;
     // 直写世界书：工具变更即时生效（不再有「草稿 → 覆盖写入」两步）；被验收拦下时
     // 把原因并进最后一条工具结果回传，模型据此改名/合并后重试
     let _wr = '';
@@ -1254,15 +1314,42 @@ const CardWriterChat: CardWriterChatShape = {
       const _i = results.length - 1;
       try {
         const _o = JSON.parse(results[_i]);
+        // 被验收拦下 → 世界书没更新，这条调用不算成功（否则 _writeOk 会把"没写进去"当成写过）
+        if (_o.ok && _WRITE_TOOLS.indexOf(String(tools[_i].name)) >= 0) writeOk = false;
         _o.ok = false;
         _o.message = String(_o.message) + '｜世界书未更新：' + _wr;
         results[_i] = JSON.stringify(_o);
       } catch (e) { /* 结果非 JSON（不应发生）→ 保持原样 */ }
     }
+    // 记录执行结果 ok 状态（完成声明校验用：模型声称成功但实际失败 → 纠正）
+    // _toolsOk：任意一条调用（含只读）真的成功过；_writeOk：写工具真的成功过（收尾文案与
+    // 假「已写入」兜底都用 _writeOk——只读工具成功不代表世界书变过）
+    if (!this._toolsOk && results.some(function (r: any) { try { return !!JSON.parse(r).ok; } catch (e) { return false; } })) this._toolsOk = true;
+    if (writeOk) this._writeOk = true;
     this._lastToolResults = results.map((r: any) => { try { return JSON.parse(r); } catch (e) { return { ok: false, message: r }; } });
     this._saveDraft();
     this.renderDraft();
     return results;
+  },
+
+  // 模型有没有在这段文字里声称"已经写入/已保存"（假「已写入」兜底用）。
+  // 只认完成性表述：已/已经/都 +（最多几个字，容「已经把世界观更新完毕」这种插入语）+ 写类动词。
+  // 否定式（还没保存 / 没有写入 / 不必更新）与疑问式（已经更新了吧？）不算。
+  _claimsWrite(text: any) {
+    const t = String(text || '');
+    if (!t) return false;
+    const re = /(?:已经|已|都)[^。！？；\n]{0,6}?(写入|写进|写下来|落库|保存|存档|存进|提交|应用|更新|修改|删除|移除|创建|新增|添加|录入|入库|改成|改为|改好|建好|写好|搞定)/g;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(t))) {
+      const beforeHead = t.slice(Math.max(0, m.index - 4), m.index);            // 「未/还没」写在头部前面
+      const verbAt = m.index + m[0].length - m[1].length;                        // 动词起点
+      const beforeVerb = t.slice(Math.max(0, verbAt - 3), verbAt);               // 「还没写入」这种紧贴动词的否定
+      if (/[未没不]/.test(beforeHead) || /[未没不]/.test(beforeVerb)) continue;
+      const after = t.slice(m.index + m[0].length, m.index + m[0].length + 4);
+      if (/[？?吗吧]/.test(after)) continue; // 「已经更新了吧？」= 在问，不是在报
+      return true;
+    }
+    return false;
   },
 
   renderMessages(isStreaming: any) {
@@ -1272,7 +1359,7 @@ const CardWriterChat: CardWriterChatShape = {
     const container = document.getElementById('cardwriterMessages');
     if (!container) return;
     if (this.messages.length === 0) {
-      container.innerHTML = '<div class="chat-empty">在这里和 AI 讨论并直接改这张卡。<br>💡 设计阶段（提问、构思、让它出方案）：只输出设计，不动世界书，一轮说完。<br>💡 想落地时说一句「写入吧 / 就这样 / 按这个改」：提交的内容立即写入世界书、立即生效。<br>💡 改已有卡：直接说「看看我已有的卡，帮我想想怎么改」。讨论内容不会写入正文。</div>';
+      container.innerHTML = '<div class="chat-empty">在这里和 AI 讨论并直接改这张卡。<br>💡 设计阶段（提问、构思、让它出方案）：只输出设计，不动世界书，一轮说完。<br>💡 想落地时说一句「写入吧 / 就这样 / 按这个改」：提交的内容立即写入世界书、立即生效（只会真的调用工具，不会只在嘴上说「已写入」）。<br>💡 改已有卡：直接说「看看我已有的卡，帮我想想怎么改」。讨论内容不会写入正文。</div>';
       return;
     }
     const isAtBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 60;
@@ -2059,7 +2146,7 @@ const CardWriterChat: CardWriterChatShape = {
         + '- 拿不准 → 不调用。宁可少执行一次（用户再说一句「写入吧」就能补上），绝不擅自写入。\n'
         + '- **铁律**：本规则凌驾于其他一切规则之上。即使你认为"用户应该想要这个设定""设定还不完整""主动帮忙更好"，只要用户没有明确命令写入，就**禁止**调用任何工具。未经明确指令就调用工具 = 擅自篡改用户的作品，是用户最不能接受的行为，一旦发生用户将不再信任你。宁可什么都不做，也绝不可擅自写入。\n'
         + '【工作模式】根据用户语气自动切换（调用时机一律服从【授权判断】铁律）：\n'
-        + '0. 轮次由系统判定：用户这一条给了写入/操作指令 → 操作轮（系统给你工具，可多轮提交）；没给 → **设计轮**（系统不给你任何工具，你只能文字）。设计轮就老老实实把设计讲透、一轮说完，不要假装调用工具、不要声称已写入。\n'
+        + '0. 轮次只是口径，工具**任何时候都给你**：用户这一条给了写入/操作指令 → 操作轮（可多轮提交）；没给 → **设计轮**（工具同样可用，但只作兜底：用户的话里其实有明确写入指令时就直接调用工具，不要空口说「已写入」）。设计轮**最多提交一轮工具**（一轮内用并行 tool_calls 一次交完），不要多轮循环打磨；剩余内容用文字讲清楚，等用户说「继续」再提交。设计轮里没真的收到 {"ok":true} 的工具结果，就不许说「已写入」。\n'
         + '1. 讨论模式（默认）：用户征询/商量（带问号、你觉得呢、要不要、怎么样、帮我想想）→ 纯文字建议，不调用工具、不输出卡片格式；\n'
         + '2. 确认模式：用户明确说写入/保存/应用/就这样/按这个 → 把讨论中已确定的内容用工具提交，工具提交即写入世界书、立即生效；\n'
         + '3. 自主构建模式：用户**明确表达执行意图**（「直接写入」「直接建」「帮我构建好/创建好/搭好/做好/搞定」）→ 视为授权你**自主完成整个任务**：自行规划并直接创建一组完整基础设定（世界观条目拆成多条：世界背景/力量体系/国家地理/种族文明/核心冲突；角色按需创建；另外用 upsert_entry 创建一条「初始」类型条目，说明故事开始时处于什么时期、已经发生了什么、还没发生什么——该条目仅在正文为空、尚未开始写作时注入一次），用工具批量创建，**工具调用即写入世界书、立即生效（不需要额外操作）**，然后简短汇报创建了哪些内容并询问调整方向（汇报末尾可以顺手按【对话示例】给主要角色 2~3 组候选台词请用户挑一个——可选，用户不接就作罢）。用户给了具体设定就严格照做，没给的基于常见模板合理创作（可在汇报时说明哪些是自主补全的）。\n'
@@ -2104,7 +2191,7 @@ const CardWriterChat: CardWriterChatShape = {
         + '【写入即完全写入（没有中间态）】\n'
         + '- 本项目**没有草稿/待确认/讨论中未写入这类中间状态**：调用变更工具 = 内容立即原样写入世界书、立即生效；没调用 = 什么都没发生（讨论内容只留在对话里，你不需要为它做任何记录）。\n'
         + '- 因此不要输出 status/origin/来源 之类的内部标记，也不要说「已记录为讨论稿」「等确认后再写入」——要么用工具提交，要么就只是文字讨论。\n'
-        + '- 设计轮（用户还在构思/征询）系统**不会给你任何工具**：这一轮只把设计讲清楚，等用户说「写入吧/就这样/按这个改/继续」再提交。\n'
+        + '- 设计轮（用户还在构思/征询）工具依然可用，但**最多一轮提交**：用户真的说了写入就直接调用工具；没说要写就把设计讲清楚，等用户说「写入吧/就这样/按这个改/继续」再提交。\n'
         + '【写入前验收清单（每次调用变更工具前逐项过一遍，检查结果在回复中汇报）】\n'
         + '- 重名：角色/条目名称全库唯一（改名或新增前先查重）；\n'
         + '- 冲突：同类型条目之间设定互斥（尤其两条世界观条目不得对同一件事自相矛盾）；\n'
@@ -2145,7 +2232,9 @@ const CardWriterChat: CardWriterChatShape = {
       // v21：新增【对话示例（可选）】——AI 先给候选台词让用户挑，选定的写进角色卡「说话方式·例句」
       // v22：新增【主角 / user：从零写卡不需要，不要主动引入】——从零写卡不设主角，{{user}} 只在改造卡里保留
       // v23：写入即完全写入（下线 status/origin 标记与 propose_setting）+ 轮次说明（设计轮不给工具）
-      __version: 24
+      // v25：工具常开（2026-09-26）——设计轮不再"零工具"：关键词判漏时模型手里没工具却说「已写入」，
+      //      世界书其实没变；改为工具任何时候都给，设计阶段靠提示词软约束 + 最多一轮提交来控
+      __version: 25
     };
   },
 

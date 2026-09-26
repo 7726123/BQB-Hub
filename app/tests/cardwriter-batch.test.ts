@@ -73,6 +73,8 @@ function prime(): any {
   c._snapshotNow = () => {};
   c._toolsHandled = false;
   c._toolsOk = false;
+  c._writeOk = false;
+  c._toolRounds = 0;
   return c;
 }
 
@@ -243,6 +245,65 @@ describe('批量结果回传模型：结构化 JSON 与 failed 明细', () => {
     c2._draft = { characters: [], entries: [entry('乙')], deleted: [] };
     c2._handleTools([{ id: 'call_bad', name: 'delete_entry', arguments: { names: ['幽灵条目'] } }], '');
     expect(c2._toolsOk).toBe(false); // 一条都没成功 → 不能说「已写入」
+  });
+
+  it('_writeOk：只读工具成功不算「写过」（否则假「已写入」兜底会漏判）', () => {
+    const c = prime();
+    c._draft = { characters: [], entries: [entry('甲')], deleted: [] };
+    WB_BOOKS = [{ id: 'wb1', name: '测试书', entries: [entry('甲')] }];
+    expect(c._writeOk).toBe(false);
+    // 只读工具：ok=true（读到了），但世界书没变 → _toolsOk 置位、_writeOk 必须保持 false
+    c._handleTools([{ id: 'call_read', name: 'read_current_book_json', arguments: {} }], '');
+    expect(c._toolsOk).toBe(true);
+    expect(c._writeOk).toBe(false);
+    // 写工具真的成功 → 置位
+    c._handleTools([{ id: 'call_w', name: 'upsert_entry', arguments: { type: '其他', name: '新条目', content: 'x' } }], '');
+    expect(c._writeOk).toBe(true);
+  });
+
+  it('_claimsWrite：认完成性表述，不误判否定式/疑问式/纯讨论', () => {
+    const c = Cw();
+    expect(c._claimsWrite('已写入：林晚（更新）、国家（新增）')).toBe(true);
+    expect(c._claimsWrite('好的，已经把世界观更新完毕。')).toBe(true);
+    expect(c._claimsWrite('本轮没有写入任何内容，只是讨论。')).toBe(false);
+    expect(c._claimsWrite('还没有保存，等你确认。')).toBe(false);
+    expect(c._claimsWrite('这样就算已经更新了吧？')).toBe(false);
+    expect(c._claimsWrite('要不要我把这些写入世界书？')).toBe(false);
+    expect(c._claimsWrite('我建议把这段改成第一人称，你觉得呢')).toBe(false);
+    expect(c._claimsWrite('')).toBe(false);
+    expect(c._claimsWrite(null)).toBe(false);
+  });
+
+  it('设计轮最多一轮提交：第 2 轮及以后的工具调用不执行，且明确回传 ok=false（不静默吞掉）', () => {
+    const c = prime();
+    c._draft = { characters: [], entries: [entry('甲')], deleted: [] };
+    WB_BOOKS = [{ id: 'wb1', name: '测试书', entries: [entry('甲')] }];
+    c._designTurn = true;
+    // 第一轮：照执行
+    c._toolRounds = 1;
+    let out = c._handleTools([{ id: 'c1', name: 'upsert_entry', arguments: { type: '其他', name: '新条目', content: 'x' } }], '');
+    expect(okOf(out[0]).ok).toBe(true);
+    expect(c._writeOk).toBe(true);
+    // 第二轮：拒绝执行，草稿与世界书都不得有变化，并回传原因让模型改用文字
+    const before = c._draft.entries.map((e: any) => e.name);          // 第一轮真的写进去过
+    const beforeWb = (WB_BOOKS[0].entries as any[]).map((e: any) => e.name); // 直写也生效过
+    c._toolRounds = 2;
+    out = c._handleTools([{ id: 'c2', name: 'upsert_entry', arguments: { type: '其他', name: '再一条', content: 'y' } }], '');
+    expect(okOf(out[0]).ok).toBe(false);
+    expect(okOf(out[0]).message).toContain('设计轮最多一轮工具提交');
+    expect(c._draft.entries.map((e: any) => e.name)).toEqual(before);                     // 没有被写入
+    expect((WB_BOOKS[0].entries as any[]).map((e: any) => e.name)).toEqual(beforeWb);     // 世界书也没变
+  });
+
+  it('操作轮不受"一轮"限制：同样的第 2 轮调用照执行', () => {
+    const c = prime();
+    c._draft = { characters: [], entries: [], deleted: [] };
+    WB_BOOKS = [{ id: 'wb1', name: '测试书', entries: [] }];
+    c._designTurn = false;
+    c._toolRounds = 5;
+    const out = c._handleTools([{ id: 'c3', name: 'upsert_entry', arguments: { type: '其他', name: '甲', content: 'x' } }], '');
+    expect(okOf(out[0]).ok).toBe(true);
+    expect(c._draft.entries.map((e: any) => e.name)).toEqual(['甲']);
   });
 
   it('单条调用仍走既有的 {ok,message} 形状，且删除真的写进世界书', () => {
@@ -488,10 +549,13 @@ describe('写卡上下文注入：每次都注入，无开关', () => {
   });
 });
 
-// 轮次门控（2026-09-25 用户）：「设计阶段只输出设计，不要多轮循环、也不要直接写入」。
-// 实现在前端：设计轮**完全不给工具**（模型无从调用 → 一轮结束），操作轮才给。
+// 轮次口径（2026-09-25 用户 → 2026-09-26 修正）：
+// 「设计阶段只输出设计，不要多轮循环、也不要直接写入」的诉求不变，但**不能用关键词判定来决定给不给工具**——
+// 判漏（用户其实是要写入）时模型手里没有工具，却照提示词输出「已写入」，世界书一个字都没写
+//（用户实测：报已写入但实际没写入）。现在是：工具**任何时候都给**，设计阶段靠提示词软约束 +
+// 设计轮最多一轮提交（_DESIGN_TOOL_ROUNDS），外加「说了已写入但没有成功写工具调用」的兜底点破。
 // 另：「一按发送就显示正在写入」的状态文案已下线，只有真的执行写入时才提示。
-describe('轮次门控：设计轮不给工具、操作轮才给', () => {
+describe('轮次口径：工具常开（设计轮也给），靠软约束 + 设计轮一轮上限', () => {
   function prime(c: any): void {
     c._getTargetId = () => 'wb1';
     c._saveDraft = () => {};
@@ -536,7 +600,7 @@ describe('轮次门控：设计轮不给工具、操作轮才给', () => {
     expect(c._hasWriteIntent('继续说说')).toBe(false);
   });
 
-  it('设计轮：请求里没有 tools，末尾附「本轮：设计轮」；等待文案不是「正在写入…」', async () => {
+  it('设计轮：工具照给（判漏时模型仍能真的写入）、末尾附「本轮：设计轮」软约束；等待文案不是「正在写入…」', async () => {
     const c = Cw();
     prime(c);
     const box = stubApi();
@@ -544,8 +608,13 @@ describe('轮次门控：设计轮不给工具、操作轮才给', () => {
     await c.sendMessage();
     expect(c._designTurn).toBe(true);
     expect(c._statusText).not.toContain('正在写入');
-    expect(box.ov.tools).toBeUndefined();                       // 一个工具都不给
-    expect(String(box.msgs[box.msgs.length - 1].content)).toContain('【本轮：设计轮');
+    // 工具常开：设计轮也必须有 tools —— 没有工具时模型会"空口说已写入"
+    expect(Array.isArray(box.ov.tools)).toBe(true);
+    expect(box.ov.tools.length).toBeGreaterThan(5);
+    const tail = String(box.msgs[box.msgs.length - 1].content);
+    expect(tail).toContain('【本轮：设计轮');
+    expect(tail).toContain('最多提交一轮工具');
+    expect(tail).not.toContain('没有任何工具可用'); // 旧文案：谎称没工具
     expect(box.msgs.filter((m: any) => m.role === 'assistant' && m.tool_calls).length).toBe(0);
   });
 

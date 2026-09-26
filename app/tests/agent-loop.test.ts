@@ -212,7 +212,12 @@ describe('B. 写卡 agent 循环契约', () => {
 
   function setupCard() {
     const c = Cw();
-    c._handleTools = (tools: { name: string }[]) => tools.map(() => '{"ok":true,"message":"ok"}');
+    // 写工具成功 → 同步置 _writeOk（真实现里由 _handleTools 置位；假「已写入」兜底依赖它）
+    c._handleTools = (tools: { name: string }[]) => tools.map((t) => {
+      c._toolsOk = true; // 真实现：任意一条调用 ok=true 就置位（含只读工具）
+      if (['apply_character', 'delete_character', 'update_worldview', 'upsert_entry', 'delete_entry', 'set_entry_type'].indexOf(t.name) >= 0) c._writeOk = true;
+      return '{"ok":true,"message":"ok"}';
+    });
     c.refreshContext = () => {};
     c._syncDraftFromWorldbook = () => {};
     c._context = null;
@@ -220,6 +225,9 @@ describe('B. 写卡 agent 循环契约', () => {
     c.messages = [];
     c._isSending = false;
     c._toolsHandled = false;
+    c._writeOk = false;
+    c._toolsOk = false;
+    c._toolRounds = 0;
     c._wbWritten = false;
     c._repeatKey = null;
     c._repeatCount = 0;
@@ -274,13 +282,106 @@ describe('B. 写卡 agent 循环契约', () => {
   it('24 轮上限：模型连续调工具 ≥25 次 → 循环终止不卡死', async () => {
     stubLoop('cap');
     setupCard();
-    (document.getElementById('cardwriterInput') as unknown as { value: string }).value = '直接构建这个世界';
+    (document.getElementById('cardwriterInput') as unknown as { value: string }).value = '帮我构建好整套设定，直接写入';
     Cw().sendMessage();
     await vi.waitFor(() => expect(calls.length).toBeGreaterThanOrEqual(25));
     await vi.waitFor(() => expect(Cw()._isSending).toBe(false));
     // round 0..24 后 round=25 > 24 终止，不再发请求。
     // 上限从 8 提到 24：8 轮时「5 调用/轮 × 9 轮」清不完上百条的大卡。
     expect(calls.length).toBe(25);
+  });
+
+  // ---- 2026-09-26 用户：写卡常出现「AI 报已写入但实际没写入」----
+  // 根因：前端按关键词判定"要不要给工具"，判漏（用户其实是要写入）时模型手里根本没工具，
+  // 却照提示词输出「已写入」。工具改为常开；设计阶段只软约束 + 一轮上限。
+  it('设计轮仍带 tools：关键词判漏时模型能真的写进去（不是只说不做）', async () => {
+    stubLoop('two');
+    setupCard();
+    // 这句话会被判成设计轮（含"我想做一个新角色"这类构思语气）
+    (document.getElementById('cardwriterInput') as unknown as { value: string }).value = '我想做一个新角色：女高中生，怕黑';
+    Cw().sendMessage();
+    await vi.waitFor(() => expect(Cw()._isSending).toBe(false));
+    expect(calls[0].overrides.tools).toBeDefined();          // 设计轮也有工具（旧实现这里是 undefined）
+    const names = (calls[0].overrides.tools as { function: { name: string } }[]).map((t) => t.function.name);
+    expect(names).toContain('upsert_entry');
+    expect(calls.length).toBe(2);                             // 工具轮 + 收尾文字轮都跑完
+    expect(Cw()._designTurn).toBe(true);
+    expect(Cw()._writeOk).toBe(true);                         // 工具真的执行了
+  });
+
+  it('设计轮收尾：提交过一轮后注入「不要再调工具」，轮数收在 2 轮内（不像操作轮磨到 24 轮）', async () => {
+    calls = [];
+    (APIHandler as unknown as { fetchCompletions: unknown }).fetchCompletions = (
+      messages: unknown[], onChunk: (c: string) => void, onDone: (...a: unknown[]) => void, _err: (...a: unknown[]) => void, overrides: Record<string, unknown>
+    ) => {
+      calls.push({ messages: (messages as unknown[]).slice(), overrides }); // 快照：messages 数组随后还会被追加
+      if (calls.length <= 2) {
+        (overrides.onTools as (t: { id: string; name: string; arguments: Record<string, unknown> }[]) => void)([
+          { id: 'call_' + calls.length, name: 'upsert_entry', arguments: { type: '其他', name: 'x', content: 'y' } },
+        ]);
+      } else {
+        onChunk('剩下的我下次再提交。'); // 第三次请求：模型改用文字
+        onDone('剩下的我下次再提交。', false, '');
+      }
+    };
+    setupCard();
+    (document.getElementById('cardwriterInput') as unknown as { value: string }).value = '我想做一个新角色：女高中生，怕黑';
+    Cw().sendMessage();
+    // 设计轮 = 1 轮提交 + 1 轮收尾文字（第 3 次请求在拒绝后再给一轮），总之不会磨到 24 轮
+    await vi.waitFor(() => expect(calls.length).toBe(3)); // 用重试等待：微任务里的后续轮次可能晚于 _isSending 翻转
+    await vi.waitFor(() => expect(Cw()._isSending).toBe(false));
+    const round1 = calls[1].messages as { role: string; content?: string }[];
+    const nudge = round1.filter((m) => m.role === 'system' && String(m.content || '').includes('【设计轮·收尾】'));
+    expect(nudge).toHaveLength(1);
+    expect(Cw()._toolRounds).toBe(2); // 模型连着调了两轮工具（第 2 轮在 _handleTools 里被拒，见批量用例）
+  });
+
+  it('假「已写入」兜底：一次写工具都没调却说已写入 → 气泡里点破（世界书没有变化）', async () => {
+    calls = [];
+    (APIHandler as unknown as { fetchCompletions: unknown }).fetchCompletions = (
+      messages: unknown[], onChunk: (c: string) => void, onDone: (...a: unknown[]) => void, _err: (...a: unknown[]) => void, overrides: Record<string, unknown>
+    ) => {
+      calls.push({ messages, overrides });
+      expect(overrides.tools).toBeDefined(); // 工具确实给了——模型是自己没调，不是没工具
+      onChunk('已写入：林晚（新增）、世界背景（新增）。');
+      onDone('已写入：林晚（新增）、世界背景（新增）。', false, '');
+    };
+    setupCard();
+    (document.getElementById('cardwriterInput') as unknown as { value: string }).value = '写入吧';
+    Cw().sendMessage();
+    await vi.waitFor(() => expect(Cw()._isSending).toBe(false));
+    // 收尾核对在循环返回后的几个微任务里跑 → 用重试等待它落笔（不要抢在它前面读）
+    await vi.waitFor(() => expect(String(((Cw().messages as { content?: string }[]).slice(-1)[0]).content)).toContain('系统核对'));
+    expect(Cw()._writeOk).toBe(false);
+    const ai = (Cw().messages as { content?: string }[]).slice(-1)[0];
+    expect(String(ai.content)).toContain('已写入：林晚');      // 模型原话保留（用户能看到它说了什么）
+    expect(String(ai.content)).toContain('世界书没有变化');
+  });
+
+  it('只读工具（read_current_book_json）成功不算写过：说「已写入」仍会被点破', async () => {
+    calls = [];
+    (APIHandler as unknown as { fetchCompletions: unknown }).fetchCompletions = (
+      messages: unknown[], onChunk: (c: string) => void, onDone: (...a: unknown[]) => void, _err: (...a: unknown[]) => void, overrides: Record<string, unknown>
+    ) => {
+      calls.push({ messages, overrides });
+      if (calls.length === 1) {
+        (overrides.onTools as (t: { id: string; name: string; arguments: Record<string, unknown> }[]) => void)([
+          { id: 'call_read', name: 'read_current_book_json', arguments: { names: ['林晚'] } },
+        ]);
+      } else {
+        onChunk('已经读取并写入完成。'); // 只读工具 success，却声称写完了
+        onDone('已经读取并写入完成。', false, '');
+      }
+    };
+    setupCard();
+    (document.getElementById('cardwriterInput') as unknown as { value: string }).value = '看一下当前卡再写入';
+    Cw().sendMessage();
+    await vi.waitFor(() => expect(Cw()._isSending).toBe(false));
+    await vi.waitFor(() => expect(String(((Cw().messages as { content?: string }[]).slice(-1)[0]).content)).toContain('系统核对'));
+    expect(Cw()._toolsOk).toBe(true);   // 只读工具成功
+    expect(Cw()._writeOk).toBe(false);  // 但没有任何写工具成功
+    const ai = (Cw().messages as { content?: string }[]).slice(-1)[0];
+    expect(String(ai.content)).toContain('系统核对');
   });
 
   it('深度思考：流式实时显示 → 正文首字折叠归档进消息，渲染折叠思维链块', async () => {
