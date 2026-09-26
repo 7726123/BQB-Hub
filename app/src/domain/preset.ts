@@ -496,6 +496,49 @@ export function stReasoningToLevel(v: unknown): '' | 'off' | 'low' | 'medium' | 
   return '';
 }
 
+/**
+ * 酒馆预设的 `extensions.regex_scripts` → 本软件的文本正则（RegexRule[]）。
+ *
+ * 为什么需要：酒馆预设的输出契约（如 DREAM_PLOT 的 `<dream_plot>/<dream_body>/<dream_done/>`）
+ * 全靠自带正则剥壳/美化后才能看；导入时不搬正则，那些标签就会原样出现在正文开头与末尾
+ * （2026-09-26 用户反馈"正文开头末尾会输出一些宏"就是这条链路断的）。
+ *
+ * 取舍（本软件没有 HTML 渲染管线，是纯文本编辑器）：
+ *  - `disabled: true` → 跳过（酒馆里关着的备选方案）；
+ *  - `replaceString` 里带 HTML/``` 围栏的"美化"脚本 → 跳过（塞进去会当正文显示一堆 CSS）；
+ *  - `promptOnly`（只作用于发给模型的历史楼层，酒馆的历史/摘要裁切机制）→ 跳过（本软件没有对应钩子）；
+ *  - 其余按 `placement` 落 timing：含 2（AI 输出）→ 'after'；只含 1（用户输入）→ 'before'。
+ * 返回 `{ rules, skipped }`，调用方据此给用户一句提示。
+ */
+export function stRegexScriptsToRules(list: unknown): { rules: RegexRule[]; skipped: { html: number; promptOnly: number; disabled: number } } {
+  const arr = Array.isArray(list) ? list : [];
+  const rules: RegexRule[] = [];
+  const skipped = { html: 0, promptOnly: 0, disabled: 0 };
+  arr.forEach(function (r: any, i: number) {
+    if (!r) return;
+    if (r.disabled === true) { skipped.disabled++; return; }
+    const find = String(r.findRegex || '').trim();
+    if (!find) return;
+    const repl = String(r.replaceString == null ? '' : r.replaceString);
+    // "美化"类：输出里塞 HTML/CSS（酒馆能渲染，本软件会把标签当正文显示）
+    if (/<\/?[a-z][^>]*>|```|<style|<div|<span|<table/i.test(repl)) { skipped.html++; return; }
+    // 只给"发给模型的历史"用的（隐藏旧摘要/MVU 块等）：本软件没有历史楼层机制
+    if (r.promptOnly === true && r.markdownOnly !== true) { skipped.promptOnly++; return; }
+    const place = Array.isArray(r.placement) ? r.placement.map(Number) : (r.placement != null ? [Number(r.placement)] : []);
+    const timing: 'after' | 'before' = (place.indexOf(2) >= 0 || place.length === 0) ? 'after' : 'before';
+    rules.push({
+      id: 'st_' + Date.now() + '_' + i,
+      name: String(r.scriptName || r.name || ('导入正则 ' + (i + 1))),
+      findRegex: find,
+      replaceString: repl,
+      timing: timing,
+      enabled: true,
+      order: rules.length,
+    } as RegexRule);
+  });
+  return { rules: rules, skipped: skipped };
+}
+
 /** 本模式的启用模块里有没有"自带思维链"（显式 slot='think' 或以内容签名认出来） */
 export function hasOwnThinkSpec(mods: any): boolean {
   return (Array.isArray(mods) ? mods : []).some(function (m: any) {

@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import '../src/infra/storage';
 import '../src/domain/preset';
-import { MINIMAL_PRESET_MODULES, MINIMAL_PRESET_PATCHES, THINK_TAIL_FALLBACK, stPromptsToModules, nativeModulesToModules, moduleLooksLikeCot, moduleIsCotSpec, stReasoningToLevel, samplerFromJson } from '../src/domain/preset';
+import { MINIMAL_PRESET_MODULES, MINIMAL_PRESET_PATCHES, THINK_TAIL_FALLBACK, stPromptsToModules, nativeModulesToModules, moduleLooksLikeCot, moduleIsCotSpec, stReasoningToLevel, samplerFromJson, stRegexScriptsToRules } from '../src/domain/preset';
 import { RegexEngine as RE } from '../src/lib/regex'; // P3-A：regex 不再挂全局，直接 import
 
 type SM = import('../src/infra/storage').StorageManagerClass;
@@ -765,6 +765,27 @@ describe('预设自带思维链的识别与采样参数跟随（酒馆对齐）'
     expect(byName['默认思维链'].slot).toBe('think');
     expect('slot' in byName['写作模式']).toBe(false);
     expect('slot' in byName['梦境思客']).toBe(false);
+  });
+
+  it('stRegexScriptsToRules：酒馆正则搬进来（跳过 HTML 美化 / 提示词专用 / 已关闭）', () => {
+    const { rules, skipped } = stRegexScriptsToRules([
+      // 酒馆自带的"剥壳"类：AI 输出侧 → after
+      { scriptName: '隐藏多余格式内容', findRegex: '/(<dream_body>|</dream_body>)/g', replaceString: '', placement: [2], disabled: false },
+      // 用户输入侧 → before
+      { scriptName: '清一下输入', findRegex: '/\[\[.*?\]\]/g', replaceString: '', placement: [1], disabled: false },
+      // HTML "美化" → 跳过（本软件是纯文本编辑器，塞进去会当正文显示）
+      { scriptName: '梦境状态栏美化', findRegex: '/<dream_scene>[\\s\\S]*?<\\/dream_scene>/gm', replaceString: '```html\\n<div style="x">$1</div>', placement: [2], disabled: false },
+      // 只给"发给模型的历史"用 → 跳过
+      { scriptName: '对AI屏蔽MVU变量更新', findRegex: '/<UpdateVariable>[\s\S]*?<\/UpdateVariable>/gi', replaceString: '', placement: [2], disabled: false, promptOnly: true },
+      // 酒馆里关着的备选 → 跳过
+      { scriptName: '备用方案', findRegex: '/x/g', replaceString: '', placement: [2], disabled: true },
+      // 没写 placement（老版本）→ 默认 after
+      { scriptName: '老版本脚本', findRegex: '/y/g', replaceString: '', disabled: false },
+    ]);
+    expect(rules.map((r) => r.name)).toEqual(['隐藏多余格式内容', '清一下输入', '老版本脚本']);
+    expect(rules.map((r) => r.timing)).toEqual(['after', 'before', 'after']);
+    expect(rules.every((r) => r.enabled && r.findRegex && r.order >= 0)).toBe(true);
+    expect(skipped).toEqual({ html: 1, promptOnly: 1, disabled: 1 });
   });
 
   it('samplerFromJson：只收 JSON 里真写了的字段（缺字段不许填默认值覆盖全局）', () => {

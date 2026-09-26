@@ -25,7 +25,7 @@ import { UpdateManager } from './update';
 import * as TavernAdapter from './tavern-adapter';
 import { ClientLog } from './clientlog';
 import { sanitizeEndpointUrl, chatCompletionsUrl } from '../lib/endpoint';
-import { moduleRole, moduleSlot, pickModules, stPromptsToModules, nativeModulesToModules, stReasoningToLevel, samplerFromJson } from './preset';
+import { moduleRole, moduleSlot, pickModules, stPromptsToModules, nativeModulesToModules, stReasoningToLevel, samplerFromJson, stRegexScriptsToRules } from './preset';
 import { expandStMacros, expandStMacroText, createStMacroCtx } from '../lib/stmacros';
 import { DELTA_BLOCK_RE_G, DELTA_TAG_RE_G } from '../lib/delta-tag';
 import { StatusVars } from './statusvars';
@@ -2847,6 +2847,19 @@ const stripped = _preProcessed.replace(/^#{1,3}\s+.*(\n|$)/gm, '').trim(); var _
       };
 
       let lastResult: any = null;
+      let _stRegexInfo: any = null;   // { rules, skipped }；在闭包里赋值，显式 any 免得 TS 收窄成 never
+
+      // 酒馆预设自带的正则（extensions.regex_scripts）→ 本软件的文本正则。
+      // 不搬的话，预设输出契约里的 `<dream_plot>/<dream_body>/<dream_done/>` 这类标签会原样出现在
+      // 正文开头与末尾（用户报的"正文开头末尾输出一些宏"）。取舍见 preset.ts stRegexScriptsToRules。
+      const stRulesOf = (src: any) => {
+        const list = src && src.extensions && src.extensions.regex_scripts;
+        if (!list || !Array.isArray(list) || list.length === 0) return null;
+        const conv = stRegexScriptsToRules(list);
+        if (!_stRegexInfo) _stRegexInfo = conv;
+        else _stRegexInfo.rules = _stRegexInfo.rules.concat(conv.rules);
+        return conv.rules;
+      };
 
       // Case 1: Our own export (allPresets)
       if (data.allPresets && Array.isArray(data.allPresets) && data.allPresets.length > 0) {
@@ -2856,13 +2869,15 @@ const stripped = _preProcessed.replace(/^#{1,3}\s+.*(\n|$)/gm, '').trim(); var _
       // Case 2: ST Master Import {preset:{...}, sysprompt:{...}}
       else if (data.preset && typeof data.preset === 'object' && (data.preset.temp !== undefined || data.preset.temperature !== undefined || data.preset.top_p !== undefined)) {
         const spId = data.sysprompt ? importSP(data.sysprompt) : null;
-        lastResult = importOne({ ...data.preset, systemPromptId: spId }, data.preset.name || data.sysprompt?.name || fileName);
+        const _sr = stRulesOf(data.preset);
+        lastResult = importOne({ ...data.preset, systemPromptId: spId, _stRegexRules: _sr }, data.preset.name || data.sysprompt?.name || fileName);
         importedCount = 1;
       }
       // Case 3: Raw ST sampler params at top level
       else if (data.temp !== undefined || data.temperature !== undefined || data.top_p !== undefined) {
         const spId = data.sysprompt ? importSP(data.sysprompt) : null;
-        lastResult = importOne({ ...data, systemPromptId: spId }, data.sysprompt?.name || data.name || fileName);
+        const _sr = stRulesOf(data);
+        lastResult = importOne({ ...data, systemPromptId: spId, _stRegexRules: _sr }, data.sysprompt?.name || data.name || fileName);
         importedCount = 1;
       }
       // Case 4: Lone system prompt
@@ -2925,6 +2940,13 @@ const stripped = _preProcessed.replace(/^#{1,3}\s+.*(\n|$)/gm, '').trim(); var _
       var _importParts: any[] = [];
       if (promptCount > 0) _importParts.push(promptCount + ' 个提示项');
       if (moduleCount > 0) _importParts.push(moduleCount + ' 个模块');
+      // 酒馆正则的搬运结果也告诉用户：搬了几条、跳过了几条（跳过的原因见 stRegexScriptsToRules）
+      if (_stRegexInfo) {
+        _importParts.push('文本正则 ' + _stRegexInfo.rules.length + ' 条');
+        const _sk = _stRegexInfo.skipped;
+        const _skN = _sk.html + _sk.promptOnly + _sk.disabled;
+        if (_skN > 0) _importParts.push('（跳过 ' + _skN + ' 条：HTML 美化 ' + _sk.html + ' / 提示词专用 ' + _sk.promptOnly + ' / 已关闭 ' + _sk.disabled + '）');
+      }
       App.toast('成功导入预设：' + (lastResult ? lastResult.name : importedCount + '个') + (_importParts.length > 0 ? '，包含 ' + _importParts.join('、') : ''));
     } catch(e) { App.toast('文件解析失败: ' + (e as any).message); }
     event.target.value = '';
