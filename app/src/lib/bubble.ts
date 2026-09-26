@@ -68,6 +68,10 @@ const LINE_SPEAKER_BRACKET = /^[ \t]*[【\[]([^\s】\]]{1,12})[】\]][ \t]*([\s\
 // 旁白/独白的固定说话人（不是角色，渲染成「白」头像；诊断里不算"名单外说话人"）
 export const NARRATOR = '白';
 
+// 行首引号 = 这是一个"台词行"（「」『』，以及模型混写的 “” 和半角/全角直引号）。
+// 两处共用：_splitToNarration 不把台词行抢成旁白；parseBubbles 里"旁白气泡收到无前缀台词行"的修正。
+const LEAD_QUOTE_RE = /^[「『“‘"＂]/;
+
 export function normalizeSpeakerName(raw: string): string {
   let s = String(raw || '').replace(/\s+/g, '');
   for (const t of TITLES) { if (s.length > t.length && s.endsWith(t)) s = s.slice(0, -t.length); }
@@ -492,7 +496,7 @@ function _splitToNarration(cur: { speaker: string | null; text: string }, line: 
   // （`陈亦：` / `「我爸在楼下等着。」`）——这一行留在上一个说话人的气泡里，不能另起旁白行。
   // 真机实测（2026-09-25 commandcode 生成）：不认这一条时，一半台词会被拆进旁白行——
   // 没名字、没头像、按旁白样式显示（读者看不出是谁说的）。
-  if (/^[「『“‘"]/.test(t)) return false;
+  if (LEAD_QUOTE_RE.test(t)) return false;
   // 上一句还没写完（结尾不是句末标点）→ 这是折行，不是新的一条旁白：
   // 否则 `我点头。她` + `哦` + `了一声。` 会被拆成两半（用户 2026-09-25 反馈的"分段"）。
   // 收尾引号只在它前面已经有句末标点时才算句末（`「你来了。」` 算，`「哦」` 不算——那是引述的一声）。
@@ -563,6 +567,10 @@ export function parseBubbles(raw: string, opts: ParseOpts = {}): Bubble[] {
   const bareIsSay = !!opts.bareIsSay;
   const bubbles: Bubble[] = [];
   let cur: { speaker: string | null; known: boolean; text: string } | null = null;
+  // 最近一个"有名字的说话人"（不是旁白）：下面修正"旁白气泡吞掉无前缀台词行"时用它认人。
+  // 只在气泡真的产出时记录——空说话人行（`苏黎：` 后面什么都没有）不算。
+  // 用对象包一层：它由 flush 闭包写入，裸 let 会被 TS 的控制流分析判成恒为 null。
+  const seen = { lastNamed: null as { name: string; known: boolean } | null };
   const flush = () => {
     if (!cur) return;
     // 气泡文本只去掉**首尾**换行（避免气泡开头/结尾多出一个空行）；内部的换行一律保留：
@@ -609,7 +617,10 @@ export function parseBubbles(raw: string, opts: ParseOpts = {}): Bubble[] {
     });
     // 说话与非说话分段（para）：台词块与非语言块之间另起一行，标点不收进行首
     const final = _segmentByType(blocks);
-    if (final.length) bubbles.push({ speaker: cur.speaker, known: cur.known, blocks: final });
+    if (final.length) {
+      bubbles.push({ speaker: cur.speaker, known: cur.known, blocks: final });
+      if (cur.speaker !== null && cur.speaker !== NARRATOR) seen.lastNamed = { name: cur.speaker, known: cur.known };
+    }
     cur = null;
   };
   for (const line of text.split('\n')) {
@@ -621,6 +632,16 @@ export function parseBubbles(raw: string, opts: ParseOpts = {}): Bubble[] {
       // 漂移兜底②：模型忘写前缀的旁白另起一条，不再粘进上一个角色的气泡尾部
       flush();
       cur = { speaker: null, known: false, text: '' };
+    } else if (cur.speaker === null && seen.lastNamed && LEAD_QUOTE_RE.test(line.trim())) {
+      // 修正（2026-09-26 实测定位，真机症状"旁白里其实是别的角色的对话"）：
+      // 旁白气泡里收到的**无前缀引号行**不并进旁白，另起一条、说话人沿用最近一个有名字的说话人。
+      // 依据：格式契约里「白：」只放叙述，所以旁白气泡里出现的引号行只有两种来源——①模型自己写在
+      // 「白：」行里的（走 matchSpeaker 已归到 NARRATOR，不进这里）；②模型漏写前缀的台词。而在
+      // 「说话人：单独一行 + 台词每行一句不带前缀」这种写法下，②必属当前回合的说话人——实测那一轮
+      // 就是苏黎的叙述被另起成旁白后，她自己的台词跟着掉进了旁白气泡。
+      // 不改的地方：纯叙述行仍按兜底② 另起旁白（2026-09-25"旁白别算到角色头上"的修复保持有效）。
+      flush();
+      cur = { speaker: seen.lastNamed.name, known: seen.lastNamed.known, text: '' };
     }
     cur.text += (cur.text ? '\n' : '') + line;
   }

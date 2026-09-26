@@ -437,6 +437,77 @@ describe('丢字不变量：解析只剥标记，内容一个字不少', () => {
   }
 });
 
+// 2026-09-26 真机实测定位的症状：「旁白气泡把角色的台词一起吞了」。
+// 触发链：模型用「说话人：单独一行 + 台词不带前缀」的写法 → 角色的叙述行被兜底②另起成旁白 →
+// 紧接着那条无前缀台词行因为"当前气泡是旁白"被并进旁白（读者看到"旁白里说的是角色的话"）。
+// 修正：旁白气泡收到的**无前缀引号行**另起，说话人沿用最近一个有名字的说话人（纯叙述行不受影响）。
+const REAL_ROSTER = ['苏黎', '陈默', '老周'];
+const REAL_AI = { roster: REAL_ROSTER, aliases: { '我': '苏黎' }, narrator: '苏黎' };
+// 出问题那一轮的原样片段（tmp/split-raw-1790394543083-2.txt）
+const REAL_SAMPLE = [
+  '苏黎：',
+  '我把灯搁在钟房的木台上，灯罩还烫手。',
+  '城南那段铁轨有擦痕，新的，锈被刮开一道，不像轮子压出来的。',
+  '「老周，铁轨上会留印子吗？」',
+  '',
+  '老周：',
+  '「印子？」老周把眼镜往鼻梁上推。「那玩意儿留了七年喽，狗踩的、风刮的，啥印子没得。」',
+].join('\n');
+
+describe('旁白气泡不再吞掉无前缀台词行（真机症状回归）', () => {
+  it('真机片段：台词归回上一个说话人，旁白气泡里只剩叙述', () => {
+    const b = parseBubbles(REAL_SAMPLE, REAL_AI);
+    const sayBubbles = b.filter(x => x.blocks.some(k => k.type === 'say'));
+    // 没有任何一句台词落在旁白气泡里（修正前：苏黎那句被吞进旁白）
+    expect(sayBubbles.every(x => x.speaker !== null)).toBe(true);
+    const line = b.find(x => x.blocks.some(k => k.type === 'say' && k.text === '老周，铁轨上会留印子吗？'));
+    expect(line && line.speaker).toBe('苏黎');
+    // 纯叙述行仍按兜底② 另起旁白（2026-09-25「旁白别算到角色头上」的修复保持有效）
+    const narr = b.find(x => x.blocks.some(k => k.text.indexOf('城南那段铁轨有擦痕') === 0));
+    expect(narr && narr.speaker).toBe(null);
+  });
+
+  it('跨行台词跟着归到同一个说话人（引号没闭合的续行不另开气泡）', () => {
+    const src = [
+      '苏黎：「先别动。」',
+      '屋子里静得能听见钟摆的声音，灰尘在光柱里慢慢地飘。',
+      '「你听见了没有，',
+      '那口钟又响了。」',
+    ].join('\n');
+    const b = parseBubbles(src, REAL_AI);
+    const tail = b[b.length - 1];
+    expect(tail.speaker).toBe('苏黎');
+    expect(tail.blocks.map(x => x.text).join('')).toBe('你听见了没有，\n那口钟又响了。');
+  });
+
+  it('修正只认"无前缀"的引号行：模型明确写在「白：」行里的引号仍然归旁白（并按既有规则降级成叙述）', () => {
+    const src = '苏黎：「谁在那儿？」\n白：远处有人喊了一声「救命」，接着就没了动静。';
+    const b = parseBubbles(src, REAL_AI);
+    expect(b).toHaveLength(2);
+    expect(b[1].speaker).toBe(NARRATOR);                        // 没被算到苏黎头上（修正不碰显式白行）
+    expect(b[1].blocks.every(x => x.type === 'act')).toBe(true); // 旁白行里的引号是叙述（引号里的非对话内容归旁白）
+    expect(b[1].blocks.map(x => x.text).join('')).toContain('救命');
+  });
+
+  it('还没有过"有名字的说话人"时保持原样（首条无前缀台词行仍留旁白）', () => {
+    const b = parseBubbles('「我没有名字可归。」\n她走了。', REAL_AI);
+    expect(b).toHaveLength(1);
+    expect(b[0].speaker).toBe(null);
+  });
+
+  it('纯叙述行另起旁白的老行为不变（旁白不会被算到角色头上）', () => {
+    const b = parseBubbles('林薇：「你来了。」\n雨下得很大，屋檐上挂着水线，远处的路灯在雨里糊成一团。', AI);
+    expect(b).toHaveLength(2);
+    expect(b[0].speaker).toBe('林薇');
+    expect(b[1].speaker).toBe(null);
+  });
+
+  it('修正后仍然一个字不丢（真机片段的字符多重集一致）', () => {
+    const parsed = parseBubbles(REAL_SAMPLE, REAL_AI).map(b => b.blocks.map(x => x.text).join('')).join('');
+    expect(fmt(bag(parsed))).toBe(fmt(bag(stripSpeakerPrefixes(REAL_SAMPLE, REAL_AI))));
+  });
+});
+
 describe('真实输出 fixture 回归（格式稳定性）', () => {
   it('冒号版：全部有说话人、零兜底、无格式问题', () => {
     const rep = analyzeParse(fixture('chat-output-colon.txt'), AI);
