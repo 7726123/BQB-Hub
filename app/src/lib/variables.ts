@@ -5,6 +5,7 @@
 // globalThis 属性。用 globalThis.X 访问旧 const 全局会得到 undefined（踩过的坑）。
 import { SM } from '../infra/gate';
 import { WorldBookManager } from '../domain/worldbook';
+import { StatusVars } from '../domain/statusvars';
 
 
 interface VarMap { [name: string]: string }
@@ -83,7 +84,15 @@ export const VariableManager = {
 
   get(name: string, fallback?: string): string {
     const vars = this.getAll();
-    return vars[name] !== undefined ? vars[name] : (fallback !== undefined ? fallback : '');
+    if (vars[name] !== undefined) return vars[name];
+    // 世界书「变量」条目（一个条目 = 一个变量）的当前值也对 {{getvar::}} 可见：
+    // 面板里的值可以直接在预设/条目/主角设定里引用。老 wbVariables 表优先（语义与之前完全一致），
+    // 模式取当前生成链（小说 generate 开头 setMode('novel')、演出 setMode('chat')）。
+    try {
+      const hit = StatusVars.values(StatusVars.currentMode())[name];
+      if (hit && hit.v !== undefined && hit.v !== '') return String(hit.v);
+    } catch (e) { /* 拿不到就按未定义处理 */ }
+    return fallback !== undefined ? fallback : '';
   },
 
   clear(): void {

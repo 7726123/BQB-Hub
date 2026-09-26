@@ -125,6 +125,68 @@ afterEach(() => { vi.useRealTimers(); });
 const sinkText = () => (EditorManager._streamSink ? EditorManager._streamSink.textContent : '');
 const thinkCount = () => (EditorManager._streamThinkBox ? EditorManager._streamThinkBox.children.length : 0);
 
+// =====================================================================================
+// 世界书「变量」：<status> 回报块的上屏过滤（sink 是最终正文，收口点再剥已经来不及）。
+// 未启用变量条目时必须逐字节直通；启用后块不上屏、正文一字不差、完成提交也不留块。
+import { WorldBookManager as WBM } from '../src/domain/worldbook';
+import '../src/infra/storage';
+
+describe('变量回报块的流式过滤（世界书「变量」条目）', () => {
+  function seedVarBook(on: boolean) {
+    WBM.saveAll([]);
+    const b = WBM.createBook('变量流式书');
+    const all = WBM.getAll();
+    all.find((w) => w.id === b.id)!.entries = on
+      ? [{ id: 'v1', type: '变量', name: '任务数量', content: '每月 10 次；用完为止。' }]
+      : [];
+    WBM.saveAll(all);
+    WBM.setActiveId(b.id);
+  }
+  afterEach(() => { try { WBM.saveAll([]); WBM.setActiveId(null); } catch (e) { /* ignore */ } });
+
+  it('没启用变量条目 → 原样上屏（对不使用该功能的书零变化）', () => {
+    seedVarBook(false);
+    EditorManager.startStreaming();
+    EditorManager.appendStreaming('正文。<status>\n任务数量：7\n</status>');
+    vi.advanceTimersByTime(500);
+    expect(sinkText()).toContain('<status>');
+    expect(sinkText()).toContain('任务数量：7');
+  });
+
+  it('启用后：块不上屏（含跨分片劈开的标记），正文一字不差', () => {
+    seedVarBook(true);
+    EditorManager.startStreaming();
+    const parts = ['苏黎推开门。', '<sta', 'tus>\n任务数量：7\n</sta', 'tus>\n', '她说了那句话。'];
+    parts.forEach(p => EditorManager.appendStreaming(p));
+    vi.advanceTimersByTime(1000);
+    const seen = sinkText();
+    expect(seen).not.toContain('<status>');
+    expect(seen).not.toContain('任务数量');
+    expect(seen.replace(/\s/g, '')).toBe('苏黎推开门。她说了那句话。');
+  });
+
+  it('完成提交：块不残留、正文恰好一次、扣留字符不丢', () => {
+    seedVarBook(true);
+    EditorManager.startStreaming();
+    EditorManager.appendStreaming('苏黎推开门。\n<status>\n任务数量：7\n</status>');
+    vi.advanceTimersByTime(40);               // 只消费第一帧，其余压在 _pendingStream（完成瞬间常态）
+    const sinkEl = EditorManager._streamSink!;
+    EditorManager._commitFinished('苏黎推开门。', null);
+    expect(sinkEl.textContent!.replace(/\s/g, '')).toBe('苏黎推开门。');   // 不重复、不缺字
+    expect(sinkEl.textContent).not.toContain('任务数量');
+  });
+
+  it('收尾时若扣留的是真正文（孤立 <），必须吐回而不是丢掉', () => {
+    seedVarBook(true);
+    EditorManager.startStreaming();
+    EditorManager.appendStreaming('他写下 a<');
+    vi.advanceTimersByTime(40);
+    const sinkEl = EditorManager._streamSink!;
+    EditorManager._commitFinished('他写下 a<', null);
+    expect(sinkEl.textContent).toBe('他写下 a<');
+  });
+});
+
 describe('平滑流式渲染', () => {
   it('正文每 40ms 匀速消费 8 字（大块突发 → 打字机）', () => {
     EditorManager.startStreaming();

@@ -259,6 +259,21 @@ label{font-size:13px;color:var(--text-secondary);display:block;margin-bottom:4px
 #writing-input-bar #btnUndo,#chat-input-bar #chatUndoBtn{background:var(--bg-tertiary);color:var(--text-secondary)}
 #writing-input-bar #btnUndo:hover,#chat-input-bar #chatUndoBtn:hover{background:var(--primary-light);color:var(--primary)}
 
+/* ===== 变量（世界书「变量」条目：一个条目 = 一个变量）=====
+   输入栏上侧空白条左侧的小箭头 + 全屏面板；条数徽标为 0 时不占位。 */
+.var-strip{display:flex;align-items:center;gap:8px}
+.var-toggle-btn{display:flex;align-items:center;gap:3px;flex:none;height:24px;padding:0 7px;border-radius:8px;border:1px solid var(--border);background:var(--bg-tertiary);color:var(--text-muted);cursor:pointer;transition:all .2s}
+.var-toggle-btn:hover{border-color:var(--primary);color:var(--primary)}
+.var-count{font-size:10.5px;font-weight:700;line-height:1}
+.var-count:empty{display:none}
+.var-item{border:1px solid var(--border);border-radius:10px;padding:8px 10px;margin-bottom:6px;background:var(--bg-secondary)}
+.var-item-head{display:flex;align-items:baseline;gap:8px}
+.var-item-name{font-weight:700;font-size:13.5px;flex:none;max-width:62%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.var-item-val{font-size:13px;color:var(--primary);flex:1;min-width:0;white-space:pre-wrap;word-break:break-word}
+.var-item-val.empty{color:var(--text-muted)}
+.var-item-note{font-size:11.5px;color:var(--text-muted);white-space:pre-wrap;word-break:break-word;margin-top:4px;line-height:1.65}
+.chip-amber{background:#fef3c7;color:#b45309}
+
 /* ===== 面板（非写作视图）===== */
 #panel{flex:1;background:var(--bg-secondary);display:flex;flex-direction:column;overflow:hidden}
 #panel-tabs{display:none}
@@ -1274,7 +1289,13 @@ label{font-size:13px;color:var(--text-secondary);display:block;margin-bottom:4px
       </div>
       <div id="editor-status">自动保存中...</div>
       <div id="writing-input-bar">
-        <div id="generationStatus" style="font-size:13px;color:var(--text-secondary);min-height:18px;margin-bottom:4px;"></div>
+        <!-- 输入栏上侧空白条：左侧「变量」小箭头（点击全屏查看当前变量），右侧是生成状态文字 -->
+        <div class="var-strip">
+          <button id="varToggleBtn" class="var-toggle-btn" onclick="UIManager.openVariablesPage()" title="查看当前变量（世界书「变量」条目，模型每轮回报）">
+            <svg class="ic-16" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.2" d="M12 19.4V4.6"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.2" d="M6.6 10.2L12 4.6l5.4 5.6"/></svg><span id="varCount" class="var-count"></span>
+          </button>
+          <div id="generationStatus" style="font-size:13px;color:var(--text-secondary);min-height:18px;margin-bottom:4px;"></div>
+        </div>
           <div id="memTraceBar" style="display:none;padding:4px 14px;font-size:12px;color:var(--text-muted);cursor:pointer;" onclick="App.toggleMemTrace()" title="查看本轮注入了哪些记忆">
             <span>🧠 记忆 <span id="memTraceSummary"></span> ▾</span>
             <div id="memTraceDetail" style="display:none;margin-top:4px;white-space:pre-wrap;color:var(--text-secondary);"></div>
@@ -1378,7 +1399,12 @@ label{font-size:13px;color:var(--text-secondary);display:block;margin-bottom:4px
             </div>
             <!-- 底部输入条：与写作页同款（↩ 撤回在输入行左侧 / 输入框 / 红色停止 / 蓝色发送图标） -->
             <div class="chat-input-area" id="chat-input-bar">
-              <div id="chatStatus" style="font-size:13px;color:var(--text-secondary);min-height:18px;margin-bottom:4px;"></div>
+              <div class="var-strip">
+                <button id="chatVarToggleBtn" class="var-toggle-btn" onclick="UIManager.openVariablesPage()" title="查看当前变量（世界书「变量」条目，模型每轮回报）">
+                  <svg class="ic-16" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.2" d="M12 19.4V4.6"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.2" d="M6.6 10.2L12 4.6l5.4 5.6"/></svg><span id="chatVarCount" class="var-count"></span>
+                </button>
+                <div id="chatStatus" style="font-size:13px;color:var(--text-secondary);min-height:18px;margin-bottom:4px;"></div>
+              </div>
               <div id="chatInputRow">
                 <button id="chatUndoBtn" onclick="ChatMode.undoLast()" title="撤回上一轮演出（输入框里会留下这轮写的要求）" style="font-size:22px;">↩</button>
                 <textarea id="chatInput" rows="1" placeholder="写点要求，或直接发一句「我」的话（留空 = 接着往下演）" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();ChatMode.send()}"></textarea>
@@ -2085,7 +2111,7 @@ label{font-size:13px;color:var(--text-secondary);display:block;margin-bottom:4px
     <button type="button" class="bs-skip" id="bootSplashSkip">稍后</button>
   </div>
 </div>
-<script id="bootMain" data-src="modules/main.js?v=3070801548-160"></script>
+<script id="bootMain" data-src="modules/main.js?v=4133301135-160"></script>
 <script>
 (function () {
   var el = document.getElementById('bootSplash');
@@ -2184,6 +2210,28 @@ label{font-size:13px;color:var(--text-secondary);display:block;margin-bottom:4px
   <div style="display:flex;gap:8px;padding:8px 12px;border-top:1px solid var(--border);background:var(--bg-secondary);flex-shrink:0;align-items:center;">
     <button class="ghost-btn" onclick="UIManager.rollbackAgentOverlay()" style="flex:1;">回滚上一批</button>
     <button class="ghost-btn" onclick="UIManager.resetAgentOverlay()" style="flex:1;color:var(--danger);">重置（回原书）</button>
+  </div>
+</div>
+
+<!-- ===== 变量全屏页（世界书「变量」条目：一个条目 = 一个变量，模型每轮在正文之后回报）=====
+     入口＝输入栏上侧空白条左侧的小箭头；只读（值由模型维护），底部只有复制/清空。 -->
+<div id="variablesFullscreen" style="display:none;position:fixed;inset:0;z-index:2000;background:var(--bg,#f6f7f9);color:var(--text,#1f2430);flex-direction:column;">
+  <div style="display:flex;align-items:center;gap:10px;padding:10px 12px;border-bottom:1px solid var(--border);background:var(--bg-secondary);flex-shrink:0;">
+    <button class="me-back" onclick="UIManager.closeVariablesPage()" aria-label="返回" style="width:34px;height:34px;min-width:34px;font-size:18px;">‹</button>
+    <div style="min-width:0;flex:1;">
+      <div style="font-size:16px;font-weight:800;letter-spacing:.5px;">变量 <span class="pg-count" id="varPageCount" style="margin-left:4px;"></span></div>
+      <div id="varPageStatus" style="font-size:11px;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"></div>
+    </div>
+    <!-- 模式切换：同一本书小说/对话两条剧情线各存一份值（与记忆表 <id> / <id>_chat 同惯例） -->
+    <div id="varModeSwitch" style="display:flex;gap:0;border:1px solid var(--border);border-radius:8px;overflow:hidden;flex:none;">
+      <button class="db-mode-btn active" data-vmode="novel" onclick="UIManager.switchVarMode('novel')" title="续写（小说模式）的变量：写正文时回报">小说</button>
+      <button class="db-mode-btn" data-vmode="chat" onclick="UIManager.switchVarMode('chat')" title="演出（对话模式）的变量：演完一轮回报">对话</button>
+    </div>
+  </div>
+  <div id="variablesList" style="flex:1;overflow-y:auto;padding:10px 12px 20px;-webkit-overflow-scrolling:touch;"></div>
+  <div style="display:flex;gap:8px;padding:8px 12px;border-top:1px solid var(--border);background:var(--bg-secondary);flex-shrink:0;align-items:center;">
+    <button class="ghost-btn" onclick="UIManager.copyVars()" style="flex:1;">复制全部</button>
+    <button class="ghost-btn" onclick="UIManager.clearVars()" style="flex:1;color:var(--danger);">清空（当前模式）</button>
   </div>
 </div>
 

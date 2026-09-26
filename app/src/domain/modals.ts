@@ -82,9 +82,13 @@ modalWBEntry: `<div class="modal-overlay" id="modalWBEntry">
   <div class="modal"><div class="modal-header"><h3 id="modalWBEntryTitle">添加条目</h3><button class="icon-btn" onclick="UIManager.closeModal('modalWBEntry')">✕</button></div>
   <div class="modal-body">
     <input type="hidden" id="wbEntryEditId">
-    <div class="form-group"><label>类型</label><select id="wbEntryType" onchange="UIManager.toggleWBEntryFields()"><option>世界观</option><option>角色</option><option>初始</option><option>其他</option></select></div>
+    <div class="form-group"><label>类型</label><select id="wbEntryType" onchange="UIManager.toggleWBEntryFields()"><option>世界观</option><option>角色</option><option>初始</option><option>其他</option><option>变量</option></select></div>
     <div class="form-group"><label>名称</label><input type="text" id="wbEntryName" placeholder="条目名称"></div>
     <div class="form-group"><label>内容</label><textarea id="wbEntryContent" rows="6" placeholder="条目的详细内容..."></textarea></div>
+    <div id="wbEntryVarHint" style="display:none;font-size:12px;color:var(--text-muted);line-height:1.75;background:var(--bg-tertiary);border:1px solid var(--border);border-radius:8px;padding:8px 10px;margin-top:6px;">
+      <b>变量条目：一个条目 = 一个变量。</b>名称就是变量名（如「任务数量」）；内容写它的讲解——是什么、怎么变化、范围或失败条件（可用 <code>{{user}}</code> 指代主角，也可用 <code>{{getvar::其它变量}}</code>）。<br>
+      启用后每轮会把讲解与当前值发给模型，模型在正文之后按软件给定的格式回报新值，软件收进「变量」面板（输入栏上侧的小箭头），<b>不会留在正文里</b>。
+    </div>
     <div id="wbEntryFields">
 	    <label style="font-size:12px;cursor:pointer;display:flex;align-items:center;gap:4px;margin-top:4px;">
 	      <input type="checkbox" id="wbEntryInject" checked> 注入（默认开启；关闭后此条目不注入）

@@ -2,6 +2,8 @@
 // contenteditable 编辑器 + 对白高亮 + 流式渲染（思考块折叠）+ 上下文组装
 // （跨章/全量正文）。文件尾部的全局函数 htmlEscape 一并迁移。
 import { DELTA_CLOSE_RE, DELTA_OPEN_RE, DELTA_PARTIAL_RE } from '../lib/delta-tag';
+import { createStatusStreamFilter } from '../lib/status-block';
+import { StatusVars } from './statusvars';
 import { htmlToPlainText } from '../lib/htmltext';
 import { BODY_MARKER, THINK_CLOSE_RE, THINK_OPEN_RE, stripLeadingBodyMarker, tailPartialToken } from '../lib/think-protocol';
 export const EditorManager = {
@@ -37,6 +39,10 @@ export const EditorManager = {
   // 标记识别走 lib/delta-tag 容错版（模型写成 SETTINGS_DELTA 等变体也照样丢弃）。
   _discardingDelta: false,
   _deltaPrefixBuf: '',
+  // 世界书「变量」：流式丢弃 <status>…</status> 回报块（跨 chunk 状态机，不上屏）。
+  // sink 里的 DOM 就是最终正文，onDone 再剥已经来不及——必须在上屏前挡掉。
+  // 只在当前书启用了变量条目时存在（见 startStreaming），其余情况为 null＝直通。
+  _statusFilter: null as ReturnType<typeof createStatusStreamFilter> | null,
 
   init(): void {
     this.editorEl = document.getElementById('editor');
@@ -247,6 +253,9 @@ export const EditorManager = {
     this._pendingStream = '';
     this._discardingDelta = false;
     this._deltaPrefixBuf = '';
+    // 世界书「变量」：只有当前书启用了变量条目时才挂过滤器（否则上屏路径逐字节与之前一致）
+    this._statusFilter = null;
+    try { if (StatusVars.enabled('novel')) this._statusFilter = createStatusStreamFilter(); } catch (e) { this._statusFilter = null; }
     this._streamThinkBox = null;
     this._streamSink = null;
     this._openThink = null;
@@ -320,6 +329,9 @@ export const EditorManager = {
     // 必须在 _pendingStream 之前过滤——否则格式逐字上屏进 sink，完成态提交时正文原位保留，
     // onDone 再剥也来不及（sink 已是最终正文）。
     text = this._stripStreamingDelta(text);
+    // 世界书「变量」：把 <status>…</status> 挡在上屏之前，理由与上一行完全相同
+    // （sink 是最终正文，onDone 再剥来不及）。空过滤器＝当前书没用变量功能，原样放行。
+    if (this._statusFilter) { try { text = this._statusFilter.feed(text); } catch (e) { /* 过滤失败按原样上屏 */ } }
     // 上一轮扣留的尾巴先并回（它在流里位于新文本之前）：跨 chunk 的标记才能拼齐
     // （"<th" + "inking>" → "<thinking>"），且不会破坏 pending 与新文本的先后顺序。
     this._pendingStream += this._tokenHold + text;
@@ -670,6 +682,12 @@ export const EditorManager = {
     const _protagName = (_protag && _protag.name) ? _protag.name : '主角';
     if (this._tokenHold) { this._pendingStream += this._tokenHold; this._tokenHold = ''; }
     if (this._deltaPrefixBuf) { this._pendingStream += this._deltaPrefixBuf; this._deltaPrefixBuf = ''; }
+    // 变量块过滤器收尾：扣留的疑似标记前缀就地吐回（未闭合块＝丢弃，onDone 会再剥一次）——
+    // 与 _deltaPrefixBuf 同级，绝不因扣留丢字。
+    if (this._statusFilter) {
+      try { const _rel = this._statusFilter.release(); if (_rel) this._pendingStream += _rel; } catch (e) { /* ignore */ }
+      this._statusFilter = null;
+    }
     // 极快的端点可能在两帧之间把整段回复送完 → pending 里压着从未过状态机的原文。
     // 直接 drain 会把思考标签与 `【正文】` 标记原样写进正文（真机 mock 回归），
     // 因此先跑一遍思考/正文分离，再 drain 残余。
@@ -900,6 +918,7 @@ export const EditorManager = {
     this._tokenHold = '';
     this._discardingDelta = false;
     this._deltaPrefixBuf = '';
+    this._statusFilter = null;
     this._streamThinkBox = null;
     this._streamSink = null;
     this._openThink = null;

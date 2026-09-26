@@ -26,6 +26,7 @@ import * as TavernAdapter from './tavern-adapter';
 import { ClientLog } from './clientlog';
 import { sanitizeEndpointUrl, chatCompletionsUrl } from '../lib/endpoint';
 import { moduleRole, moduleSlot, pickModules, stPromptsToModules, nativeModulesToModules } from './preset';
+import { StatusVars } from './statusvars';
 
 // 价格表默认值（人民币/百万 token）：DeepSeek V4.1 峰时价。
 // 2026-09-26 之前默认是 1 / 0.1 / 2 —— 缓存价按"输入的 10%"填，而真实是 2%（命中便宜 50 倍），
@@ -913,7 +914,7 @@ const App: AppShape = {
     if (ed) ed.style.removeProperty('font-size');
     if (typeof UIManager !== 'undefined' && typeof UIManager.renderMePage === 'function') UIManager.renderMePage();
   },
-  renderAll() { UIManager.renderBooks(); UIManager.renderChapters(); UIManager.renderProtagonists(); UIManager.renderWorldBooks(); UIManager.renderPlugins(); UIManager!.renderPresets(); UIManager!.renderRegexRules(); UIManager!.populateSystemPromptUI(); const d = this.getNovelData(); document.getElementById('titleInput')!.value = d.title || ''; },
+  renderAll() { UIManager.renderBooks(); UIManager.renderChapters(); UIManager.renderProtagonists(); UIManager.renderWorldBooks(); UIManager.renderPlugins(); UIManager!.renderPresets(); UIManager!.renderRegexRules(); UIManager!.populateSystemPromptUI(); try { UIManager.refreshVarBadge(); } catch (e) { /* ignore */ } const d = this.getNovelData(); document.getElementById('titleInput')!.value = d.title || ''; },
   // Protagonist
   getProtagonist() {
     return ProtagonistManager.getActive() || {};
@@ -961,6 +962,8 @@ const App: AppShape = {
       }
       CharacterManager.saveAll([]);
       VariableManager.clear();
+      // 世界书「变量」值随书重置（两种模式那份都清）
+      try { StatusVars.reset(); } catch (e) { /* ignore */ }
       // 2. Reset worldbook chapters（世界书=小说，直接改当前 worldbook）
       const _wbReset = WorldBookManager.getActive();
       if (_wbReset) {
@@ -1663,6 +1666,13 @@ const App: AppShape = {
       });
       if (_tail) _userParts.push(_tail);
     } catch (e) { /* 尾部模块失败不影响生成 */ }
+    // ④.1 世界书「变量」（一个条目 = 一个变量）：格式契约 + 每个变量的讲解与当前值。
+    //      与尾部模块同一位置：输出格式类要求放这里遵循率最高（见上），且值每轮变也不破坏前缀缓存。
+    //      没有启用中的变量条目时 block() 返回空串 —— 对不使用该功能的书零变化。
+    try {
+      const _varBlk = StatusVars.block('novel');
+      if (_varBlk) _userParts.push(_varBlk);
+    } catch (e) { /* 变量块失败不影响生成 */ }
     messages.push({ role: 'user', content: _userParts.join('\n\n') });
     // 展开预设里的酒馆模板语法（setvar/getvar/{{//}}/${...}），让豆包等模型看到完整指令
     _expandSTInMessages(messages);
@@ -1673,6 +1683,8 @@ const App: AppShape = {
     const _flushPartial = (reasoningText: any) => {
       var _escAb = function (t: any) { return String(t).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); };
       var _genAb = String(generated || '');
+      // 世界书「变量」：停止/断线时留在编辑器里的正文也要把 <status> 块剥掉，并把值收进面板
+      try { _genAb = StatusVars.capture('novel', _genAb); } catch (e) { /* ignore */ }
       var _spAb = _splitThinkingBlocks(RegexEngine.applyRules(_genAb, 'after'));
       var _thAb = (reasoningText && String(reasoningText).trim()) ? [reasoningText].concat(_spAb.thoughts) : _spAb.thoughts;
       var _pa = _buildThinkingHtml(_thAb, _escAb) + _spAb.body.replace(/\n{3,}/g,'\n\n').replace(/(?<!\n)\n(?!\n)/g,'\n\n');
@@ -1687,6 +1699,9 @@ const App: AppShape = {
         if (fullContent || (reasoning && reasoning.trim())) {
           let _preProcessed = String(fullContent || '');
           const _parsedVars = VariableManager.parseVarBlock(_preProcessed); if (_parsedVars && Object.keys(_parsedVars).length > 0) { VariableManager.setBatch(_parsedVars); _preProcessed = _preProcessed.replace(/\[VAR\][\s\S]*?\[\/VAR\]/g, '').trim(); }
+          // 世界书「变量」（一个条目 = 一个变量）：剥掉模型在正文之后回报的 <status> 块并把值落盘。
+          // 没有启用中的变量条目 / 没找到块 → 原样返回（正文一个字符都不动）。
+          try { _preProcessed = StatusVars.capture('novel', _preProcessed); } catch (e) { /* 变量收集失败不影响落盘 */ }
 const stripped = _preProcessed.replace(/^#{1,3}\s+.*(\n|$)/gm, '').trim(); var _esc2 = function (s: any) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }; var _split = _splitThinkingBlocks(RegexEngine.applyRules(stripped, 'after')); var _streamSplit = _splitThinkingBlocks(generated || ''); // 诊断留档：原始输出 + 各阶段长度（正文丢失时可一键定位）
           App._lastRawGenerate = String(fullContent || '');
           console.log('[Split] raw=' + String(fullContent || '').length + ' stripped=' + stripped.length + ' body=' + _split.body.length + ' thoughts=' + _split.thoughts.length + '[Split] unclosed?', !!_split.unclosed); var _allThoughts: any[] = []; var _seenThoughts = {} as Record<string, any>; var _addThoughts = function (arr: any) { (arr || []).forEach(function (v: any) { var clean = String(v || '').trim(); if (!clean) return; var key = clean.replace(/\s+/g, ' ').slice(0, 80); if (!_seenThoughts[key]) { _seenThoughts[key] = true; _allThoughts.push(clean); } }); }; _addThoughts(reasoning && reasoning.trim() ? [reasoning] : []); _addThoughts(_streamSplit.thoughts); _addThoughts(_split.thoughts); var _body = (function (t) {var n=0;return normalizeQuotes(t.replace(/——/g,function () {return++n<=3?'——':'—'}));})(_split.body).replace(/<details\b([^>]*)>[\s\S]*?<\/details>/gi, function (m, attrs: any) { return /class\s*=\s*["'][^"']*cot-thinking/i.test(attrs) ? m : ''; }).replace(/<Anti-Omniscience>[\s\S]*?<\/Anti-Omniscience>/gi,'').replace(/<\/?(bginfor|catsay|CEstuff|CE[A-Za-z]*|subtext|radio|url|end)[^>]*>/gi,'').replace(/\n{3,}/g,'\n\n').replace(/(?<!\n)\n(?!\n)/g,'\n\n').trim(); const _deepThinkOn = App.thinkingLevel() !== 'off'; // 思考强度：仅 off 时结束端不渲染思维链（流式思考框已由 editor 隐藏，替换后纯正文）
@@ -1733,6 +1748,8 @@ const stripped = _preProcessed.replace(/^#{1,3}\s+.*(\n|$)/gm, '').trim(); var _
     App.isGenerating = false;
     const btnStop = document.getElementById('btnStop');
     if (btnStop) btnStop.style.display = 'none';
+    // 世界书「变量」条数徽标（输入栏上侧那颗箭头的角标）：本轮可能刚收上值
+    try { if (typeof UIManager !== 'undefined' && UIManager.refreshVarBadge) UIManager.refreshVarBadge(); } catch (e) { /* ignore */ }
   },
 
   // ===== Agent 设定同步已删除（用户要求：只留比奇）=====
@@ -1951,7 +1968,12 @@ const stripped = _preProcessed.replace(/^#{1,3}\s+.*(\n|$)/gm, '').trim(); var _
       const wbId = (typeof WorldBookManager !== 'undefined' && WorldBookManager.getActiveId) ? WorldBookManager.getActiveId() : '';
       if (!wbId) { this._varSnapshot = null; return; }
       const all = SM().get<any>(VariableManager._key, {}) || {};
-      this._varSnapshot = { wbId: wbId, vars: JSON.parse(JSON.stringify(all[wbId] || {})) };
+      this._varSnapshot = {
+        wbId: wbId,
+        vars: JSON.parse(JSON.stringify(all[wbId] || {})),
+        // 世界书「变量」值（statusVars）同批快照：撤回续写时面板也要退回本轮之前的值
+        status: StatusVars.snapshotBook()
+      };
     } catch (e) { this._varSnapshot = null; }
   },
 
@@ -1965,6 +1987,8 @@ const stripped = _preProcessed.replace(/^#{1,3}\s+.*(\n|$)/gm, '').trim(); var _
       if (Object.keys(snap.vars || {}).length === 0) delete all[snap.wbId];
       else all[snap.wbId] = snap.vars;
       SM().set(VariableManager._key, all);
+      // 世界书「变量」值一起回滚（含「生成前没有就整键删掉」语义）
+      StatusVars.restoreBook(snap.wbId, (snap as any).status || null);
     } catch (e) { /* 回滚失败不影响撤回主流程 */ }
   },
 

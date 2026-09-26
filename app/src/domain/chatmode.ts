@@ -19,6 +19,8 @@ import { APIHandler } from './api';
 import { hasNativeReasoning } from './modelcompat';
 import { BookManager } from './book';
 import { SettingSyncManager } from './settingsync';
+import { StatusVars } from './statusvars';
+import { stripStatusBlocks } from '../lib/status-block';
 import { PluginManager } from './plugins';
 import { parseBubbles, analyzeParse, stripSpeakerPrefixes, NARRATOR } from '../lib/bubble';
 import type { Bubble } from '../lib/bubble';
@@ -39,6 +41,8 @@ export interface ChatMsg {
   drift?: boolean;       // 解析诊断发现格式漂移或台词没加引号
   words?: number;        // 本轮字数（标记剥离后，仅用于显示）
   reasoning?: number;    // 本轮思考字数（reasoning_content 通道）：被截断时用来判断"额度是不是被思考吃掉的"
+  // 世界书「变量」：本轮之前的变量值快照（撤回这一轮演出时一起回退，与小说模式「撤回连变量一起回滚」同语义）
+  statusPrev?: any;
 }
 
 const RENDER_WINDOW = 120;      // 一次渲染最近多少条（更早的用「载入更早」展开）
@@ -459,7 +463,7 @@ export const ChatMode = {
     const all = this.log();
     const shown = all.slice(Math.max(0, all.length - this._window));
     const tail: ChatMsg | null = (this._sending && this._streamBookId === this.bookId())
-      ? { id: '_streaming', kind: 'ai', raw: this._acc, at: Date.now() }
+      ? { id: '_streaming', kind: 'ai', raw: this._displayRaw(this._acc), at: Date.now() }
       : null;
     const rows = shown.concat(tail ? [tail] : []).filter(m => !m.hidden);
     if (rows.length === 0) {
@@ -576,6 +580,16 @@ export const ChatMode = {
       .replace(/\{\{\s*user\s*\}\}/gi, () => self)
       .replace(/\{\s*user\s*\}/gi, () => self)
       .replace(/\{\{\s*char\s*\}\}/gi, () => '其他角色');
+  },
+
+  // 流式中的显示副本：把变量回报块挡在气泡之外（落盘/解析在 _finish 里做，这里只为不上屏）。
+  // 没启用变量条目时原样返回——不使用该功能的书逐字节与之前一致。
+  _displayRaw(raw: string): string {
+    try {
+      const names = StatusVars.names('chat');
+      if (names.length === 0) return raw;
+      return stripStatusBlocks(raw, names);
+    } catch (e) { return raw; }
   },
 
   _bubbleHtml(m: ChatMsg): string {
@@ -906,6 +920,13 @@ export const ChatMode = {
       });
       if (_tail) parts.push(_tail);
     } catch (e) { /* 尾部模块失败不影响演出 */ }
+    // 世界书「变量」（一个条目 = 一个变量）：格式契约 + 变量说明 + 当前值。
+    // 放在【格式】之前：收尾那两句是实测保命契约（把别的块塞到它们后面会掉引号，见上），
+    // 变量块不跟它们抢末尾。没有启用中的变量条目时 block() 返回空串 —— 零变化。
+    try {
+      const _varBlk = StatusVars.block('chat');
+      if (_varBlk) parts.push(_varBlk);
+    } catch (e) { /* 变量块失败不影响演出 */ }
     // 格式重申放最末尾：与字数一样，只写在 system 里命中率会掉（实测），贴在用户消息尾部最有效。
     // 两句都是重灾区：漏引号 → 台词被当动作（淡色）；旁白忘了写「白：」→ 会被算在上一个角色头上。
     // 2026-09-25：分色规则改成"引号=台词、没引号=叙述"，所以这里把契约再钉一遍（含单字/短回应和心声）。
@@ -1013,6 +1034,13 @@ export const ChatMode = {
       if (typeof split === 'function') { const s = split(raw); if (s && typeof s.body === 'string') raw = s.body; }
     } catch (e) { /* ignore */ }
     raw = raw.replace(/^\s*#{1,3}\s+.*$/gm, '').trim();   // 模型偶尔仍带章节标题行
+    // 世界书「变量」（一个条目 = 一个变量）：剥掉正文之后的 <status> 回报块、把值收进「变量」面板。
+    // 快照先取（本轮之前的值）——撤回这一轮时用它把变量一起回退。
+    let statusPrev: any = null;
+    try {
+      statusPrev = StatusVars.snapshotMode('chat');
+      raw = StatusVars.capture('chat', raw);
+    } catch (e) { /* 变量收集失败不影响落库 */ }
     this._sending = false;
     this._status = '';
     this._acc = '';
@@ -1053,6 +1081,7 @@ export const ChatMode = {
       drift,
       words,
       reasoning: _reasoning || undefined,
+      statusPrev: statusPrev || undefined,
     });
     // 本轮用量记账收尾（字数就是这次演出的净字数；token 由 APIHandler 内记）
     try { UsageStats.endSession(words); } catch (e) { /* 记账失败不影响落库 */ }
@@ -1090,6 +1119,8 @@ export const ChatMode = {
     const ta = document.getElementById('chatInput') as HTMLTextAreaElement | null;
     const doUndo = () => {
       this._saveLog(all.slice(0, cut));       // 本轮之前的所有记录保留
+      // 世界书「变量」：这一轮回报的值一起回退（否则面板会留着"未来"的值）
+      try { StatusVars.restoreMode('chat', all[idx].statusPrev || null); } catch (e) { /* ignore */ }
       if (ta) { ta.value = restore; ta.style.height = 'auto'; ta.style.height = Math.min(140, ta.scrollHeight) + 'px'; }
       this._scrollOnce = true;                 // 撤回是用户主动动作：贴到底看撤回后的尾部
       this.render();

@@ -84,9 +84,11 @@ export const WorldBookManager = {
     const idx = wb.entries.findIndex(e => e.id === entryId);
     if (idx >= 0) { wb.entries[idx] = { ...wb.entries[idx], ...entryData, id: entryId }; this.saveAll(all); }
   },
-  // 类型精简迁移：只保留 世界观/角色/初始/其他，其余类型统一改为「其他」。幂等。
+  // 类型精简迁移：只保留 世界观/角色/初始/其他/变量，其余类型统一改为「其他」。幂等。
+  // 「变量」是 2026-09-26 重新启用的类型（一个条目 = 一个变量：名称=变量名、内容=给模型的讲解、
+  // 注入开关=启用/停用），必须留在白名单里，否则下次启动就被改成「其他」而失去注入与收集。
   migrateEntryTypes(): boolean {
-    const KEEP = ['世界观', '角色', '初始', '其他'];
+    const KEEP = ['世界观', '角色', '初始', '其他', '变量'];
     const all = this.getAll();
     let changed = false;
     all.forEach(function (wb) {
