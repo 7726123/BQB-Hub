@@ -923,9 +923,9 @@ const CardWriterChat: CardWriterChatShape = {
       { type: 'function', function: { name: 'apply_character', description: '新增或更新角色卡（同名角色=更新覆盖，不同名=新增）。**批量整理/改造大卡时用 items 数组一次提交多个角色（单次上限 10 个），不要一个角色一次调用磨轮数**。**调用时机：仅在用户明确确认（写入吧/可以/就这样/直接写入/帮我构建好）或明确要求创建/修改角色时调用；构思/讨论/征询（你觉得/怎么样/帮我想想）时严禁调用；没有明确写入指令时严禁调用**。只提交用户已明确确定的设定，讨论中尚未拍板的内容一律不要写入；content 必须完整最终版（以「姓名：xxx」开头，含性别/年龄/外貌/性格/背景/关系；配过示例台词的加「说话方式·例句」一行），不要省略。', parameters: { type: 'object', properties: { name: { type: 'string', description: '角色名（单条）' }, content: { type: 'string', description: '完整人设内容，以「姓名：xxx」开头，含性别/年龄/外貌/性格/背景/关系（配过示例台词的加「说话方式·例句」）' }, items: { type: 'array', description: '批量：一次提交多个角色，每项 {name, content}（与 name/content 二选一；单次上限 10 个，超过拆多次调用）', items: { type: 'object', properties: { name: { type: 'string' }, content: { type: 'string' } } } } }, required: [] } } },
       { type: 'function', function: { name: 'delete_character', description: '删除角色。**批量清理大卡用 names 数组一次传多个角色名（单次上限 50 个），不要一条一条磨轮数**。**调用时机：仅当用户明确要求删除（删掉/删除/不要这个角色）时调用；构思/讨论时严禁调用；没有明确写入指令时严禁调用**。', parameters: { type: 'object', properties: { name: { type: 'string', description: '要删除的角色名（单条）' }, names: { type: 'array', items: { type: 'string' }, description: '批量：一次删除多个角色名，单次上限 50 个（超过拆多次调用）' } }, required: [] } } },
       { type: 'function', function: { name: 'update_worldview', description: '创建或更新世界观条目（type=世界观）。世界观可以拆成多条细分条目（如：世界背景、力量体系、国家地理、种族文明），每条一个方向。**批量删除世界观条目用 names 数组 + delete:true（单次上限 50 个）**。**调用时机：仅在用户确认或明确要求设定世界观时调用；构思/讨论时严禁调用；没有明确写入指令时严禁调用**。只提交用户明确确定的内容。', parameters: { type: 'object', properties: { name: { type: 'string', description: '世界观条目名（方向名），如"世界背景""力量体系""国家地理"；不填默认"世界观"' }, content: { type: 'string', description: '该方向的世界观内容' }, delete: { type: 'boolean', description: 'true=删除该世界观条目（批量删除必须显式传 true）' }, names: { type: 'array', items: { type: 'string' }, description: '批量删除：一次删多个世界观条目名（必须同时传 delete:true；单次上限 50 个）' } } } } },
-      { type: 'function', function: { name: 'upsert_entry', description: '新增或更新其他条目（同类型同名=更新）。**批量整理/改造大卡时用 items 数组一次提交多个条目（单次上限 10 个），不要一条一条磨轮数**。**调用时机：仅在用户确认或明确要求添加/修改条目时调用；构思/讨论时严禁调用；没有明确写入指令时严禁调用**。支持「世界观」「其他」「初始」三种类型：「初始」用于说明故事开头处于什么时期、已经发生了什么、还没发生什么（仅在正文为空、尚未开始写作时注入一次）。**「初始」类型每本书只有一条：若草稿已存在初始条目，无论本次传入的 name 是否与它同名，都会直接更新原条目（不会新增第二条）**。注意：条目类型只支持「世界观」「其他」「初始」。', parameters: { type: 'object', properties: { type: { type: 'string', enum: ['其他', '世界观', '初始'] }, name: { type: 'string', description: '条目名（单条）' }, content: { type: 'string', description: '条目内容' }, items: { type: 'array', description: '批量：一次提交多个条目，每项 {type, name, content}（与 type/name/content 二选一；单次上限 10 个，超过拆多次调用）', items: { type: 'object', properties: { type: { type: 'string', enum: ['其他', '世界观', '初始'] }, name: { type: 'string' }, content: { type: 'string' } } } } }, required: [] } } },
-      { type: 'function', function: { name: 'delete_entry', description: '删除其他条目（含世界观等各类条目）。**批量清理大卡用 names 数组一次传多个条目名（单次上限 50 个），不要一条一条磨轮数**。**调用时机：仅当用户明确要求删除时调用；构思/讨论时严禁调用；没有明确写入指令时严禁调用**。', parameters: { type: 'object', properties: { name: { type: 'string', description: '条目名（单条）' }, names: { type: 'array', items: { type: 'string' }, description: '批量：一次删除多个条目名，单次上限 50 个（超过拆多次调用）' }, type: { type: 'string', enum: ['世界观', '其他', '初始', '角色'], description: '可选：只删该类型的同名条目（不填=该名字的所有条目都删）' } }, required: [] } } },
-      { type: 'function', function: { name: 'set_entry_type', description: '修改已有条目的类型（角色/世界观/其他/初始）。**批量调整用 items 数组一次传多项（单次上限 10 个）**。**调用时机：仅在用户明确要求修改条目类型时调用**（如"把林晚改成角色""这个改成世界观"），常用于调整导入/适配后类型不对的条目。**改为「角色」会迁移为角色卡（人设），改出「角色」会迁回普通条目**；同名多条时用 from_type 指定当前类型。', parameters: { type: 'object', properties: { name: { type: 'string', description: '条目名（单条）' }, type: { type: 'string', enum: ['角色', '世界观', '其他', '初始'], description: '目标类型' }, from_type: { type: 'string', description: '可选：条目当前类型（同名多条时精确定位）' }, items: { type: 'array', description: '批量：每项 {name, type, from_type}（与 name/type 二选一；单次上限 10 个）', items: { type: 'object', properties: { name: { type: 'string' }, type: { type: 'string', enum: ['角色', '世界观', '其他', '初始'] }, from_type: { type: 'string' } } } } }, required: [] } } },
+      { type: 'function', function: { name: 'upsert_entry', description: '新增或更新其他条目（同类型同名=更新）。**批量整理/改造大卡时用 items 数组一次提交多个条目（单次上限 10 个），不要一条一条磨轮数**。**调用时机：仅在用户确认或明确要求添加/修改条目时调用；构思/讨论时严禁调用；没有明确写入指令时严禁调用**。支持「世界观」「其他」「初始」「变量」四种类型：「初始」用于说明故事开头处于什么时期、已经发生了什么、还没发生什么（仅在正文为空、尚未开始写作时注入一次）。「变量」= **一个条目一个变量**：名称就是变量名（如「任务数量」「金钱」），内容写它的讲解——是什么、怎么变化、范围/失败条件（可用 {{user}} 指代主角），**不要写输出格式**（软件每轮会自动把讲解和当前值发给模型、并在正文之后收回报值）；变量名里不能有冒号或换行；变量条目不计入世界书 10 万字注入上限。**「初始」类型每本书只有一条：若草稿已存在初始条目，无论本次传入的 name 是否与它同名，都会直接更新原条目（不会新增第二条）**。注意：条目类型只支持「世界观」「其他」「初始」「变量」。', parameters: { type: 'object', properties: { type: { type: 'string', enum: ['其他', '世界观', '初始', '变量'] }, name: { type: 'string', description: '条目名（单条）；type=变量 时它就是变量名（不含冒号/换行）' }, content: { type: 'string', description: '条目内容；type=变量 时写讲解（是什么/怎么变/范围/失败条件），不要写输出格式' }, items: { type: 'array', description: '批量：一次提交多个条目，每项 {type, name, content}（与 type/name/content 二选一；单次上限 10 个，超过拆多次调用）', items: { type: 'object', properties: { type: { type: 'string', enum: ['其他', '世界观', '初始', '变量'] }, name: { type: 'string' }, content: { type: 'string' } } } } }, required: [] } } },
+      { type: 'function', function: { name: 'delete_entry', description: '删除其他条目（含世界观等各类条目）。**批量清理大卡用 names 数组一次传多个条目名（单次上限 50 个），不要一条一条磨轮数**。**调用时机：仅当用户明确要求删除时调用；构思/讨论时严禁调用；没有明确写入指令时严禁调用**。', parameters: { type: 'object', properties: { name: { type: 'string', description: '条目名（单条）' }, names: { type: 'array', items: { type: 'string' }, description: '批量：一次删除多个条目名，单次上限 50 个（超过拆多次调用）' }, type: { type: 'string', enum: ['世界观', '其他', '初始', '角色', '变量'], description: '可选：只删该类型的同名条目（不填=该名字的所有条目都删）' } }, required: [] } } },
+      { type: 'function', function: { name: 'set_entry_type', description: '修改已有条目的类型（角色/世界观/其他/初始/变量）。**批量调整用 items 数组一次传多项（单次上限 10 个）**。**调用时机：仅在用户明确要求修改条目类型时调用**（如"把林晚改成角色""这个改成世界观"），常用于调整导入/适配后类型不对的条目。**改为「角色」会迁移为角色卡（人设），改出「角色」会迁回普通条目**；改为「变量」表示这条要当运行时变量用（名称=变量名、内容=讲解，见 upsert_entry 说明）；同名多条时用 from_type 指定当前类型。', parameters: { type: 'object', properties: { name: { type: 'string', description: '条目名（单条）' }, type: { type: 'string', enum: ['角色', '世界观', '其他', '初始', '变量'], description: '目标类型' }, from_type: { type: 'string', description: '可选：条目当前类型（同名多条时精确定位）' }, items: { type: 'array', description: '批量：每项 {name, type, from_type}（与 name/type 二选一；单次上限 10 个）', items: { type: 'object', properties: { name: { type: 'string' }, type: { type: 'string', enum: ['角色', '世界观', '其他', '初始', '变量'] }, from_type: { type: 'string' } } } } }, required: [] } } },
       { type: 'function', function: { name: 'lookup_book', description: '**只读参考工具**：查看其他世界书的角色卡/条目内容（用于参考设定、借鉴风格、避免冲突）。**调用时机：仅当用户提到其他书（书名/内容）、或明确要求参考其他书/其他设定时调用；不要无故拉取**。book_name 部分匹配书名即可；name 填要查的具体角色/条目名，不填返回全书概要。不影响任何写入。', parameters: { type: 'object', properties: { book_name: { type: 'string', description: '要参考的书名（支持部分匹配）' }, name: { type: 'string', description: '可选：要查的具体角色或条目名；不填返回全书概要' } }, required: ['book_name'] } } },
       { type: 'function', function: { name: 'read_current_book_json', description: '**只读工具**：读取当前目标书的原始 JSON（含角色卡/条目/全部字段；酒馆卡导入的书还有 tavernSource 字段，其中 tavernSource.cards[].character_book.entries 就是酒馆世界书原文）。**改造/整理大卡时用 names 参数按名读指定条目全文（一次最多 50 个），或用 offset/limit 分页读全文（每页最多 50 条）**——书超过约 60KB 时不带参数只返回压缩视图（条目给类型/名称/字数/残留标记 + 一段可能被截断的正文，`truncated:true` 即表示这条在本视图里被截断；**注意所有条目的完整正文已经注入在【世界书内容】里**）。要改写某几条时，先用 names/分页读到它们的全文，不要拿被截断的片段当依据。**调用时机：当用户要把当前这张卡/这本书适配成本软件格式、或要求你看当前卡的实际内容/结构时，先调用本工具拿到数据再分析**——不要先让用户把 JSON 贴进聊天（当前书的原始数据你可以直接读）。不影响任何写入。', parameters: { type: 'object', properties: { names: { type: 'array', items: { type: 'string' }, description: '按名读全文：一次最多 50 个条目/角色名，返回它们的完整内容（改造大卡主力用法）' }, offset: { type: 'number', description: '分页读全文的起始序号（配合 limit 使用）' }, limit: { type: 'number', description: '分页读全文每页条数，默认 20、最大 50' }, with_content: { type: 'boolean', description: 'true=分页读全文（等价于传了 offset/limit）' } }, required: [] } } },
       { type: 'function', function: { name: 'read_adapter_doc', description: '**只读辅助工具**：读取「酒馆世界书适配指南」文档全文（独立于系统 Prompt）。**调用时机：当用户说要把酒馆世界书转成当前软件格式、且你需要了解酒馆字段如何映射、哪些该丢、哪些该问用户时调用**。返回文档全文，用于指导你对酒馆 JSON 的处理。非稳定注入，按需读取。', parameters: { type: 'object', properties: {} } } },
@@ -974,6 +974,10 @@ const CardWriterChat: CardWriterChatShape = {
     if (t.name === 'upsert_entry') {
       if (!a.name) return '工具调用参数无效：缺少条目名，请重写输入后重新调用';
       const type = a.type || '其他';
+      // 变量条目：名称会被当成回报格式里的键（模型按「名称：值」回报），带冒号/换行会把格式打乱
+      if (type === '变量' && /[:：\n\r]/.test(String(a.name))) {
+        return '工具调用参数无效：变量名里不能有冒号或换行（模型按「名称：值」回报），请改成「任务数量」这种写法后重试';
+      }
       const entryList = draft.entries || [];
       if (type === '初始') {
         // 「初始」每本书唯一：已存在初始条目（无论叫什么名字）一律更新它，
@@ -1123,8 +1127,9 @@ const CardWriterChat: CardWriterChatShape = {
     const name = ((a && a.name) || '').trim();
     const toType = ((a && a.type) || '').trim();
     if (!name) return '工具调用参数无效：缺少条目名，请重写输入后重新调用';
-    const VALID = ['角色', '世界观', '其他', '初始'];
+    const VALID = ['角色', '世界观', '其他', '初始', '变量'];
     if (VALID.indexOf(toType) < 0) return '工具调用参数无效：type 必须是 ' + VALID.join('/') + ' 之一';
+    if (toType === '变量' && /[:：\n\r]/.test(name)) return '工具调用参数无效：变量名里不能有冒号或换行（模型按「名称：值」回报），请改成「任务数量」这种写法后重试';
     const draft = this._draft;
     if (!draft) return '草稿不存在';
     const fromType = ((a && a.from_type) || '').trim();
@@ -1861,7 +1866,7 @@ const CardWriterChat: CardWriterChatShape = {
       if (entries.length === 0) {
         entriesEl.innerHTML = '';
       } else {
-        const TYPE_ORDER = ['世界观', '其他', '初始'];
+        const TYPE_ORDER = ['世界观', '其他', '初始', '变量'];
         entries.sort(function (a: any, b: any) {
           const ia = TYPE_ORDER.indexOf(a.type || '其他'), ib = TYPE_ORDER.indexOf(b.type || '其他');
           return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib);
@@ -2054,11 +2059,13 @@ const CardWriterChat: CardWriterChatShape = {
         + '- 角色的「关系」写**角色之间**的具体关系（同班同学、亲姐弟、上下级…）；确实要指代"玩家扮演的那个人"时，用「玩家角色」这类中性说法。\n'
         + '- `{{user}}` / `{user}` 只在**改造/导入的卡**里本来就有（酒馆卡常用）——遇到就按【主角占位符】原样保留；**从零写卡时不要主动写 `{{user}}`**。\n'
         + '- 只有当用户**明确要求**（「给我设个主角」「我要扮演某某」「要一个 user 位」）时，才按他的说明创建。\n'
-        + '【主角占位符：{{user}} / {user} 必须原样保留】`{{user}}` 与 `{user}` 是「主角」的占位符——软件在写作时会自动把它替换成用户设定的主角名（用户换了主角名，所有条目自动跟着变）。所以整理、改造、清洗、重写条目或角色内容时**必须原样保留：禁止删除，禁止改写成具体人名**（写死名字 = 用户换主角/改名字后这条设定就错了）。`{{char}}` 也不是残留：酒馆里它指「当前条目所属的角色」，软件写作时会换成「其他角色」，整理该条目时也可直接写成条目名。裸 `user` 若明显指主角（如对白标签「user：」），改写该条目时统一写成 `{{user}}`；若只是普通英文词则保持原样。**真正该清理的酒馆残留只有**：取值/声明类宏（{{getvar::…}}/{{setvar::…}}/{{random::…}}/{{//…}}）、`<% %>` EJS 标签、`<status_current_variable>` 等状态机标签块。\n'
+        + '【主角占位符：{{user}} / {user} 必须原样保留】`{{user}}` 与 `{user}` 是「主角」的占位符——软件在写作时会自动把它替换成用户设定的主角名（用户换了主角名，所有条目自动跟着变）。所以整理、改造、清洗、重写条目或角色内容时**必须原样保留：禁止删除，禁止改写成具体人名**（写死名字 = 用户换主角/改名字后这条设定就错了）。`{{char}}` 也不是残留：酒馆里它指「当前条目所属的角色」，软件写作时会换成「其他角色」，整理该条目时也可直接写成条目名。裸 `user` 若明显指主角（如对白标签「user：」），改写该条目时统一写成 `{{user}}`；若只是普通英文词则保持原样。\n'
+        + '- `{{getvar::名字}}` 在本软件里是**有效宏**：写作时会被替换成同名「变量」条目的当前值（书里没有同名变量时替换成空）。所以整理条目遇到它时——**书里已有同名「变量」条目（或你这一轮顺手建了它）→ 原样保留**；否则按"本软件里没有这个变量"处理：删掉宏、句子改成大白话，需要让这个状态真的会变就用 upsert_entry（type=变量）建一条同名变量条目。**真正该清理的酒馆残留**：声明类/取值类里的 `{{setvar::…}}`、`{{random::…}}`、`{{//…}}`、`<% %>` EJS 标签、`<status_current_variable>` 等状态机标签块（本软件不认，一律删）。\n'
         + '【采纳规则】通过工具提交的角色内容会被原样写入世界书，不经任何改写——因此 apply_character 的 content 必须是完整最终版（不要省略、不要用"同上"）；一次可提交多个角色；用户删除某角色时，调用 delete_character 删除并回复「已删除：角色名」。\n'
         + '【工具使用】你拥有提交变更的工具：apply_character（新增/更新角色）、delete_character（删除角色）、update_worldview（创建/更新/删除世界观**条目**，可拆成多条细分方向：世界背景、力量体系、国家地理等，每条一个条目名）、upsert_entry（新增/更新其他条目）、delete_entry（删除条目）。**工具是你修改世界书的唯一方式——不调用工具，变更就不会生效；调用即写入真实世界书，立即生效。** 所有工具的调用时机都受【授权判断】铁律约束，违反=严重错误。另有**只读参考工具**：lookup_book（查看其他书的内容，用于参考）、read_current_book_json（读取当前书的完整原始 JSON，含酒馆导入的 character_book 结构——当用户要把当前卡/书适配成本软件格式、或要求你看当前卡实际内容时先调用它，不要反过来让用户把 JSON 贴进聊天）、read_adapter_doc（读酒馆适配指南）。**酒馆卡适配流程（当用户要把当前卡转成本软件格式时）：① 先调 read_current_book_json 读当前卡原始数据 → ② read_adapter_doc 读适配规则 → ③ adapt_tavern_lorebook 生成报告并逐条问用户拍板（**不传参数**，工具自己读书内留存的酒馆原文；不要用 read_current_book_json 的回吐内容当参数） → ④ 用户决定后用变更工具提交（即时写入） → ⑤ 写入后必须调 read_current_book_json 复查已写入内容（核对条目齐全/类型正确/无酒馆残留/无缺漏），无误后才向用户宣布『改造完成』，有错先修正再复检**。规则：\n'
         + '- 用户确认写入时，调用变更工具提交即可（提交即写入世界书，写作立即生效，不需要额外操作）；\n'
-        + '- upsert_entry 支持「世界观」「其他」「初始」三种类型；「初始」条目 = 说明故事开头处于什么时期、已经发生了什么、还没发生什么，仅在正文为空、尚未开始写作时注入一次（不要在常规世界观条目里重复其内容）；**「初始」每本书只有一条——修改初始内容时直接调用 upsert_entry（type=初始），无论 name 填什么都会更新原条目，不要新增**；\n'
+        + '- upsert_entry 支持「世界观」「其他」「初始」「变量」四种类型；「初始」条目 = 说明故事开头处于什么时期、已经发生了什么、还没发生什么，仅在正文为空、尚未开始写作时注入一次（不要在常规世界观条目里重复其内容）；**「初始」每本书只有一条——修改初始内容时直接调用 upsert_entry（type=初始），无论 name 填什么都会更新原条目，不要新增**；\n'
+        + '- 「变量」条目 = **一个条目一个变量**，用于需要**持续跟踪的状态**（任务数量、金钱、好感度、目标进度、日期…）：名称就是变量名（**不能带冒号或换行**，如「任务数量」），内容写它的**讲解**——它是什么、怎么变化、范围或失败条件（可用 `{{user}}` 指代主角、`{{getvar::别的变量}}` 引用别的变量的当前值）。**内容里绝不要写输出格式**（不要写「每轮输出 <status>…」这类回报格式：软件会自动把讲解和当前值发给模型、并在正文之后收回报值，还会把值收进「变量」面板且不留在正文里）。什么时候建：用户要求「让 AI 记住/跟踪某个状态」「好感度/金钱/时间会变」「按月刷新次数」这类；或者酒的导入卡里有状态/数值条目、用户希望保留这层机制时（一个数值一个条目；原来的 `$变量`/`stat_data` 写法不认，改成用大白话写讲解）。不要为纯设定信息建变量条目（那是「世界观」/「其他」的事）。\n'
         + '- 用户明确说「整理一下xxx」「帮我把xxx改成…」时，整理/修改结果用 apply_character 等工具提交（不要先输出「姓名：xxx」卡片格式，直接提交工具）；\n'
         + '- 工具提交完成后，回复只需简短确认（如「已写入：林晚（更新）、国家（新增）」），不要再重复输出人设内容；**如果用户要求写入后继续（如「写完给我下一个设定」），确认后应继续输出下一个设定的建议/讨论，不要止于确认**；\n'
         + '- **单步内一次性提交**：一个写入步骤内的变更必须放在**同一条回复里一次性输出全部 tool_calls**（一次并行输出多个调用），除非下一个调用的参数依赖上一个的结果才分轮，**不要每轮只调一部分**；单条回复的调用总数不超过 5 个，**但每次调用可携带多个条目（批量参数）——删除类用 names 数组一次最多 50 个名字，写入类用 items 数组一次最多 10 个条目**；条目几十上百条时必须优先用批量参数，不要一条一条磨（磨不完还会撞上工具轮数上限）；单条超长内容（如整张角色卡）可单独成轮——贪多会导致输出被截断、全部作废；但**用户分批给出设定就分批写入**——不要替用户把所有设定一次性写完，不要催促用户「一次说清楚」，用户说一个就写一个；\n'
@@ -2100,7 +2107,7 @@ const CardWriterChat: CardWriterChatShape = {
         + '5. 去标签化：避免用「傲娇、腹黑」等标签直接定死角色。\n'
         + '6. 性格要用行为和台词体现，而不是描述语气：写「语气冷淡」是标签，给出具体的台词样例才是性格（见下【对话示例】）。\n'
         + '7. 反八股：避免模糊词（似乎、仿佛、如同）、劣质比喻、微表情、语气描写等陈词滥调。\n'
-        + '8. 写卡流程参考：世界观 → 角色基础 → 性格调色盘 → 对话示例（可选，AI 先给候选让用户挑）→ 三面性（可选）→ 二次解释 → 亲密（可选）→ 初始设定（可选：用 upsert_entry 写「初始」类型条目，交代故事起点）→ 设计收尾后引导用户去「写作」页试写（写卡页只做设计，不写正文）。\n\n'
+        + '8. 写卡流程参考：世界观 → 角色基础 → 性格调色盘 → 对话示例（可选，AI 先给候选让用户挑）→ 三面性（可选）→ 二次解释 → 亲密（可选）→ 初始设定（可选：用 upsert_entry 写「初始」类型条目，交代故事起点）→ 变量（可选：需要 AI 每轮跟踪的状态，如任务数量/金钱/好感度/目标进度，用 upsert_entry type=变量 一条一个变量，内容写讲解、不写输出格式）→ 设计收尾后引导用户去「写作」页试写（写卡页只做设计，不写正文）。\n\n'
         + '【对话示例（可选：先把候选摆出来让用户挑）】\n'
         + '- 为什么做：角色「死板」多半是因为说不出自己的话——「傲娇、冷淡、温柔」这些标签模型各有各的理解，几句具体台词反而能把它钉死（写进卡里，写作时会被当作角色声音的锚）。\n'
         + '- 时机（可选，不许打断主线）：一个角色的主干（姓名/性别/年龄/外貌/性格/背景/关系）确认之后，问一句要不要配几句示例台词；主要角色问一次，路人级角色不必问（不要用「主角」这个词，见【主角 / user】）。用户说「跳过/不用/以后再说」→ 记下、继续原流程，本轮与后续都不要再追问。\n'
@@ -2126,7 +2133,7 @@ const CardWriterChat: CardWriterChatShape = {
       // v21：新增【对话示例（可选）】——AI 先给候选台词让用户挑，选定的写进角色卡「说话方式·例句」
       // v22：新增【主角 / user：从零写卡不需要，不要主动引入】——从零写卡不设主角，{{user}} 只在改造卡里保留
       // v23：写入即完全写入（下线 status/origin 标记与 propose_setting）+ 轮次说明（设计轮不给工具）
-      __version: 23
+      __version: 24
     };
   },
 
@@ -2325,7 +2332,7 @@ const CardWriterChat: CardWriterChatShape = {
     });
     // 重建世界书条目：以工作副本为准。统一排序：世界观 → 角色 → 其他 → 初始
     wb.worldSetting = ''; // 世界观统一以条目存在（旧版写进 worldSetting 字段导致没有真实条目）
-    const TYPE_ORDER = ['世界观', '角色', '其他', '初始'];
+    const TYPE_ORDER = ['世界观', '角色', '其他', '初始', '变量'];
     const allItems: any[] = [];
     // 「初始」每本书唯一：去重兜底（内容被旧版本写坏/手改出两条时，写入只保留最后一条）
     let initLast: { type: string; name: string; content: string } | null = null;
@@ -2543,7 +2550,7 @@ const CardWriterChat: CardWriterChatShape = {
       '**主角占位符例外——不要动**：{{user}} 与 {user} 是主角占位符，软件写作时会自动替换成主角名 → 保留原样，禁止删除、禁止改写成具体人名（写死名字会让用户换主角后设定失效）。{{char}} 是「条目所属角色」的占位符，软件写作时换成「其他角色」，整理该条目时也可直接写成条目名。',
       '',
       '## 数值/状态系统（不询问用户）',
-      '软件无法保存数值/变量（好感度 87、getvar、stat_data）。这类条目不进 needs_user：含可读设定→你用大白话改写后作为「其他」写入（好感度 87→好感颇深），不保留数值；纯宏/纯数值→直接删除。报告【需 AI 转述】区块列出每条改/删。'
+      '数值/状态类条目：本软件不跑酒馆那套数值引擎（不认 $变量、setvar/getvar 声明、stat_data）。但**可以用「变量」条目让模型自己维护状态**——一个条目 = 一个变量：名称=变量名（不含冒号/换行），内容用大白话写清它是什么、怎么变化、范围或失败条件；模型每轮会在正文之后回报最新值，软件收进「变量」面板且不留在正文里。所以这类条目：含可读设定 → **优先改写成「变量」条目**（保留"这个值会变"的语义；一个数值一个条目），只留在设定层的信息改写成「其他」，纯宏/纯数值且无意义 → 直接删除。报告【需 AI 转述】区块列出每条改/删。'
     ].join('\n');
   },
 
@@ -2621,7 +2628,7 @@ const CardWriterChat: CardWriterChatShape = {
       const rewriteN = report.ai_transform.filter(function (t) { return t.kind === 'rewrite_numeric'; }).length;
       const dropN = report.ai_transform.length - rewriteN;
       lines.push('\n【需 AI 转述（数值/状态系统，不询问用户）' + report.ai_transform.length + ' 条】');
-      lines.push('软件无法保存数值/变量（好感度 87、getvar 等）：' + rewriteN + ' 条含可读设定 → 你直接用大白话改写后写入；' + dropN + ' 条纯宏/纯数值 → 直接删除，不用问。');
+      lines.push('数值/状态类条目：' + rewriteN + ' 条含可读设定 → 可改写成「变量」条目（一个变量一个条目，让模型每轮维护它的值、显示在「变量」面板）或用大白话写进「其他」；' + dropN + ' 条纯宏/纯数值 → 直接删除，不用问。');
       report.ai_transform.slice(0, 20).forEach(function (t) {
         lines.push('· [uid ' + t.uid + '] ' + (t.comment || '（无备注）') + ' → ' + (t.kind === 'rewrite_numeric' ? '改写' : '删除'));
       });

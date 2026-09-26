@@ -931,3 +931,96 @@ describe('比奇临时修订 ↔ 写卡写入：不再互相盖住', () => {
       });
   });
 });
+
+// =====================================================================================
+// 世界书「变量」条目（一个条目 = 一个变量）：写卡 agent 必须能建、能改类型、名称要合法。
+// 变量条目的含义（2026-09-26 定案）：名称=变量名、内容=给模型的讲解、注入开关=启用/停用；
+// 软件每轮把讲解与当前值发给模型并在正文之后收回报值，所以**内容里不能写输出格式**。
+describe('写卡支持「变量」条目', () => {
+  it('upsert_entry 支持 type=变量；同名更新、不同名新增（type 原样保留）', () => {
+    const c = prime();
+    c._draft = { characters: [], entries: [], deleted: [] };
+    const r1 = c._executeToolResult({ name: 'upsert_entry', arguments: { type: '变量', name: '任务数量', content: '每月 10 次；用完为止。' } });
+    expect(r1.ok).toBe(true);
+    expect(c._draft.entries).toHaveLength(1);
+    expect(c._draft.entries[0]).toMatchObject({ type: '变量', name: '任务数量' });
+    const r2 = c._executeToolResult({ name: 'upsert_entry', arguments: { type: '变量', name: '任务数量', content: '每月 12 次。' } });
+    expect(r2.ok).toBe(true);
+    expect(c._draft.entries).toHaveLength(1);
+    expect(c._draft.entries[0].content).toBe('每月 12 次。');
+  });
+
+  it('变量名带冒号/换行 → 拒收（回报格式按「名称：值」走），草稿不变', () => {
+    const c = prime();
+    c._draft = { characters: [], entries: [], deleted: [] };
+    for (const bad of ['任务：数量', '任务:数量', '任务\n数量']) {
+      const r = c._executeToolResult({ name: 'upsert_entry', arguments: { type: '变量', name: bad, content: 'x' } });
+      expect(r.ok).toBe(false);
+      expect(r.message).toContain('变量名');
+    }
+    expect(c._draft.entries).toHaveLength(0);
+  });
+
+  it('set_entry_type 能改成「变量」（并同样校验变量名）', () => {
+    const c = prime();
+    c._draft = { characters: [], entries: [entry('状态', '其他', '好感度会变。')], deleted: [] };
+    const ok = c._executeToolResult({ name: 'set_entry_type', arguments: { name: '状态', type: '变量' } });
+    expect(ok.ok).toBe(true);
+    expect(c._draft.entries[0].type).toBe('变量');
+    const bad = c._executeToolResult({ name: 'set_entry_type', arguments: { name: '状态', type: '变量' } });
+    expect(bad.ok).toBe(true);   // 已是变量：同级改类型不报错（既有语义）
+    const c2 = prime();
+    c2._draft = { characters: [], entries: [entry('甲：乙', '其他', 'x')], deleted: [] };
+    const r = c2._executeToolResult({ name: 'set_entry_type', arguments: { name: '甲：乙', type: '变量' } });
+    expect(r.ok).toBe(false);
+    expect(r.message).toContain('变量名');
+  });
+
+  it('工具 schema：类型枚举里都有「变量」（upsert_entry / delete_entry / set_entry_type）', () => {
+    const tools = Cw()._tools();
+    const byName = (n: string) => tools.find((t: any) => t.function.name === n);
+    const enumsOf = (n: string): string[] => {
+      const props = byName(n).function.parameters.properties;
+      const out: string[] = [];
+      if (props.type && props.type.enum) out.push(...props.type.enum);
+      const itemType = props.items && props.items.properties && props.items.properties.type;
+      if (itemType && itemType.enum) out.push(...itemType.enum);
+      return out;
+    };
+    expect(enumsOf('upsert_entry')).toContain('变量');
+    expect(enumsOf('delete_entry')).toContain('变量');
+    expect(enumsOf('set_entry_type')).toContain('变量');
+    expect(enumsOf('set_entry_type')).toContain('角色');
+  });
+
+  it('base 提示词说清「变量」是什么，并明确禁止在内容里写输出格式', () => {
+    const base = String(Cw()._defaultBlocks().base || '');
+    expect(base).toContain('「变量」条目 = **一个条目一个变量**');
+    expect(base).toContain('内容里绝不要写输出格式');
+    expect(base).toContain('不能带冒号或换行');
+    expect(base).toContain('支持「世界观」「其他」「初始」「变量」四种类型');
+    expect(base).toContain('本软件里是**有效宏**');   // {{getvar::}} 的保留/清理规则
+  });
+
+  it('直写世界书：变量条目原样落库（类型不丢、注入开关默认开）', () => {
+    const c = prime();
+    c._draft = {
+      characters: [],
+      entries: [{ type: '变量', name: '金钱', content: '身上的现金（日元）。' }, entry('学校', '世界观', '天台锁着。')],
+      deleted: [],
+    };
+    c._getTargetId = () => 'wb1';
+    c._snapshotNow = () => {};
+    c._saveDraft = () => {};
+    c.refreshContext = () => {};
+    const r = c._doWriteToWorldbook();
+    expect(String(r)).toContain('已写入世界书');
+    const v = WB_BOOKS[0].entries.find((e: any) => e.type === '变量');
+    expect(v).toBeTruthy();
+    expect(v.name).toBe('金钱');
+    expect(v.content).toBe('身上的现金（日元）。');
+    expect(v.inject).toBe(true);
+    // 类型排序：变量排最后（世界观→角色→其他→初始→变量），不影响既有可视化顺序
+    expect(WB_BOOKS[0].entries[WB_BOOKS[0].entries.length - 1].type).toBe('变量');
+  });
+});

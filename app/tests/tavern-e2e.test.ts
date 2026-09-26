@@ -73,9 +73,9 @@ describe('写卡运行时：酒馆适配工具端到端（离线）', () => {
     expect(report).toContain('可直接保留');
     expect(report).toContain('AI 转述（数值系统，不询问）');
     expect(report).toContain('需你拍板 2 条');
-    // 数值系统区块：19 条 rewrite 提示
+    // 数值系统区块：19 条 rewrite 提示（2026-09-26 起改成"可做成「变量」条目让模型每轮维护"的说法）
     expect(report).toContain('【需 AI 转述');
-    expect(report).toContain('软件无法保存数值/变量');
+    expect(report).toContain('可改写成「变量」条目');
     // kept 列表
     expect(report).toContain('【将保留 6 条】');
     expect(report).toContain('TomorrowsGirlfriend');
