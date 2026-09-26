@@ -45,6 +45,10 @@ keys/
 # 服务端热更新包（打包产物，由 scripts/hot-bundle.mjs 生成后上传服务器，不入库）
 server/web-bundles/
 
+# README 截图审查页（scripts/readme-shots.mjs 每次生成，仅供本地人工审查，不入库；
+# docs/screenshots/*.jpg 本身是入库的）
+docs/screenshots/_review.html
+
 # 其他
 dist/
 *.log

@@ -8,7 +8,8 @@
     "cap": "cap"
   },
   "devDependencies": {
-    "@capacitor/cli": "^6.2.1"
+    "@capacitor/cli": "^6.2.1",
+    "playwright": "^1.63.0"
   },
   "dependencies": {
     "@capacitor/android": "^6.2.1",
