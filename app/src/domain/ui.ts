@@ -449,11 +449,11 @@ const UIManager: UIManagerShape = {
       }
     });
     container.innerHTML = modules.map(function (m: any, i: any) {
-      // 位置/模式标签（2026-09-26）：尾部模块不进系统提示词、贴在用户消息末尾；
-      // 「思考」= 思考要求（思考强度 off 时不下发，且它的存在会抑制软件兜底条款）。
+      // 位置标签（2026-09-26 晚：类型名就用真实去处——system / user，便于引导预设作者）：
+      // system = 拼进最前面的系统提示词；user = 贴在最后一条用户消息末尾（思维链走 user 槽）。
       const _tail = m.role === 'user';
       const _think = m.slot === 'think';
-      const _tag = _tail ? (_think ? '思维链' : '末尾·导入') : 'system';
+      const _tag = _tail ? (_think ? 'user·思维链' : 'user·末尾') : 'system';
       const _modeTag = m.mode === 'novel' ? '·仅续写' : (m.mode === 'chat' ? '·仅演出' : '');
       return '<div class="module-row" data-drag-item="' + m.id + '" data-drag-id="' + m.id + '" data-drag-idx="' + i + '">' +
         '<span class="drag-handle" title="拖动排序">≡</span>' +
@@ -511,10 +511,12 @@ const UIManager: UIManagerShape = {
     document.getElementById('moduleEditId')!.value = moduleId || '';
     document.getElementById('moduleEditName')!.value = '';
     document.getElementById('moduleEditContent')!.value = '';
-    // 类型下拉：常态只有「非思维链 / 思维链」两项；导入的酒馆 user 条目（role=user 但没有思考标记）
-    // 单独给一项，避免编辑一次就把它的位置静默改掉。每次重建 options，不让上一轮的临时项残留。
+    // 类型下拉：常态两项 =「system / user（思维链）」（类型名就是真实去处：system 进最前面的系统
+    // 提示词，user 贴最后一条用户消息的末尾）；导入的酒馆 user 条目若与思考无关（文风/禁词等），
+    // 单独给一项「user（末尾·非思维链）」——避免编辑一次就把它的位置或思考语义静默改掉。
+    // 每次重建 options，不让上一轮的临时项残留。
     const kindSel = document.getElementById('moduleEditKind') as HTMLSelectElement;
-    const BASE_KINDS = '<option value="plain">非思维链（默认）</option><option value="think">思维链</option>';
+    const BASE_KINDS = '<option value="system">system</option><option value="user_think">user（思维链）</option>';
     kindSel.innerHTML = BASE_KINDS;
     (document.getElementById('moduleEditMode') as HTMLSelectElement).value = 'both';
     if (moduleId) {
@@ -525,8 +527,8 @@ const UIManager: UIManagerShape = {
         document.getElementById('moduleEditContent')!.value = mod.content || '';
         const isTail = mod.role === 'user';
         const isThink = mod.slot === 'think';
-        if (isTail && !isThink) kindSel.innerHTML = BASE_KINDS + '<option value="tail">末尾模块（导入的酒馆用户条目）</option>';
-        kindSel.value = isTail ? (isThink ? 'think' : 'tail') : 'plain';
+        if (isTail && !isThink) kindSel.innerHTML = BASE_KINDS + '<option value="user_tail">user（末尾·非思维链）</option>';
+        kindSel.value = isTail ? (isThink ? 'user_think' : 'user_tail') : 'system';
         (document.getElementById('moduleEditMode') as HTMLSelectElement).value =
           (mod.mode === 'novel' || mod.mode === 'chat') ? mod.mode : 'both';
       }
@@ -546,10 +548,10 @@ const UIManager: UIManagerShape = {
     const kind = (document.getElementById('moduleEditKind') as HTMLSelectElement).value;
     const mode = (document.getElementById('moduleEditMode') as HTMLSelectElement).value;
     const _applyFields = function (m: any) {
-      // kind=think → 思维链（放在用户消息末尾，思考关闭时跳过，且替代软件默认思考条款）；
-      // kind=tail → 导入的酒馆 user 条目（放末尾，但没有思考语义）；plain → 普通系统模块。
-      m.role = (kind === 'think' || kind === 'tail') ? 'user' : 'system';
-      if (kind === 'think') m.slot = 'think'; else delete m.slot;
+      // kind=user_think → 思维链（放在用户消息末尾，思考关闭时跳过，且替代软件默认思考条款）；
+      // kind=user_tail → 导入的酒馆 user 条目（放末尾，但没有思考语义）；system → 普通系统模块。
+      m.role = (kind === 'user_think' || kind === 'user_tail') ? 'user' : 'system';
+      if (kind === 'user_think') m.slot = 'think'; else delete m.slot;
       // mode 只在非 both 时落盘（保持老模块的对象形状不变，别给所有模块凭空加字段）
       if (mode === 'novel' || mode === 'chat') m.mode = mode; else delete m.mode;
     };
