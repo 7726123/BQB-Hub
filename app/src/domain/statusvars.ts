@@ -70,6 +70,44 @@ export const StatusVars = {
   },
 
   /**
+   * 面板空态用的"这本书里到底有什么"清单：用户报过"我启用了变量，面板却说什么都没有"，
+   * 而面板/自检都看不到"条目是不是已经不在了/被改成别的类型了"。这里把条目按类型数一遍、
+   * 把名字列出来（能列多少列多少），再把"存值里有、但已经没有同名条目"的名字也列出来——
+   * 有残留值就说明那个变量曾经生效过、后来条目被删了或改了名。
+   */
+  inventory(): { total: number; byType: { type: string; n: number }[]; items: { name: string; type: string; inject: boolean }[]; staleValues: string[] } {
+    let entries: any[] = [];
+    try {
+      const wb = WorldBookManager.getActive();
+      entries = (wb && wb.entries) || [];
+    } catch (e) { entries = []; }
+    const counts: Record<string, number> = {};
+    const items: { name: string; type: string; inject: boolean }[] = [];
+    entries.forEach(function (e: any) {
+      if (!e) return;
+      const t = String(e.type || '其他');
+      counts[t] = (counts[t] || 0) + 1;
+      items.push({ name: String(e.name || '（未命名）'), type: t, inject: e.inject !== false });
+    });
+    // 变量条目排前面（用户要找的就是它），其余按原顺序
+    items.sort(function (a, b) { return (a.type === '变量' ? 0 : 1) - (b.type === '变量' ? 0 : 1); });
+    const byType = Object.keys(counts).map(function (t) { return { type: t, n: counts[t] }; });
+    const known: Record<string, boolean> = {};
+    this.names('novel').forEach(function (n) { known[n] = true; });
+    this.names('chat').forEach(function (n) { known[n] = true; });
+    const staleValues: string[] = [];
+    try {
+      const wbId = WorldBookManager.getActiveId();
+      const book = wbId ? this._all()[wbId] : null;
+      ['novel', 'chat'].forEach(function (m: any) {
+        const vals = (book && book[m] && book[m].values) || {};
+        Object.keys(vals).forEach(function (k) { if (!known[k] && staleValues.indexOf(k) < 0) staleValues.push(k); });
+      });
+    } catch (e) { /* 读不到就算了 */ }
+    return { total: entries.length, byType: byType, items: items, staleValues: staleValues };
+  },
+
+  /**
    * 面板空态自查：书里的「变量」条目为什么没生效（逐条给原因）。
    * 覆盖最容易踩的四种：类型不对（老版本把「变量」迁移成了「其他」）、注入开关关着、名称为空、
    * 在比奇的临时世界书里被停用。面板只在"一条都没生效"时显示，避免平时占地方。
@@ -77,10 +115,15 @@ export const StatusVars = {
   nearMisses(mode: StatusMode): { name: string; reason: string }[] {
     const out: { name: string; reason: string }[] = [];
     let disabledIds: any[] = [];
+    let prev: any = null;
     try {
       if (SettingSyncManager.isActive() && typeof SettingSyncManager.getOverlay === 'function') {
-        const o: any = SettingSyncManager.getOverlay() || {};
-        disabledIds = Array.isArray(o.disabled) ? o.disabled : [];
+        // overlay 是按模式分键的（小说 / 对话各一份）：读之前把模式切到面板这一份，读完切回
+        try { prev = SettingSyncManager.mode(); if (prev !== mode) SettingSyncManager.setMode(mode); } catch (e) { prev = null; }
+        try {
+          const o: any = SettingSyncManager.getOverlay() || {};
+          disabledIds = Array.isArray(o.disabled) ? o.disabled : [];
+        } finally { if (prev && prev !== mode) { try { SettingSyncManager.setMode(prev); } catch (e) { /* ignore */ } } }
       }
     } catch (e) { /* 比奇读不到就按没停用处理 */ }
     let list: any[] = [];

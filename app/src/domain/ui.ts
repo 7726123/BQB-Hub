@@ -1756,13 +1756,36 @@ const UIManager: UIManagerShape = {
             }).join('') +
             '</div>';
         }
+        // 清单：这本书里到底有什么（用户"启用了却什么都没有"时需要看到"条目是不是不在了/改成别的类型了"）
+        var invHtml = '';
+        try {
+          var inv = StatusVars.inventory();
+          var types = inv.byType.map(function (t: any) {
+            return '<span style="' + (t.type === '变量' ? 'color:var(--primary);font-weight:700;' : '') + '">' + htmlEscape(t.type) + ' ' + t.n + '</span>';
+          }).join(' · ');
+          invHtml = '<div style="margin:10px 0 0;padding:8px 10px;border:1px solid var(--border);border-radius:8px;background:var(--bg-secondary);">' +
+            '<div style="font-size:12px;font-weight:700;margin-bottom:4px;">这本书现在有什么（共 ' + inv.total + ' 条）</div>' +
+            '<div style="font-size:12px;color:var(--text-secondary);line-height:1.8;">' + (types || '（一条都没有）') + '</div>' +
+            (inv.items.length > 0
+              ? '<div style="font-size:11.5px;color:var(--text-muted);line-height:1.8;margin-top:3px;word-break:break-word;">' +
+                inv.items.slice(0, 20).map(function (x: any) {
+                  return htmlEscape(x.name) + '〔' + htmlEscape(x.type) + (x.inject ? '' : '·注入关') + '〕';
+                }).join('、') + (inv.items.length > 20 ? ' …等 ' + inv.items.length + ' 条' : '') + '</div>'
+              : '') +
+            (inv.staleValues.length > 0
+              ? '<div style="font-size:11.5px;color:var(--text-secondary);line-height:1.8;margin-top:3px;">存值里还有：' +
+                inv.staleValues.map(function (n: string) { return htmlEscape(n); }).join('、') +
+                '（这些名字已经没有对应条目了——说明条目被删过或改过名）</div>'
+              : '') +
+            '</div>';
+        } catch (e) { invHtml = ''; }
         listEl.innerHTML =
           '<div style="padding:10px 4px;color:var(--text-muted);font-size:13px;line-height:1.95;">' +
           '这本书还没有启用中的<b>「变量」</b>条目。<br>' +
           '在世界书里新建一个类型为「变量」的条目：<b>名称＝变量名</b>（如「任务数量」），<b>内容＝给模型的讲解</b>（它是什么、怎么变化、范围或失败条件，可以用 <code>{{user}}</code> 指代主角），<b>注入开关＝启用/停用这一条</b>。<br>' +
           '如果你刚才是给一个已有条目打开了「注入」开关，它还得是<b>类型＝变量</b>才会生效（在世界书列表里点该条目的「✎ 编辑」改类型）。<br>' +
           '启用后，每轮生成都会把讲解和当前值发给模型；模型在正文之后按软件给定的格式回报新值，软件收进这里，并且<b>不会留在正文里</b>。' +
-          '</div>' + nearHtml;
+          '</div>' + nearHtml + invHtml;
         return;
       }
       var html = '';

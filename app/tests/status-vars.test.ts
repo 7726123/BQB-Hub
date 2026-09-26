@@ -599,3 +599,30 @@ describe('空态自查：条目为什么没生效（用户反馈"我启用了却
     } finally { Object.assign(SSM, orig); }
   });
 });
+
+describe('空态清单（inventory）：让用户看见"这本书现在有什么"', () => {
+  it('按类型计数 + 变量条目排前 + 列出残留存值（说明条目被删/改名过）', () => {
+    WBM.saveAll([]);
+    const b = WBM.createBook('清单书');
+    const all = WBM.getAll();
+    all.find(w => w.id === b.id)!.entries = [
+      { id: 'x1', type: '世界观', name: '学校', content: '天台锁着。' },
+      { id: 'x2', type: '变量', name: '手里的现金（日元）', content: '现金。' },
+      { id: 'x3', type: '其他', name: '旧变量表', content: '每月 10 次' },
+      { id: 'x4', type: '变量', name: '停用的', content: 'x', inject: false },
+    ];
+    WBM.saveAll(all);
+    WBM.setActiveId(b.id);
+    // 造一条"已经没有同名条目"的残留值（模拟条目被删/改名）
+    const sv = (G.StorageManager.get('statusVars', {}) as any) || {};
+    sv[b.id] = { novel: { values: { '已经被删掉的变量': { v: '1', at: 1 } }, raw: '', at: 1 } };
+    G.StorageManager.set('statusVars', sv);
+
+    const inv = StatusVars.inventory();
+    expect(inv.total).toBe(4);
+    expect(inv.byType.map(t => t.type + ':' + t.n).sort()).toEqual(['世界观:1', '其他:1', '变量:2']);
+    expect(inv.items[0].type).toBe('变量');                       // 变量条目排最前
+    expect(inv.items.find(i => i.name === '停用的')!.inject).toBe(false);
+    expect(inv.staleValues).toEqual(['已经被删掉的变量']);
+  });
+});
