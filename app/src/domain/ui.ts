@@ -1729,21 +1729,40 @@ const UIManager: UIManagerShape = {
       var vals = StatusVars.values(mode);
       var snap = StatusVars.snap(mode);
       var label = mode === 'chat' ? '对话' : '小说';
+      // 面板必须写清"看的是哪本书"：用户反馈过"我启用了变量却说什么都没有"——很可能是在另一本书里
+      var bookName = '';
+      try {
+        var wbNow = WorldBookManager.getActive();
+        bookName = String((wbNow && (wbNow.name || wbNow.title)) || '');
+      } catch (e) { bookName = ''; }
+      var where = (bookName ? '《' + bookName + '》 · ' : '') + label + '模式';
       if (countEl) countEl.textContent = entries.length > 0 ? (entries.length + ' 个 · ' + label) : '';
       if (statusEl) {
         statusEl.textContent = entries.length === 0
-          ? (label + '模式：还没有启用的「变量」条目')
-          : (snap.at
-            ? (label + '模式 · 最后更新：' + fmtVarTime(snap.at))
-            : (label + '模式：还没有收到回报（下一轮生成之后出现）'));
+          ? (where + '：还没有启用中的「变量」条目')
+          : (snap.at ? (where + ' · 最后更新：' + fmtVarTime(snap.at)) : (where + '：还没有收到回报（下一轮生成之后出现）'));
       }
       if (entries.length === 0) {
+        // 空态自查：把"差在哪"的条目逐条列出来（用户反馈过"我明明启用了，面板却说没有启用中的条目"）
+        var near: any[] = [];
+        try { near = StatusVars.nearMisses(mode); } catch (e) { near = []; }
+        var nearHtml = '';
+        if (near.length > 0) {
+          nearHtml = '<div style="margin:10px 0 0;padding:8px 10px;border:1px solid var(--border);border-radius:8px;background:var(--bg-secondary);">' +
+            '<div style="font-size:12px;font-weight:700;margin-bottom:4px;">这些条目差在哪（改完立刻生效）：</div>' +
+            near.map(function (x: any) {
+              return '<div style="font-size:12px;color:var(--text-secondary);line-height:1.8;">· ' +
+                htmlEscape(x.name) + ' —— ' + htmlEscape(x.reason) + '</div>';
+            }).join('') +
+            '</div>';
+        }
         listEl.innerHTML =
           '<div style="padding:10px 4px;color:var(--text-muted);font-size:13px;line-height:1.95;">' +
           '这本书还没有启用中的<b>「变量」</b>条目。<br>' +
           '在世界书里新建一个类型为「变量」的条目：<b>名称＝变量名</b>（如「任务数量」），<b>内容＝给模型的讲解</b>（它是什么、怎么变化、范围或失败条件，可以用 <code>{{user}}</code> 指代主角），<b>注入开关＝启用/停用这一条</b>。<br>' +
+          '如果你刚才是给一个已有条目打开了「注入」开关，它还得是<b>类型＝变量</b>才会生效（在世界书列表里点该条目的「✎ 编辑」改类型）。<br>' +
           '启用后，每轮生成都会把讲解和当前值发给模型；模型在正文之后按软件给定的格式回报新值，软件收进这里，并且<b>不会留在正文里</b>。' +
-          '</div>';
+          '</div>' + nearHtml;
         return;
       }
       var html = '';

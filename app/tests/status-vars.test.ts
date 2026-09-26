@@ -217,13 +217,13 @@ describe('StatusVars：条目读取 / 注入块 / 收集落盘', () => {
   const V1 = { id: 'v1', type: '变量', name: '任务数量', content: '每月 10 次；用完为止；月底没做完判失败。' };
   const V2 = { id: 'v2', type: '变量', name: '金钱', content: '身上的现金（日元）。' };
 
-  it('启用规则：只认 type=变量 + inject!==false + 名称与内容都非空', () => {
+  it('启用规则：type=变量 + inject!==false + 名称非空（讲解可以先空着）', () => {
     seed([V1, V2, { id: 'v3', type: '变量', name: '停用的', content: 'x', inject: false },
       { id: 'v4', type: '变量', name: '空内容', content: '   ' },
       { id: 'v5', type: '变量', name: '  ', content: 'y' },
       { id: 'w1', type: '世界观', name: '任务数量', content: '同名的世界观条目不算变量' }]);
-    expect(StatusVars.names('novel')).toEqual(['任务数量', '金钱']);
-    expect(StatusVars.count('novel')).toBe(2);
+    expect(StatusVars.names('novel')).toEqual(['任务数量', '金钱', '空内容']);
+    expect(StatusVars.count('novel')).toBe(3);
     expect(StatusVars.enabled('novel')).toBe(true);
   });
 
@@ -547,5 +547,55 @@ describe('小说模式整链：注入 → 回报 → 剥块 → 值落盘（edit
     StatusVars.capture('novel', '<status>\n任务数量：1\n</status>');
     (App as any)._restoreVarSnapshot();
     expect(StatusVars.values('novel')['任务数量'].v).toBe('5');
+  });
+});
+
+describe('空态自查：条目为什么没生效（用户反馈"我启用了却没有"）', () => {
+  function seed2(entries: any[]) {
+    WBM.saveAll([]);
+    const b = WBM.createBook('自查书');
+    const all = WBM.getAll();
+    all.find(w => w.id === b.id)!.entries = entries;
+    WBM.saveAll(all);
+    WBM.setActiveId(b.id);
+    return b.id;
+  }
+
+  it('只填了名称、没写讲解 → 也算启用（不再"什么都没有"）', () => {
+    seed2([{ id: 'v1', type: '变量', name: '手里的现金（日元）', content: '' }]);
+    expect(StatusVars.names('novel')).toEqual(['手里的现金（日元）']);
+    const blk = StatusVars.block('novel');
+    expect(blk).toContain('### 手里的现金（日元）');
+    expect(blk).toContain('（这条还没写讲解');                 // 注入时会说明它没讲解
+  });
+
+  it('差在哪：注入开关关着 / 名称为空 / 类型不是变量（名字带变量字样）', () => {
+    seed2([
+      { id: 'v1', type: '变量', name: '关着的', content: 'x', inject: false },
+      { id: 'v2', type: '变量', name: '   ', content: 'x' },
+      { id: 'v3', type: '其他', name: '变量表', content: '每月 10 次' },
+      { id: 'v4', type: '变量', name: '好的', content: 'x' },
+    ]);
+    const near = StatusVars.nearMisses('novel');
+    expect(near.map(x => x.name)).toEqual(['关着的', '（未命名）', '变量表']);
+    expect(near[0].reason).toContain('注入开关');
+    expect(near[1].reason).toContain('名称为空');
+    expect(near[2].reason).toContain('类型是「其他」');
+    expect(StatusVars.names('novel')).toEqual(['好的']);       // 只有真正生效的那条进来
+  });
+
+  it('比奇把条目停用了 → 也列出来（不是"没有条目"）', () => {
+    seed2([{ id: 'v1', type: '变量', name: '心情', content: 'x' }]);
+    const SSM: any = SettingSyncManager;
+    const orig = { isActive: SSM.isActive, getEffectiveEntries: SSM.getEffectiveEntries, getOverlay: SSM.getOverlay, mode: SSM.mode, setMode: SSM.setMode };
+    SSM.isActive = () => true;
+    SSM.getOverlay = () => ({ disabled: ['v1'], modified: {}, added: [] });
+    SSM.getEffectiveEntries = () => [];
+    SSM.mode = () => 'novel';
+    SSM.setMode = () => undefined;
+    try {
+      expect(StatusVars.entries('novel')).toEqual([]);
+      expect(StatusVars.nearMisses('novel').map(x => x.reason).join('|')).toContain('比奇');
+    } finally { Object.assign(SSM, orig); }
   });
 });

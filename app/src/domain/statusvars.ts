@@ -53,12 +53,56 @@ export const StatusVars = {
         const wb = WorldBookManager.getActive();
         list = (wb && wb.entries) || [];
       }
-    } catch (e) { list = []; }
+    } catch (e) {
+      // 比奇那份读失败（插件异常 / overlay 结构异常）：退回"原书条目"而不是当成"没有变量"——
+      // 面板空着又不说原因，用户只会以为功能没生效（"我启用了怎么什么都没有"）。
+      try {
+        const wb2 = WorldBookManager.getActive();
+        list = (wb2 && wb2.entries) || [];
+      } catch (e2) { list = []; }
+    }
     return list.filter(function (e: any) {
+      // 内容（讲解）允许为空：只填了名称也该生效——否则"我明明启用了，面板却说没有启用中的条目"，
+      // 用户根本看不出是漏写讲解（面板空态会把这些"差在哪"的条目列出来，见 nearMisses）。
       return e && e.type === '变量' && e.inject !== false
-        && String(e.content || '').trim().length > 0
         && String(e.name || '').trim().length > 0;
     });
+  },
+
+  /**
+   * 面板空态自查：书里的「变量」条目为什么没生效（逐条给原因）。
+   * 覆盖最容易踩的四种：类型不对（老版本把「变量」迁移成了「其他」）、注入开关关着、名称为空、
+   * 在比奇的临时世界书里被停用。面板只在"一条都没生效"时显示，避免平时占地方。
+   */
+  nearMisses(mode: StatusMode): { name: string; reason: string }[] {
+    const out: { name: string; reason: string }[] = [];
+    let disabledIds: any[] = [];
+    try {
+      if (SettingSyncManager.isActive() && typeof SettingSyncManager.getOverlay === 'function') {
+        const o: any = SettingSyncManager.getOverlay() || {};
+        disabledIds = Array.isArray(o.disabled) ? o.disabled : [];
+      }
+    } catch (e) { /* 比奇读不到就按没停用处理 */ }
+    let list: any[] = [];
+    try {
+      const wb = WorldBookManager.getActive();
+      list = (wb && wb.entries) || [];
+    } catch (e) { list = []; }
+    list.forEach(function (e: any) {
+      if (!e) return;
+      const name = String(e.name || '').trim();
+      const type = String(e.type || '其他');
+      if (type !== '变量') {
+        // 名字里带「变量」但类型不是变量的：老版本的「变量」类型在类型精简迁移里被改成了「其他」，
+        // 用户以为"启用了一个变量条目"，其实它是个普通条目——这是最容易踩的一条。
+        if (name.indexOf('变量') >= 0) out.push({ name: name || '（未命名）', reason: '类型是「' + type + '」，变量条目必须把类型改成「变量」' });
+        return;
+      }
+      if (!name) { out.push({ name: '（未命名）', reason: '名称为空——名称就是变量名，必须填' }); return; }
+      if (e.inject === false) { out.push({ name: name, reason: '注入开关关着（世界书列表里打开它）' }); return; }
+      if (disabledIds.indexOf(e.id) >= 0) { out.push({ name: name, reason: '在比奇的临时世界书里被停用了（去比奇面板恢复，或关掉比奇）' }); return; }
+    });
+    return out;
   },
 
   names(mode: StatusMode): string[] {
@@ -102,7 +146,9 @@ export const StatusVars = {
     list.forEach(function (e: any) {
       const n = String(e.name || '').trim();
       const cur = (vals[n] && vals[n].v) ? String(vals[n].v) : '';
-      out += '\n### ' + n + '\n' + String(e.content || '').trim() + '\n' +
+      const note = String(e.content || '').trim();
+      out += '\n### ' + n + '\n' +
+        (note ? note + '\n' : '（这条还没写讲解：请按变量名自行判断它指什么，并给出符合剧情的当前值）\n') +
         (cur ? '当前值：' + cur : '当前值：（还没有回报过——这一轮请给出符合上面讲解的初始值）');
     });
     return out;
