@@ -1284,7 +1284,7 @@ const CardWriterChat: CardWriterChatShape = {
       const blocked = tools.map(function () {
         return JSON.stringify({ ok: false, message: '失败：设计轮最多一轮工具提交，本次调用未执行（软件限制）。请用文字说明剩余内容，让用户回一句「继续」再提交。' });
       });
-      this._lastToolResults = blocked.map(function (r) { return JSON.parse(r); });
+      this._lastToolResults = blocked.map(function (r: any) { return JSON.parse(r); });
       this.renderDraft();
       return blocked;
     }
