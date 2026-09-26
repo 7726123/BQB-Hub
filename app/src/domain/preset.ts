@@ -456,10 +456,28 @@ export function moduleAppliesTo(m: any, mode: PresetMode): boolean {
 // （它同时装着文风/字数/格式，被当成思维链会让"思考关闭"时整块不发）。
 const COT_SIGNATURE = /<thought_of_chain>|<thinking_step|【思维模式要求】|【思维链要求】|【思考要求】/;
 
-/** 这条模块内容是不是一份思维链要求（酒馆预设里那种 <thought_of_chain> 规格书） */
+/**
+ * 这条模块**提到**了思维链骨架吗（内容任意位置）——用于"预设自带思维链 → 不补软件兜底"。
+ * 注意范围要宽：像「聊天模式」这种自带 CoT 步骤的模式块，也算"预设自带"（但它不是专用的思维链块，
+ * 见 moduleIsCotSpec）。
+ */
 export function moduleLooksLikeCot(content: unknown): boolean {
   const s = String(content == null ? '' : content);
   return COT_SIGNATURE.test(s);
+}
+
+/**
+ * 这条模块**是不是一份专用思维链块**（导入时据此打 slot='think'）。
+ * 判据比 moduleLooksLikeCot 严：内容里有骨架 **且**（名字像思维链 **或** 骨架出现在开头 120 字内）。
+ * 为什么不能只看内容：「大总结模式」「聊天模式」这类"输出模式"块把 CoT 写在正文深处，
+ * 一旦标成 think，思考关闭/无原生通道时整块不下发——模式说明会跟着消失。
+ */
+export function moduleIsCotSpec(name: unknown, content: unknown): boolean {
+  const s = String(content == null ? '' : content);
+  if (!COT_SIGNATURE.test(s)) return false;
+  if (/思维链|思维模式|CoT/i.test(String(name == null ? '' : name))) return true;
+  const i = s.search(COT_SIGNATURE);
+  return i >= 0 && i < 120;
 }
 
 /**
@@ -483,6 +501,42 @@ export function hasOwnThinkSpec(mods: any): boolean {
   return (Array.isArray(mods) ? mods : []).some(function (m: any) {
     return moduleSlot(m) === 'think' || moduleLooksLikeCot(m && m.content);
   });
+}
+
+/**
+ * 从导入的 JSON 里抽"预设自带采样参数"（存进 preset.sampler）。
+ * 两种来源：原生预设的顶层 `sampler`，或酒馆预设的顶层原始字段
+ * （temperature/top_p/presence_penalty/frequency_penalty/reasoning_effort）。
+ * **只收 JSON 里真的写了的字段**——不能用 parseSampler() 的结果（它会给缺失字段填
+ * 0.8/0.9/0/0，等于凭空覆盖用户的全局设置；2026-09-26 导入原生预设时踩到）。
+ */
+export function samplerFromJson(src: any): Record<string, any> {
+  const root = (src && typeof src === 'object') ? src : {};
+  // 原生预设把参数放在顶层 sampler 里（有它就只认它，不再看顶层字段）
+  const s = (root.sampler && typeof root.sampler === 'object') ? root.sampler : root;
+  const pick = function (...keys: string[]): any {
+    for (const k of keys) {
+      const v = s[k];
+      if (v !== undefined && v !== null && v !== '') return v;
+    }
+    return undefined;
+  };
+  const num = function (v: any): number | null {
+    const n = parseFloat(String(v));
+    return isFinite(n) ? n : null;
+  };
+  const out: Record<string, any> = {};
+  const t = num(pick('temperature', 'temp'));
+  if (t !== null) out.temperature = t;
+  const tp = num(pick('topP', 'top_p'));
+  if (tp !== null) out.topP = tp;
+  const pp = num(pick('presencePenalty', 'presence_penalty'));
+  if (pp !== null) out.presencePenalty = pp;
+  const fp = num(pick('frequencyPenalty', 'frequency_penalty'));
+  if (fp !== null) out.frequencyPenalty = fp;
+  const lv = stReasoningToLevel(pick('reasoningEffort', 'reasoning_effort'));
+  if (lv) out.reasoningEffort = lv;
+  return out;
 }
 
 // 当前模式生效的启用模块（按 order）。纯函数：调用方传自己已经拿到的 promptModules
@@ -525,7 +579,7 @@ export function stPromptsToModules(cfg: any): any[] {
         role: role,
         order: info ? info.idx : (m.injection_order != null ? m.injection_order : i)
       };
-      if (role === 'user' && moduleLooksLikeCot(m.content)) out.slot = 'think';
+      if (role === 'user' && moduleIsCotSpec(out.name, m.content)) out.slot = 'think';
       return out;
     });
 }

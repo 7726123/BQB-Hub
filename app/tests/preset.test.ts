@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import '../src/infra/storage';
 import '../src/domain/preset';
-import { MINIMAL_PRESET_MODULES, MINIMAL_PRESET_PATCHES, THINK_TAIL_FALLBACK, stPromptsToModules, nativeModulesToModules, moduleLooksLikeCot, stReasoningToLevel } from '../src/domain/preset';
+import { MINIMAL_PRESET_MODULES, MINIMAL_PRESET_PATCHES, THINK_TAIL_FALLBACK, stPromptsToModules, nativeModulesToModules, moduleLooksLikeCot, moduleIsCotSpec, stReasoningToLevel, samplerFromJson } from '../src/domain/preset';
 import { RegexEngine as RE } from '../src/lib/regex'; // P3-A：regex 不再挂全局，直接 import
 
 type SM = import('../src/infra/storage').StorageManagerClass;
@@ -720,6 +720,19 @@ describe('预设自带思维链的识别与采样参数跟随（酒馆对齐）'
     expect(moduleLooksLikeCot('# 文风设定：白话')).toBe(false);
   });
 
+  it('moduleIsCotSpec：专用思维链块才打 slot=think；"模式块里的 CoT" 不打（否则关思考时整块模式消失）', () => {
+    // 专用思维链块：名字像 / 骨架就在开头
+    expect(moduleIsCotSpec('默认思维链', '{{setvar::cot:: 【思维模式要求】 <thought_of_chain>…')).toBe(true);
+    expect(moduleIsCotSpec('随便什么名', '【思维模式要求】 <thinking_step>…')).toBe(true);
+    // 「聊天模式」把 CoT 写在正文深处（真实预设里在 142 字处）→ 不是专用思维链块，不能打标
+    const prefix = '以下要求定义为 DREAM_CHAT 模式。'.padEnd(130, '·');
+    const chatMode = prefix + '【思维模式要求】在{{getvar::sleep_var_thinking_flag}}之后，请遵守以下思考规则…';
+    expect(moduleIsCotSpec('聊天模式', chatMode)).toBe(false);
+    expect(moduleLooksLikeCot(chatMode)).toBe(true);   // 但它**提到**了 CoT → 仍算"预设自带思维链"，兜底照样不补
+    // 「叙事者：自定义思维链」名字带"思维链"但内容是叙事者设定 → 不算
+    expect(moduleIsCotSpec('叙事者：自定义思维链', '{{setvar::sleep_var_tuijin:: 叙事者：中庸之白 * 高度遵守叙事设定')).toBe(false);
+  });
+
   it('启用模块里有自带思维链（内容签名认出来，没有 slot） → 不再插软件兜底', () => {
     setMods([
       tailMod('t1', '{{setvar::cot::\n【思维模式要求】\n<thought_of_chain>\n终、定乾坤\n}}'),
@@ -752,6 +765,19 @@ describe('预设自带思维链的识别与采样参数跟随（酒馆对齐）'
     expect(byName['默认思维链'].slot).toBe('think');
     expect('slot' in byName['写作模式']).toBe(false);
     expect('slot' in byName['梦境思客']).toBe(false);
+  });
+
+  it('samplerFromJson：只收 JSON 里真写了的字段（缺字段不许填默认值覆盖全局）', () => {
+    // 原生预设：顶层 sampler
+    expect(samplerFromJson({ sampler: { temperature: 1, topP: 0.95, presencePenalty: 0, frequencyPenalty: 0, reasoningEffort: 'medium' } }))
+      .toEqual({ temperature: 1, topP: 0.95, presencePenalty: 0, frequencyPenalty: 0, reasoningEffort: 'medium' });
+    // 酒馆预设：顶层原始字段（缺的就不写进去）
+    expect(samplerFromJson({ temperature: 1, top_p: 0.95 })).toEqual({ temperature: 1, topP: 0.95 });
+    // 什么都没有 → 空对象（不许出现 0.8/0.9/0/0 这类凭空默认值）
+    expect(samplerFromJson({ prompts: [] })).toEqual({});
+    expect(samplerFromJson(null)).toEqual({});
+    // 0 是合法值
+    expect(samplerFromJson({ presence_penalty: 0, frequency_penalty: 0 })).toEqual({ presencePenalty: 0, frequencyPenalty: 0 });
   });
 
   it('stReasoningToLevel：酒馆 reasoning_effort → 本软件思考档位', () => {

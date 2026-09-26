@@ -346,6 +346,36 @@ describe('平滑流式渲染', () => {
     expect(sinkEl.textContent).toContain('她转身离开。');
   });
 
+  // 2026-09-26：完成态被**改写**过（预设文本正则，如"剥掉 <dream_body> 外壳"、标签清洗）时，
+  // 旧实现只"补缺不重写"——sink 里那份流式原文会原地留下，预设正则在流式模式下等于没生效
+  // （真机实测：XML 外壳照旧进正文、也照旧落盘）。
+  it('完成态正文与流式正文实质不同（预设正则改写）→ 以完成态重建 sink', () => {
+    EditorManager.startStreaming();
+    const raw = '<dream_plot>\n<dream_body>\n她推开门，屋里没人。\n</dream_body>\n<dream_done/>\n</dream_plot>';
+    for (let i = 0; i < raw.length; i += 12) EditorManager.appendStreaming(raw.slice(i, i + 12));
+    vi.advanceTimersByTime(500);
+    expect(sinkText()).toContain('dream_body');       // 流式期间上屏的是原文
+    const sinkEl = EditorManager._streamSink!;
+    EditorManager._commitFinished('<details class="cot-thinking"><summary>思维链</summary>x</details>她推开门，屋里没人。', null);
+    const t = sinkEl.textContent!;
+    expect(t).toContain('她推开门，屋里没人。');
+    expect(t).not.toContain('dream_body');            // 外壳标签被完成态重建掉
+    expect(t).not.toContain('dream_plot');
+    expect(t).not.toContain('dream_done');
+    expect(t.split('她推开门').length - 1).toBe(1);    // 重建不是"再拼一遍"
+  });
+
+  it('完成态只是缺尾（前缀一致）→ 仍走"只补尾巴"，不整段重建', () => {
+    EditorManager.startStreaming();
+    EditorManager.appendStreaming('第一段。第二');
+    vi.advanceTimersByTime(500);
+    const sinkEl = EditorManager._streamSink!;
+    EditorManager._commitFinished('<details class="cot-thinking"><summary>思维链</summary>x</details>第一段。第二段。', null);
+    const t = sinkEl.textContent!;
+    expect(t.replace(/\s/g, '')).toBe('第一段。第二段。');
+    expect(t.split('第一段').length - 1).toBe(1);
+  });
+
   // 回归（v1.5.90）：末尾"疑似标记前缀"（'-' 是 '-->' 的前缀、'【' 是 '【正文】' 的前缀）
   // 被扣留后，下一轮扫描把它插到了**未消费前文之前** → 末尾字符顺序颠倒：
   // 单帧 "abcdefghi-" 上屏成 "abcdefgh-i"（属性测试反例，缩到最小就是它）。

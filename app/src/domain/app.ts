@@ -25,8 +25,9 @@ import { UpdateManager } from './update';
 import * as TavernAdapter from './tavern-adapter';
 import { ClientLog } from './clientlog';
 import { sanitizeEndpointUrl, chatCompletionsUrl } from '../lib/endpoint';
-import { moduleRole, moduleSlot, pickModules, stPromptsToModules, nativeModulesToModules, stReasoningToLevel } from './preset';
+import { moduleRole, moduleSlot, pickModules, stPromptsToModules, nativeModulesToModules, stReasoningToLevel, samplerFromJson } from './preset';
 import { expandStMacros, expandStMacroText, createStMacroCtx } from '../lib/stmacros';
+import { DELTA_BLOCK_RE_G, DELTA_TAG_RE_G } from '../lib/delta-tag';
 import { StatusVars } from './statusvars';
 
 // 价格表默认值（人民币/百万 token）：DeepSeek V4.1 峰时价。
@@ -1677,7 +1678,11 @@ const App: AppShape = {
           try { _preProcessed = StatusVars.capture('novel', _preProcessed); } catch (e) { /* 变量收集失败不影响落盘 */ }
 const stripped = _preProcessed.replace(/^#{1,3}\s+.*(\n|$)/gm, '').trim(); var _esc2 = function (s: any) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }; var _split = _splitThinkingBlocks(RegexEngine.applyRules(stripped, 'after')); var _streamSplit = _splitThinkingBlocks(generated || ''); // 诊断留档：原始输出 + 各阶段长度（正文丢失时可一键定位）
           App._lastRawGenerate = String(fullContent || '');
-          console.log('[Split] raw=' + String(fullContent || '').length + ' stripped=' + stripped.length + ' body=' + _split.body.length + ' thoughts=' + _split.thoughts.length + '[Split] unclosed?', !!_split.unclosed); var _allThoughts: any[] = []; var _seenThoughts = {} as Record<string, any>; var _addThoughts = function (arr: any) { (arr || []).forEach(function (v: any) { var clean = String(v || '').trim(); if (!clean) return; var key = clean.replace(/\s+/g, ' ').slice(0, 80); if (!_seenThoughts[key]) { _seenThoughts[key] = true; _allThoughts.push(clean); } }); }; _addThoughts(reasoning && reasoning.trim() ? [reasoning] : []); _addThoughts(_streamSplit.thoughts); _addThoughts(_split.thoughts); var _body = (function (t) {var n=0;return normalizeQuotes(t.replace(/——/g,function () {return++n<=3?'——':'—'}));})(_split.body).replace(/<details\b([^>]*)>[\s\S]*?<\/details>/gi, function (m, attrs: any) { return /class\s*=\s*["'][^"']*cot-thinking/i.test(attrs) ? m : ''; }).replace(/<Anti-Omniscience>[\s\S]*?<\/Anti-Omniscience>/gi,'').replace(/<\/?(bginfor|catsay|CEstuff|CE[A-Za-z]*|subtext|radio|url|end)[^>]*>/gi,'').replace(/\n{3,}/g,'\n\n').replace(/(?<!\n)\n(?!\n)/g,'\n\n').trim(); const _deepThinkOn = App.thinkingLevel() !== 'off'; // 思考强度：仅 off 时结束端不渲染思维链（流式思考框已由 editor 隐藏，替换后纯正文）
+          console.log('[Split] raw=' + String(fullContent || '').length + ' stripped=' + stripped.length + ' body=' + _split.body.length + ' thoughts=' + _split.thoughts.length + '[Split] unclosed?', !!_split.unclosed); var _allThoughts: any[] = []; var _seenThoughts = {} as Record<string, any>; var _addThoughts = function (arr: any) { (arr || []).forEach(function (v: any) { var clean = String(v || '').trim(); if (!clean) return; var key = clean.replace(/\s+/g, ' ').slice(0, 80); if (!_seenThoughts[key]) { _seenThoughts[key] = true; _allThoughts.push(clean); } }); }; _addThoughts(reasoning && reasoning.trim() ? [reasoning] : []); _addThoughts(_streamSplit.thoughts); _addThoughts(_split.thoughts); var _body = (function (t) {var n=0;return normalizeQuotes(t.replace(/——/g,function () {return++n<=3?'——':'—'}));})(_split.body).replace(/<details\b([^>]*)>[\s\S]*?<\/details>/gi, function (m, attrs: any) { return /class\s*=\s*["'][^"']*cot-thinking/i.test(attrs) ? m : ''; }).replace(/<Anti-Omniscience>[\s\S]*?<\/Anti-Omniscience>/gi,'').replace(/<\/?(bginfor|catsay|CEstuff|CE[A-Za-z]*|subtext|radio|url|end)[^>]*>/gi,'')
+// [SETTING_DELTA] 提议块：流式侧本来就不上屏（editor 的状态机过滤器），完成态也必须剥掉——
+// 否则两边的正文不一致，流式提交时会以完成态重建、把已经藏掉的块又贴回正文（设定同步已下线，
+// 这里纯属兜底：模型自发写这种块时同样不该进正文）。
+.replace(DELTA_BLOCK_RE_G, '').replace(DELTA_TAG_RE_G, '').replace(/\n{3,}/g,'\n\n').replace(/(?<!\n)\n(?!\n)/g,'\n\n').trim(); const _deepThinkOn = App.thinkingLevel() !== 'off'; // 思考强度：仅 off 时结束端不渲染思维链（流式思考框已由 editor 隐藏，替换后纯正文）
                   const processed = (_deepThinkOn ? _buildThinkingHtml(_allThoughts, _esc2) : '') + _body; if (_streaming) EditorManager.finishStreaming(processed); else EditorManager.insertAtCursor(processed); _notifyUnclosedThink(_split); App.saveCurrentChapter(); App._uploadAdminTrace(_body); console.log('[Generate] Content saved. Editor length:', EditorManager.getContent().replace(/<[^>]*>/g, '').length, 'chars'); statusEl!.textContent = '生成完成！'; const _rawLen = String(fullContent || '').replace(/\s/g, '').length; const _wordCount = processed.replace(/\s/g, '').length; console.log('[Token] 原始输出:', _rawLen, '字符 | 处理后:', _wordCount, '字符 | API tokens:', (APIHandler._apiCalls.filter(c=>c.label==='generate').slice(-1)[0]?.completionTokens || '?')); UsageStats.endSession(_wordCount); (async () => {
             // 记忆数据库填表：每次生成后额外调用一次 API（fire-and-forget，不阻塞）
             if (typeof DatabaseManager !== 'undefined' && DatabaseManager.isEnabled()) {
@@ -2807,16 +2812,11 @@ const stripped = _preProcessed.replace(/^#{1,3}\s+.*(\n|$)/gm, '').trim(); var _
         const _newPreset = { id: newId, name: finalName, systemPromptId: p.systemPromptId || null, isDefault: false, createdAt: Date.now() };
         // 采样参数跟随预设（酒馆语义：切预设就换温度/top_p/惩罚/思考强度）：
         // 导入时把预设自带的取样参数存进预设，请求时由 PresetManager.getEffectiveAPIConfig()
-        // 覆盖全局配置。max_tokens 不跟（本软件按端点能接受的最大值发，防预设值把长思考截断）。
+        // 覆盖全局配置。只收 JSON 里真的有的字段（原生预设读顶层 sampler，酒馆预设读原始字段；
+        // 不能用 parseSampler 的结果——它给缺失字段填默认值，会凭空覆盖用户的全局设置）。
+        // max_tokens 不跟（本软件按端点能接受的最大值发，防预设值把长思考截断）。
         {
-          const _s: any = {};
-          const _num = function (v: any) { const n = parseFloat(String(v)); return isFinite(n) ? n : null; };
-          const _t = _num(cfg.temperature); if (_t !== null) _s.temperature = _t;
-          const _tp = _num((cfg as any).topP != null ? (cfg as any).topP : (cfg as any).top_p); if (_tp !== null) _s.topP = _tp;
-          const _pp = _num((cfg as any).presencePenalty != null ? (cfg as any).presencePenalty : (cfg as any).presence_penalty); if (_pp !== null) _s.presencePenalty = _pp;
-          const _fp = _num((cfg as any).frequencyPenalty != null ? (cfg as any).frequencyPenalty : (cfg as any).frequency_penalty); if (_fp !== null) _s.frequencyPenalty = _fp;
-          const _lv = stReasoningToLevel((p as any).reasoning_effort != null ? (p as any).reasoning_effort : (cfg as any).reasoning_effort);
-          if (_lv) _s.reasoningEffort = _lv;
+          const _s = samplerFromJson(p);
           if (Object.keys(_s).length > 0) (_newPreset as any).sampler = _s;
         }
         // 原生预设格式：预设自带文本正则（regexScripts）跟随预设，切换预设时自动生效

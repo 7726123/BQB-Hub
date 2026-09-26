@@ -720,7 +720,9 @@ export const EditorManager = {
     // 宁可思维链外露也绝不丢正文。用 html 正文与 sink 现有文本比较，缺失才补，
     // 避免「sink 已有完整正文」时重复拼接。
     const thinkPart = String(html || '').match(/<details class="cot-thinking"[\s\S]*?<\/details>/);
-    const bodyText = String(html || '').replace(/<details class="cot-thinking"[\s\S]*?<\/details>/g, '').replace(/<br\s*\/?>/g, '\n').replace(/<[^>]*>/g, '');
+    // 完成态正文：去掉思考块后的 HTML（需要重建 sink 时用它）与纯文本（比对用）
+    const bodyHtml = String(html || '').replace(/<details class="cot-thinking"[\s\S]*?<\/details>/g, '');
+    const bodyText = bodyHtml.replace(/<br\s*\/?>/g, '\n').replace(/<[^>]*>/g, '');
     if (thinkBox) {
       if (thinkPart) {
         thinkBox.innerHTML = thinkPart[0];
@@ -760,6 +762,17 @@ export const EditorManager = {
           }
           const _tail = rawCut >= 0 ? bodyText.slice(rawCut) : '';
           if (_tail.trim()) sink.appendChild(document.createTextNode(_tail));
+        } else if (wantText !== curText) {
+          // 流式正文与完成态正文**实质不同**（既不是缺尾、也不是引号/空白差异）：
+          // 说明完成态被改写过——预设文本正则（如"剥掉 <dream_body> 外壳"）、标签清洗等。
+          // 旧实现只"补缺不重写"：sink 里的流式原文会原地留下，改写在流式模式下永远看不到
+          // （预设正则看起来完全没生效，2026-09-26 实测）。这里以完成态为准重建正文。
+          while (sink.firstChild) sink.removeChild(sink.firstChild);
+          const _div = document.createElement('div');
+          _div.innerHTML = bodyHtml;
+          while (_div.firstChild) sink.appendChild(_div.firstChild);
+          console.log('[Editor] 完成态正文与流式正文不同 → 以完成态重建（预设正则/正文清洗生效）:',
+            curText.length, '→', wantText.length);
         }
       }
     }
