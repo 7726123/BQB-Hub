@@ -32,17 +32,20 @@ describe('真实模式（real）：模式枚举与门控', () => {
     expect(moduleAppliesTo({ mode: 'real' }, 'real')).toBe(true);
     expect(moduleAppliesTo({ mode: 'real' }, 'novel')).toBe(false);
     expect(moduleAppliesTo({ mode: 'real' }, 'chat')).toBe(false);
-    // both（含缺省）对所有模式生效
-    for (const mode of ['novel', 'chat', 'real'] as const) {
+    // both（含缺省）对续写/演出生效；**对真实模式不生效**（真实模式只吃显式标了 real 的模块，
+    // 否则导入的小说/群像预设会被整套注进去，把"一轮只扮演一个人"盖掉——2026-09-28 用户实测）
+    for (const mode of ['novel', 'chat'] as const) {
       expect(moduleAppliesTo({ mode: 'both' }, mode)).toBe(true);
       expect(moduleAppliesTo({}, mode)).toBe(true);
     }
+    expect(moduleAppliesTo({ mode: 'both' }, 'real')).toBe(false);
+    expect(moduleAppliesTo({}, 'real')).toBe(false);
     // novel/chat 模块对 real 不生效
     expect(moduleAppliesTo({ mode: 'novel' }, 'real')).toBe(false);
     expect(moduleAppliesTo({ mode: 'chat' }, 'real')).toBe(false);
   });
 
-  it('pickModules(mods, "real")：选出 real + both，按 order 排序，不含 novel/chat', () => {
+  it('pickModules(mods, "real")：只选 mode=real 的（both 不进真实模式），按 order 排序', () => {
     const mods = [
       { id: 'n', enabled: true, content: 'n', mode: 'novel', order: 0 },
       { id: 'r2', enabled: true, content: 'r2', mode: 'real', order: 5 },
@@ -50,7 +53,8 @@ describe('真实模式（real）：模式枚举与门控', () => {
       { id: 'c', enabled: true, content: 'c', mode: 'chat', order: 1 },
       { id: 'off', enabled: false, content: 'off', mode: 'real', order: 3 },   // 关掉的不算
     ];
-    expect(pickModules(mods, 'real').map((m: any) => m.id)).toEqual(['b', 'r2']);
+    expect(pickModules(mods, 'real').map((m: any) => m.id)).toEqual(['r2']);
+    expect(pickModules(mods, 'novel').map((m: any) => m.id)).toEqual(['n', 'b']);   // 续写照旧吃 both
     expect(mods.map((m) => m.id)).toEqual(['n', 'r2', 'b', 'c', 'off']);   // 不改动入参数组
   });
 

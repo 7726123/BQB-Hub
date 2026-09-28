@@ -453,6 +453,10 @@ export function moduleMode(m: any): PresetModuleMode {
 export function moduleSlot(m: any): 'think' | '' { return m && m.slot === 'think' ? 'think' : ''; }
 export function moduleAppliesTo(m: any, mode: PresetMode): boolean {
   const mm = moduleMode(m);
+  // 真实模式**不吃「续写+演出都用」的模块**：它的两张契约由软件给定，只有显式标了「仅真实」的模块才生效。
+  // 不这么切的话，导入的小说/群像预设会被整套注进角色请求里，把"这一轮只扮演一个人"直接盖掉
+  // （用户 2026-09-28 实测：一轮输出里出现了多个角色的内容）。
+  if (mode === 'real') return mm === 'real';
   return mm === 'both' || mm === mode;
 }
 
