@@ -110,6 +110,22 @@ export const RealMode = {
     return out.join('\n\n');
   },
 
+  // ---------- 清空（和对话模式一样的一键清空） ----------
+  clearAll(): void {
+    const go = () => {
+      try { RealState.clearStory(); } catch (e) { /* ignore */ }
+      this._scrollOnce = true;
+      this.render();
+      toast('已清空这本书的真实模式记录');
+    };
+    try {
+      const U = (globalThis as any).UIManager;
+      if (U && typeof U.showConfirm === 'function') {
+        U.showConfirm('清空这本书的真实模式记录与场景？参演名单和你在扮演的角色会保留（世界书不动）。', go);
+      } else go();
+    } catch (e) { go(); }
+  },
+
   // ---------- 本模式的角色清单（输入框上方的「＋ 添加角色」） ----------
   cast(): string[] { return RealState.cast(); },
   removeCast(name: string): void {
@@ -201,6 +217,8 @@ export const RealMode = {
   },
   _renderHead(): void {
     const sc = this.scene();
+    // 下拉的第一项就是「上帝模式」——啥都没选时把它落成真状态，否则下拉看着选中了、一点发送却说"没选角色"
+    try { if (!RealState.isGod() && !this.player()) RealState.setGod(true); } catch (e) { /* ignore */ }
     const head = el('realSceneText');
     if (head) {
       const bits: string[] = [];
@@ -226,14 +244,29 @@ export const RealMode = {
 
   _recordHtml(rec: RealRecord): string {
     const inner = extractBlocks(String(rec.raw || ''), '内心');
-    let body = extractBlocks(inner.rest, '壳').rest.replace(/<\s*私下[^>]*>/gi, '');
+    let body = inner.rest;
+    // 模型漏写 </内心> 闭标记时（实测会遇到）：从开标记起剩下的都算内心，别让标签原样显示在气泡里
+    const openAt = body.search(/<\s*内心\s*>/i);
+    if (openAt >= 0) {
+      inner.blocks.push(body.slice(openAt).replace(/<\s*内心\s*>/i, ''));
+      body = body.slice(0, openAt);
+    }
+    body = extractBlocks(body, '壳').rest.replace(/<\s*私下[^>]*>/gi, '');
     const speaker = String(rec.speaker || '');
     const lines = String(body).split('\n').map(function (l) { return l.trim(); }).filter(Boolean);
     if (!lines.length && !inner.blocks.length) return '';
     let out = '';
     if (!speaker) {
-      const txt = lines.map(function (l) { return l.replace(/^\s*旁白\s*[:：]\s*/, ''); }).join('\n');
-      if (txt.trim()) out += '<div class="chat-narr">' + nl2br(esc(txt)) + '</div>';
+      // 旁白（世界侧叙述）成段显示；公共事件压成一行小字——不然每轮都是一大段"小说体"
+      const narr: string[] = [];
+      const notes: string[] = [];
+      lines.forEach(function (l) {
+        const t = l.replace(/^\s*旁白\s*[:：]\s*/, '');
+        if (/^\s*【公共事件】/.test(t)) notes.push(t.replace(/^\s*【公共事件】\s*/, ''));
+        else narr.push(t);
+      });
+      if (narr.length) out += '<div class="chat-narr">' + nl2br(esc(narr.join('\n'))) + '</div>';
+      if (notes.length) out += '<div class="chat-note">' + nl2br(esc(notes.map(function (n) { return '· ' + n; }).join('\n'))) + '</div>';
       if (inner.blocks.length) out += '<div class="real-inner">' + nl2br(esc(inner.blocks.join('\n'))) + '</div>';
       return out;
     }
@@ -376,7 +409,8 @@ export const RealMode = {
     if (pub.present && pub.present.length) patch.present = pub.present;
     if (Object.keys(patch).length) RealState.setScene(patch);
     if (pub.summary) RealState.setSummary(pub.summary);
-    const body = [pub.narration, pub.events].filter(Boolean).join('\n').trim();
+    const body = [pub.narration, pub.events ? '【公共事件】' + String(pub.events).split('\n').join('\n【公共事件】') : '']
+      .filter(Boolean).join('\n').trim();
     if (body) {
       RealState.append({ kind: 'scene', speaker: '', raw: body, present: (RealState.scene().present || []).slice() });
     }

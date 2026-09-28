@@ -374,6 +374,51 @@ describe('配套接线（用量统计、备份、重置、换书）', () => {
   });
 });
 
+// ---------- 首次进入 / 清空 / 公共事件标记 ----------
+describe('开箱体验（首次进入、清空、公共事件显示）', () => {
+  it('什么都没选时自动落到上帝模式（下拉显示的就是它，点继续不会报"没选角色"）', () => {
+    setupBook();
+    RealState.setPlayer('');
+    RealState.setGod(false);
+    (RealMode as any)._renderHead();
+    expect(RealState.isGod()).toBe(true);
+  });
+
+  it('清空：记录/场景/回忆清掉，参演名单与扮演选择保留（与对话模式的「清空」对齐）', async () => {
+    setupBook();
+    stubAPI([sceneReply({ place: '走廊', narration: '走廊很安静。', next: '旁白' })]);
+    await RealMode._sendText('');
+    expect(RealState.log().length).toBe(1);
+    const castBefore = RealState.cast().length;
+    expect(castBefore).toBeGreaterThan(0);
+    const anyG = globalThis as any;
+    anyG.UIManager = { showConfirm: (_m: string, cb: () => void) => cb() };
+    try { RealMode.clearAll(); } finally { delete anyG.UIManager; }
+    expect(RealState.log().length).toBe(0);
+    expect(RealState.scene().place).toBe('');
+    expect(RealState.cast().length).toBe(castBefore);   // 名单保留
+  });
+
+  it('模型漏写 </内心> 闭标记时：从开标记起算内心，标签不原样显示在气泡里', () => {
+    const html = (RealMode as any)._recordHtml({
+      id: 'x', at: 1, kind: 'npc', speaker: '悠真', raw: '「早。」<内心>她今天怪。', present: [],
+    });
+    expect(html).toContain('real-inner');
+    expect(html).toContain('她今天怪。');
+    expect(html).not.toContain('&lt;内心');
+    expect(html).not.toContain('<内心');
+  });
+
+  it('场记的公共事件带【公共事件】标记（渲染时压成一行小字，不再是一大段小说体）', async () => {
+    setupBook();
+    stubAPI([sceneReply({ events: '窗外下起雨。', narration: '雨点打在窗上。', next: '旁白' })]);
+    await RealMode._sendText('');
+    const rec = RealState.log()[0];
+    expect(rec.raw).toContain('雨点打在窗上。');
+    expect(rec.raw).toContain('【公共事件】窗外下起雨。');
+  });
+});
+
 // ---------- 撤回 ----------
 describe('撤回：回到这一轮之前', () => {
   it('记录 / 场景 / 纪要一起回滚；输入框内容由调用方恢复', async () => {

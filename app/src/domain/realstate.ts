@@ -310,6 +310,18 @@ export const RealState = {
     });
   },
 
+  /** 清空剧情（记录/场景/纪要/回忆/上帝模式），**保留参演名单与扮演选择**——与对话模式的「清空」对齐 */
+  clearStory(): void {
+    this._mutate(function (s) {
+      s.log = [];
+      s.scene = { time: '', place: '', present: [] };
+      s.summary = '';
+      s.memories = {};
+      s.god = false;
+      s.turnSnap = null;
+    });
+  },
+
   /** 当前书的真实模式状态整份清掉（重置本书时调用） */
   reset(bookId?: string): void {
     try {

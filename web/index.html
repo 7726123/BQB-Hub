@@ -251,13 +251,13 @@ label{font-size:13px;color:var(--text-secondary);display:block;margin-bottom:4px
 #writingInput,#chatInput,#realInput{flex:1;background:var(--bg-tertiary);color:var(--text);border:1px solid var(--border);border-radius:14px;padding:11px 14px;font-size:16px;font-family:inherit;line-height:1.5;resize:none;min-height:44px;max-height:calc(5 * 1.5em + 22px);outline:none;box-shadow:inset 0 1px 2px rgba(0,0,0,0.03);transition:all .2s;overflow-y:auto}
 #writingInput:focus,#chatInput:focus,#realInput:focus{background:var(--bg-secondary);border-color:var(--primary);box-shadow:0 0 0 3px var(--primary-light)}
 #writingInput::placeholder,#chatInput::placeholder,#realInput::placeholder{color:var(--text-muted)}
-#writingSendBtn,#writing-input-bar #btnStop,#writing-input-bar #btnUndo,#chatSendBtn,#chat-input-bar #chatStopBtn,#chat-input-bar #chatUndoBtn{width:44px;height:44px;border-radius:12px;border:none;cursor:pointer;flex-shrink:0;display:flex;align-items:center;justify-content:center;transition:all .2s}
-#writingSendBtn,#chatSendBtn{background:var(--primary);color:#fff;box-shadow:0 2px 6px rgba(59,111,224,0.3)}
-#writingSendBtn:hover,#chatSendBtn:hover{background:var(--primary-hover);transform:translateY(-1px);box-shadow:0 4px 10px rgba(59,111,224,0.35)}
-#writingSendBtn:active,#chatSendBtn:active{transform:translateY(0) scale(0.97)}
-#writing-input-bar #btnStop,#chat-input-bar #chatStopBtn{background:#ef4444;color:#fff}
-#writing-input-bar #btnUndo,#chat-input-bar #chatUndoBtn{background:var(--bg-tertiary);color:var(--text-secondary)}
-#writing-input-bar #btnUndo:hover,#chat-input-bar #chatUndoBtn:hover{background:var(--primary-light);color:var(--primary)}
+#writingSendBtn,#writing-input-bar #btnStop,#writing-input-bar #btnUndo,#chatSendBtn,#chat-input-bar #chatStopBtn,#chat-input-bar #chatUndoBtn,#realSendBtn,#real-input-bar #realStopBtn,#real-input-bar #realUndoBtn{width:44px;height:44px;border-radius:12px;border:none;cursor:pointer;flex-shrink:0;display:flex;align-items:center;justify-content:center;transition:all .2s}
+#writingSendBtn,#chatSendBtn,#realSendBtn{background:var(--primary);color:#fff;box-shadow:0 2px 6px rgba(59,111,224,0.3);font-size:12px;padding:0}
+#writingSendBtn:hover,#chatSendBtn:hover,#realSendBtn:hover{background:var(--primary-hover);transform:translateY(-1px);box-shadow:0 4px 10px rgba(59,111,224,0.35)}
+#writingSendBtn:active,#chatSendBtn:active,#realSendBtn:active{transform:translateY(0) scale(0.97)}
+#writing-input-bar #btnStop,#chat-input-bar #chatStopBtn,#real-input-bar #realStopBtn{background:#ef4444;color:#fff;padding:0}
+#writing-input-bar #btnUndo,#chat-input-bar #chatUndoBtn,#real-input-bar #realUndoBtn{background:var(--bg-tertiary);color:var(--text-secondary);padding:0;font-size:16px}
+#writing-input-bar #btnUndo:hover,#chat-input-bar #chatUndoBtn:hover,#real-input-bar #realUndoBtn:hover{background:var(--primary-light);color:var(--primary)}
 
 /* ===== 变量（世界书「变量」条目：一个条目 = 一个变量）=====
    输入栏上侧空白条正中一个素色人字（无边框/无底色/不放按钮外观），点开全屏面板；
@@ -1166,7 +1166,7 @@ label{font-size:13px;color:var(--text-secondary);display:block;margin-bottom:4px
             <span class="nav-label">对话模式</span>
           </button>
           <button class="nav-item nav-sub" data-view="real" title="真实模式：一个场景多个角色，一轮只有一个人说话">
-            <span class="nav-label">真实</span>
+            <span class="nav-label">真实模式</span>
           </button>
         </div>
         <button class="nav-item" data-view="plugins" title="插件">
@@ -1441,6 +1441,7 @@ label{font-size:13px;color:var(--text-secondary);display:block;margin-bottom:4px
           <div id="realSceneBar" style="display:flex;align-items:center;gap:8px;padding:8px 12px;border-bottom:1px solid var(--border);flex-shrink:0;">
             <span id="realSceneText" style="flex:1;min-width:0;font-size:12.5px;color:var(--text-secondary);line-height:1.5;">场景未设定</span>
             <button id="realSceneEditBtn" class="ghost-btn" onclick="RealMode.openScene()" title="编辑场景（时间 / 地点 / 在场）">⚙ 场景</button>
+            <button id="realClearBtn" class="ghost-btn danger" onclick="RealMode.clearAll()" title="清空这本书的真实模式记录与场景（参演名单和扮演的角色保留；世界书不动）">清空</button>
           </div>
           <div id="realStream"></div>
           <!-- 底部输入条：与对话模式同款（左撤回 / 输入框 / 停止 / 发送；空输入时发送按钮显示「▶ 继续」） -->
@@ -1454,10 +1455,10 @@ label{font-size:13px;color:var(--text-secondary);display:block;margin-bottom:4px
               <button id="realAddCharBtn" class="ghost-btn" type="button" onclick="RealMode.openCast()" title="把世界书里的角色加进来">＋ 添加角色</button>
             </div>
             <div id="realInputRow">
-              <button id="realUndoBtn" class="ghost-btn" onclick="RealMode.undoLast()" title="撤回上一轮（输入框里会留下这轮写的内容）">↶ 撤回</button>
+              <button id="realUndoBtn" class="ghost-btn" onclick="RealMode.undoLast()" title="撤回上一轮（输入框里会留下这轮写的内容）">↶</button>
               <textarea id="realInput" rows="1" placeholder="（动作）和台词一起写；留空发送＝让剧情自己走；选「上帝模式」时写的是客观推进" oninput="RealMode.refreshSendLabel()" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();RealMode.send()}"></textarea>
-              <button id="realStopBtn" class="ghost-btn danger" style="display:none;" onclick="RealMode.stop()" title="停止生成">停止</button>
-              <button id="realSendBtn" class="primary" style="height:44px;border-radius:12px;" onclick="RealMode.send()" title="发送">发送</button>
+              <button id="realStopBtn" class="ghost-btn danger" style="display:none;" onclick="RealMode.stop()" title="停止生成">■</button>
+              <button id="realSendBtn" onclick="RealMode.send()" title="发送">发送</button>
             </div>
           </div>
         </div>
