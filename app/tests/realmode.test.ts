@@ -489,6 +489,38 @@ describe('开箱体验（首次进入、清空、公共事件显示）', () => {
   });
 });
 
+// ---------- 契约措辞（用户反馈的三条） ----------
+describe('契约措辞：动作不加主语 / 公共信息如无必要不输出 / 场记思考纪律', () => {
+  it('角色契约：动作不加主语、不写「（我…）」、不写自己的名字（只在提示词层面约束，不硬剥离）', () => {
+    setupBook();
+    const req = RealMode._roleMessagesFor('悠真').map(m => String(m.content)).join('\n');
+    expect(req).toContain('动作、神态**不加主语**');
+    expect(req).toContain('不要写「（我…）」');
+    expect(req).toContain('不要写自己的名字');
+  });
+
+  it('公共契约：公共事件/旁白如无必要不输出，多数轮次只有对话', async () => {
+    setupBook();
+    const calls = stubAPI([sceneReply({ next: '旁白' })]);
+    await RealMode._sendText('');
+    const req = calls[0].msgs.map((m: any) => m.content).join('\n');
+    expect(req).toContain('多数轮次应该只有对话');
+    expect(req).toContain('没有新事实就写「无」');
+    expect(req).toContain('**多数轮次留空**');
+  });
+
+  it('场记的思考纪律钉在最后一条（第 3 条 system 消息）', async () => {
+    setupBook();
+    const calls = stubAPI([sceneReply({ next: '旁白' })]);
+    await RealMode._sendText('');
+    const msgs = calls[0].msgs;
+    expect(msgs.length).toBe(3);
+    expect(String(msgs[2].role)).toBe('system');
+    expect(String(msgs[2].content)).toContain('【思考纪律】');
+    expect(String(msgs[2].content)).toContain('思考几十个字就够');
+  });
+});
+
 // ---------- 撤回 ----------
 describe('撤回：回到这一轮之前', () => {
   it('记录 / 场景 / 纪要一起回滚；输入框内容由调用方恢复', async () => {
