@@ -208,8 +208,29 @@ export interface PublicReply {
   summary?: string; next?: string; heard?: string[]; shell?: RealShell;
 }
 
+const PUBLIC_LABELS = ['时间', '地点', '在场', '公共事件', '旁白', '纪要', '接话', '可感', '壳'];
+
+/**
+ * 读场记那一块。**容错优先**（用户实测"场记经常不按合同回"）：模型不一定规矩地写 `<场记>…</场记>`，
+ * 所以依次认：`<场记 属性>` / 全角＜＞ / 【场记】…【/场记】 / 干脆没有容器（整段按字段标签读，
+ * 至少要认出 2 个字段才认账，免得把闲聊当账本）。
+ */
+function readPublicBlock(raw: string): string {
+  const text = String(raw == null ? '' : raw).replace(/＜/g, '<').replace(/＞/g, '>');
+  const t1 = text.match(/<\s*场记[^>]*>([\s\S]*?)<\s*\/\s*场记\s*>/i);
+  if (t1 && t1[1].trim()) return t1[1];
+  const t2 = text.match(/【\s*场记\s*】([\s\S]*?)【\s*\/\s*场记\s*】/);
+  if (t2 && t2[1].trim()) return t2[1];
+  const t3 = text.match(/\[\s*场记\s*\]([\s\S]*?)\[\s*\/\s*场记\s*\]/);
+  if (t3 && t3[1].trim()) return t3[1];
+  const hits = PUBLIC_LABELS.filter(function (k) {
+    return new RegExp('^\\s*[-*•]?\\s*[（(]?\\s*' + k + '\\s*[）)]?\\s*[:：]', 'm').test(text);
+  });
+  return hits.length >= 2 ? text : '';
+}
+
 export function parsePublicReply(raw: string): PublicReply | null {
-  const block = extractBlocks(raw, '场记').blocks[0];
+  const block = readPublicBlock(raw);
   if (!block || !block.trim()) return null;
   const out: PublicReply = {};
   const time = readField(block, ['时间']); if (time) out.time = time;

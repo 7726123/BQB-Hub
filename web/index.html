@@ -252,11 +252,11 @@ label{font-size:13px;color:var(--text-secondary);display:block;margin-bottom:4px
 #writingInput:focus,#chatInput:focus,#realInput:focus{background:var(--bg-secondary);border-color:var(--primary);box-shadow:0 0 0 3px var(--primary-light)}
 #writingInput::placeholder,#chatInput::placeholder,#realInput::placeholder{color:var(--text-muted)}
 #writingSendBtn,#writing-input-bar #btnStop,#writing-input-bar #btnUndo,#chatSendBtn,#chat-input-bar #chatStopBtn,#chat-input-bar #chatUndoBtn,#realSendBtn,#real-input-bar #realStopBtn,#real-input-bar #realUndoBtn{width:44px;height:44px;border-radius:12px;border:none;cursor:pointer;flex-shrink:0;display:flex;align-items:center;justify-content:center;transition:all .2s}
-#writingSendBtn,#chatSendBtn,#realSendBtn{background:var(--primary);color:#fff;box-shadow:0 2px 6px rgba(59,111,224,0.3);font-size:12px;padding:0}
+#writingSendBtn,#chatSendBtn,#realSendBtn{background:var(--primary);color:#fff;box-shadow:0 2px 6px rgba(59,111,224,0.3)}
 #writingSendBtn:hover,#chatSendBtn:hover,#realSendBtn:hover{background:var(--primary-hover);transform:translateY(-1px);box-shadow:0 4px 10px rgba(59,111,224,0.35)}
 #writingSendBtn:active,#chatSendBtn:active,#realSendBtn:active{transform:translateY(0) scale(0.97)}
-#writing-input-bar #btnStop,#chat-input-bar #chatStopBtn,#real-input-bar #realStopBtn{background:#ef4444;color:#fff;padding:0}
-#writing-input-bar #btnUndo,#chat-input-bar #chatUndoBtn,#real-input-bar #realUndoBtn{background:var(--bg-tertiary);color:var(--text-secondary);padding:0;font-size:16px}
+#writing-input-bar #btnStop,#chat-input-bar #chatStopBtn,#real-input-bar #realStopBtn{background:#ef4444;color:#fff}
+#writing-input-bar #btnUndo,#chat-input-bar #chatUndoBtn,#real-input-bar #realUndoBtn{background:var(--bg-tertiary);color:var(--text-secondary)}
 #writing-input-bar #btnUndo:hover,#chat-input-bar #chatUndoBtn:hover,#real-input-bar #realUndoBtn:hover{background:var(--primary-light);color:var(--primary)}
 
 /* ===== 变量（世界书「变量」条目：一个条目 = 一个变量）=====
@@ -1455,10 +1455,14 @@ label{font-size:13px;color:var(--text-secondary);display:block;margin-bottom:4px
               <button id="realAddCharBtn" class="ghost-btn" type="button" onclick="RealMode.openCast()" title="把世界书里的角色加进来">＋ 添加角色</button>
             </div>
             <div id="realInputRow">
-              <button id="realUndoBtn" class="ghost-btn" onclick="RealMode.undoLast()" title="撤回上一轮（输入框里会留下这轮写的内容）">↶</button>
+              <button id="realUndoBtn" onclick="RealMode.undoLast()" title="撤回上一轮（输入框里会留下这轮写的内容）" style="font-size:22px;">↩</button>
               <textarea id="realInput" rows="1" placeholder="（动作）和台词一起写；留空发送＝让剧情自己走；选「上帝模式」时写的是客观推进" oninput="RealMode.refreshSendLabel()" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();RealMode.send()}"></textarea>
-              <button id="realStopBtn" class="ghost-btn danger" style="display:none;" onclick="RealMode.stop()" title="停止生成">■</button>
-              <button id="realSendBtn" onclick="RealMode.send()" title="发送">发送</button>
+              <button id="realStopBtn" style="display:none;" onclick="RealMode.stop()" title="停止生成">
+                <svg class="ic-20" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+              </button>
+              <button id="realSendBtn" onclick="RealMode.send()" title="发送">
+                <svg class="ic-20 rot-90" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"></path></svg>
+              </button>
             </div>
           </div>
         </div>

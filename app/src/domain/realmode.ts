@@ -240,9 +240,14 @@ export const RealMode = {
     const ta = el('realInput');
     const btn = el('realSendBtn');
     if (!btn) return;
-    if (this._sending) { btn.disabled = true; btn.textContent = '…'; return; }   // 生成中别让它看起来"点了没反应"
+    if (this._sending) { btn.disabled = true; btn.innerHTML = '<span style="font-size:18px;">…</span>'; return; }
     btn.disabled = false;
-    btn.textContent = (ta && String(ta.value || '').trim()) ? '发送' : '▶ 继续';
+    // 图标与对话模式同款：空输入 = 播放三角（继续/推进），有字 = 纸飞机（发送）
+    const empty = !(ta && String(ta.value || '').trim());
+    btn.title = empty ? '继续（让剧情自己走）' : '发送';
+    btn.innerHTML = empty
+      ? '<svg class="ic-20" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 4l14 8-14 8V4z"></path></svg>'
+      : '<svg class="ic-20 rot-90" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"></path></svg>';
   },
   _renderHead(): void {
     const sc = this.scene();
@@ -434,7 +439,24 @@ export const RealMode = {
     this._acc = '';
     if (raw == null) return false;
     const pub = parsePublicReply(raw);
-    if (!pub) { toast('场记没按合同回（这一轮跳过，可以再点一次）'); return false; }
+    if (!pub) {
+      // 场记这次没按格式回：**别整轮作废**——把它的正文当世界侧旁白收下（剥掉标签与字段行），
+      // 剧情照样往前走，用户也能在屏幕上看到它到底写了什么。（太短的（像一句推脱）就直接当失败）
+      const salvaged = String(raw || '')
+        .replace(/<\/?[^>]{1,14}>/g, '')
+        .split('\n')
+        .filter(function (l) { return !/^\s*[-*•]?\s*(时间|地点|在场|公共事件|旁白|纪要|接话|可感|壳)\s*[:：]/.test(l); })
+        .join('\n')
+        .trim();
+      if (salvaged.length >= 24) {
+        RealState.append({ kind: 'scene', speaker: '', raw: salvaged.slice(0, 800) });
+        this._next = '旁白';
+        toast('场记这次没按格式回（已把它写的当旁白收下）');
+        return true;
+      }
+      toast('场记没按合同回（这一轮跳过，可以再点一次）');
+      return false;
+    }
     const patch: any = {};
     if (pub.time) patch.time = pub.time;
     if (pub.place) patch.place = pub.place;

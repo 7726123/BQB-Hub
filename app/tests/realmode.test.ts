@@ -84,6 +84,15 @@ describe('结构化块解析', () => {
     const none = parsePublicReply(sceneReply({ events: '无' }))!;
     expect(none.events).toBeUndefined();
   });
+  it('场记块的容错：带属性的 <场记 …>、全角＜＞、【场记】、没容器但字段齐全，都能读出来', () => {
+    const body = '时间：正午\n地点：走廊\n在场：千纱、悠真\n公共事件：无\n纪要：两人在走廊碰面。\n接话：悠真';
+    expect(parsePublicReply('<场记 说明="账本">\n' + body + '\n</场记>')!.next).toBe('悠真');
+    expect(parsePublicReply('＜场记＞\n' + body + '\n＜/场记＞')!.place).toBe('走廊');
+    expect(parsePublicReply('【场记】\n' + body + '\n【/场记】')!.present).toEqual(['千纱', '悠真']);
+    expect(parsePublicReply(body)!.next).toBe('悠真');                       // 没容器也认（字段 ≥2）
+    expect(parsePublicReply('时间：正午\n随便聊两句。')).toBeNull();           // 只认出一个字段 → 不认账
+  });
+
   it('不是 <场记> 块 → null（不许瞎猜）', () => {
     expect(parsePublicReply('好的，我来当这个场记。')).toBeNull();
   });
@@ -138,7 +147,17 @@ describe('空发送：场记选人 → 角色回应', () => {
     expect(calls[1].opts.callLabel).toBe('real-role');
   });
 
-  it('场记失败 → 这一轮整轮回滚、作者那句放回输入框（不留在记录里等重复）', async () => {
+  it('场记没按格式回但写了一大段 → 当旁白收下（不整轮作废）', async () => {
+    setupBook();
+    stubAPI(['对不起，我来负责记录这一轮的场景与在场情况，但我这次没有按你要求的格式输出，请再试一次试试看。']);
+    await RealMode._sendText('');
+    const log = RealState.log();
+    expect(log.length).toBe(1);
+    expect(log[0].kind).toBe('scene');
+    expect(log[0].raw).toContain('场景与在场');
+  });
+
+  it('场记失败（短推脱）→ 这一轮整轮回滚、作者那句放回输入框（不留在记录里等重复）', async () => {
     setupBook();
     stubAPI(['我不按格式写。']);
     const ta = { value: '' };
