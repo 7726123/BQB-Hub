@@ -26,8 +26,8 @@ export const PUBLIC_SYSTEM =
   '**悄悄话的内容一律不许写进纪要和公共事件**——只写「两人低声交谈了一会儿」这类外部现象）；\n' +
   '3. 判定可感范围：作者这一条如果是悄悄话（只对某个人说），给出「可感」名单和「壳」' +
   '（其他人看到的样子，一句话，**不许泄漏内容**）；不是悄悄话就不写这两行；\n' +
-  '4. 选人：从「在场角色」这份候选名单里挑 0 或 1 个此刻最该接话的角色（名单里有谁就只能选谁）；' +
-  '若此刻只该有时间/环境推进，写「旁白」。\n\n' +
+  '4. 选人：**优先让角色开口**——场合里有人就该有人说话，从「角色名单」里挑 0 或 1 个此刻最该接话的角色' +
+  '（名单里有谁就只能选谁）；只有确实没人可说（纯粹的时间流逝、场景转换）才写「旁白」，**不要连着两轮都写旁白**。\n\n' +
   '只输出下面这一块，不要任何解释或其它文字：\n' +
   '<场记>\n时间：\n地点：\n在场：（顿号分隔）\n' +
   '公共事件：（0–2 条，没有就写「无」；只写任何在场者都能看到/听到的事）\n' +
@@ -52,6 +52,8 @@ export interface PublicCtx {
   roster: { name: string; persona: string }[];
   /** 作者正在扮演的角色：选人时要排除 TA（软件不能替作者说话） */
   player?: string;
+  /** 上一轮只有旁白、没人说话 → 提示场记这一轮让角色开口（别一直推进不对话） */
+  lastWasNarration?: boolean;
 }
 
 export function buildPublicMessages(ctx: PublicCtx): Msg[] {
@@ -65,6 +67,9 @@ export function buildPublicMessages(ctx: PublicCtx): Msg[] {
   lines.push('## 最近发生（按时间先后，越靠后越近）');
   lines.push(String(ctx.recent || '').trim() || '（还没有发生什么）');
   lines.push('## 作者这一次的输入');
+  if (ctx.lastWasNarration) {
+    lines.push('（上一轮只有旁白推进、没有人说话：这一轮请让某个角色开口——除非确实没人可说）');
+  }
   if (ctx.inputKind === 'empty' || !String(ctx.input || '').trim()) {
     lines.push('（作者没有发言：请推进剧情——让时间流逝、环境变化，或让某个角色主动做点什么）');
   } else if (ctx.inputKind === 'narration') {

@@ -35,6 +35,35 @@ function toast(msg: string): void {
   try { (globalThis as any).App?.toast?.(msg); } catch (e) { /* ignore */ }
 }
 
+/**
+ * 把一行拆成「说出口的台词」与「动作/其余」两类片段。
+ * **真实模式不能用对话模式那套说话人启发式**：那边有一条"没有前缀、又像叙述的行 → 判成旁白"的兜底，
+ * 而真实模式一轮就是某一个人的回合——模型用小说体写（无前缀）时，那套兜底会把整轮reply全变成旁白块，
+ * 气泡就没了（实测：say=2 act=3 但 rows=0 bubbles=0 narr=3）。所以这里只认引号。
+ */
+function scanLine(line: string): { type: 'say' | 'act'; text: string }[] {
+  const out: { type: 'say' | 'act'; text: string }[] = [];
+  const re = /「([^」]*)」|『([^』]*)』|“([^”]*)”|"([^"]*)"/g;
+  let i = 0;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(line)) !== null) {
+    if (m.index > i) out.push({ type: 'act', text: line.slice(i, m.index) });
+    out.push({ type: 'say', text: String(m[1] || m[2] || m[3] || m[4] || '') });
+    i = m.index + m[0].length;
+  }
+  if (i < line.length) out.push({ type: 'act', text: line.slice(i) });
+  return out.filter(function (x) { return String(x.text).trim().length > 0; });
+}
+
+function renderBlocks(blocks: { type: 'say' | 'act'; text: string }[]): string {
+  return (blocks || []).map(function (x, i) {
+    const br = i > 0 ? '<br>' : '';
+    return br + (x.type === 'say'
+      ? '<span class="chat-say">' + nl2br(esc(x.text)) + '</span>'
+      : '<span class="chat-act">' + nl2br(esc(x.text)) + '</span>');
+  }).join('');
+}
+
 export const RealMode = {
   _sending: false,
   _acc: '',
@@ -272,35 +301,25 @@ export const RealMode = {
     }
     // 不给每行加「说话人：」前缀——一轮只有一个说话人，用 defaultSpeaker 归属即可；
     // 加前缀的话，模型本来写对的行会变成「悠真：早啊…」把前缀也显示进气泡（页面验收踩到过）。
-    const prefixed = lines.map(function (l) {
-      return /^\s*旁白\s*[:：]/.test(l) ? '白：' + l.replace(/^\s*旁白\s*[:：]\s*/, '') : l;
-    }).join('\n');
-    let bubbles: any[] = [];
-    try { bubbles = parseBubbles(prefixed, { roster: [speaker], defaultSpeaker: speaker } as any) || []; } catch (e) { bubbles = []; }
-    if (!bubbles.length && String(body).trim()) {
-      bubbles = [{ speaker: speaker, known: true, blocks: [{ type: 'say', text: String(body).trim() }] }];
-    }
     const isMe = speaker === this.player();
     const av = this._avatar(speaker);
-    let innerPlaced = false;
-    bubbles.forEach(function (b: any) {
-      const sp = b.speaker === null ? '白' : String(b.speaker || '');
-      const blocks = (b.blocks || []).map(function (x: any, i: number) {
-        const br = i > 0 && (x.nlBefore || x.para) ? '<br>' : '';
-        return br + (x.type === 'say'
-          ? '<span class="chat-say">' + nl2br(esc(x.text)) + '</span>'
-          : '<span class="chat-act">' + nl2br(esc(x.text)) + '</span>');
-      }).join('');
-      if (sp === '白' || sp === '旁白' || sp === '') { out += '<div class="chat-narr">' + blocks + '</div>'; return; }
-      const innerHtml = (inner.blocks.length && !innerPlaced)
-        ? '<div class="real-inner">' + inner.blocks.map(function (x: string) { return nl2br(esc(x)); }).join('<br>') + '</div>'
-        : '';
-      innerPlaced = true;
-      out += '<div class="chat-row' + (isMe ? ' chat-row-me' : '') + '">' + av +
-        '<div class="chat-main"><div class="chat-name">' + esc(sp) + '</div>' +
-        '<div class="chat-bubble">' + blocks + innerHtml + '</div></div></div>';
+    // 一轮就是这个人的：旁白行（明确写「旁白：」的）单独成段，其余整轮算他的气泡（引号内＝台词）
+    const narrLines: string[] = [];
+    const mineLines: string[] = [];
+    lines.forEach(function (l) {
+      if (/^\s*旁白\s*[:：]/.test(l)) narrLines.push(l.replace(/^\s*旁白\s*[:：]\s*/, ''));
+      else mineLines.push(l);
     });
-    if (inner.blocks.length && !innerPlaced) out += '<div class="real-inner">' + nl2br(esc(inner.blocks.join('\n'))) + '</div>';
+    if (narrLines.length) out += '<div class="chat-narr">' + renderBlocks(scanLine(narrLines.join('\n'))) + '</div>';
+    const mineBlocks = scanLine(mineLines.join('\n'));
+    const innerHtml = inner.blocks.length
+      ? '<div class="real-inner">' + inner.blocks.map(function (x: string) { return nl2br(esc(x)); }).join('<br>') + '</div>'
+      : '';
+    if (mineBlocks.length || innerHtml) {
+      out += '<div class="chat-row' + (isMe ? ' chat-row-me' : '') + '">' + av +
+        '<div class="chat-main"><div class="chat-name">' + esc(speaker) + '</div>' +
+        '<div class="chat-bubble">' + renderBlocks(mineBlocks) + innerHtml + '</div></div></div>';
+    }
     return out;
   },
 
@@ -361,7 +380,7 @@ export const RealMode = {
       try {
         A.fetchCompletions(
           msgs,
-          (chunk: string) => { this._status = ''; this._paint(chunk); },
+          (chunk: string) => { if (!this._silent) this._status = ''; this._paint(chunk); },
           (full: string | null) => { const out = (full == null ? this._acc : String(full)); done(out); },
           (err: string) => { this._status = ''; toast('请求失败：' + err); done(null); },
           {
@@ -382,6 +401,15 @@ export const RealMode = {
     });
   },
 
+  /** 上一轮是不是"只有旁白、没人说话"（用来提示场记：这一轮让角色开口，别一直推进） */
+  _lastWasNarration(): boolean {
+    try {
+      const log = RealState.log();
+      const last = log[log.length - 1];
+      return !!(last && last.kind === 'scene' && !last.speaker);
+    } catch (e) { return false; }
+  },
+
   // ---------- 公共调用（场记） ----------
   async _publicCall(text: string): Promise<boolean> {
     const log = RealState.log();
@@ -394,12 +422,16 @@ export const RealMode = {
       inputKind: this._inputKind,
       roster: this._roster(),
       player: this.player(),
+      lastWasNarration: this._lastWasNarration(),
     });
     this._status = '场记整理中…';
     this._streamSpeaker = '';
     this._acc = '';
+    this._silent = true;      // 场记的 <场记> 块是内部账本，不往记录区画（只留状态行）
     this.render();
     const raw = await this._call(msgs, 'real-scene');
+    this._silent = false;
+    this._acc = '';
     if (raw == null) return false;
     const pub = parsePublicReply(raw);
     if (!pub) { toast('场记没按合同回（这一轮跳过，可以再点一次）'); return false; }

@@ -399,6 +399,24 @@ describe('开箱体验（首次进入、清空、公共事件显示）', () => {
     expect(RealState.cast().length).toBe(castBefore);   // 名单保留
   });
 
+  it('模型用小说体写（没有「说话人：」前缀）时，整轮仍是 TA 的气泡，不会判成旁白', () => {
+    const raw = '列车碾过接缝，减速驶入月台。\n悠真站在黄线后，抬手挡住灯光。「来得正好。」\n他歪了歪头。';
+    const html = (RealMode as any)._recordHtml({ id: 'x', at: 1, kind: 'npc', speaker: '悠真', raw, present: [] });
+    expect(html).toContain('chat-row');
+    expect(html).toContain('chat-bubble');
+    expect(html).toContain('chat-say');
+    expect(html).toContain('chat-act');
+    expect(html).not.toContain('chat-narr');        // 没有「旁白：」行 → 不该出现旁白块
+    expect(html).toContain('来得正好。');
+  });
+
+  it('明确写「旁白：」的行才成段显示为旁白', () => {
+    const html = (RealMode as any)._recordHtml({ id: 'y', at: 1, kind: 'npc', speaker: '悠真', raw: '旁白：雨停在窗外。\n「早。」', present: [] });
+    expect(html).toContain('chat-narr');
+    expect(html).toContain('chat-bubble');
+    expect(html).toContain('雨停在窗外。');
+  });
+
   it('模型漏写 </内心> 闭标记时：从开标记起算内心，标签不原样显示在气泡里', () => {
     const html = (RealMode as any)._recordHtml({
       id: 'x', at: 1, kind: 'npc', speaker: '悠真', raw: '「早。」<内心>她今天怪。', present: [],
@@ -407,6 +425,39 @@ describe('开箱体验（首次进入、清空、公共事件显示）', () => {
     expect(html).toContain('她今天怪。');
     expect(html).not.toContain('&lt;内心');
     expect(html).not.toContain('<内心');
+  });
+
+  it('场记那次调用不把 <场记> 块画到记录区（流式期间 _silent 为真）', async () => {
+    setupBook();
+    let silentDuringPub = false;
+    const anyG = globalThis as any;
+    anyG.APIHandler = {
+      fetchCompletions: (msgs: any, onChunk: any, onDone: any, _e: any, opts: any) => {
+        if (opts && opts.callLabel === 'real-scene') silentDuringPub = !!RealMode._silent;
+        const r = opts && opts.callLabel === 'real-scene' ? sceneReply({ next: '旁白' }) : '';
+        try { onChunk(r); } catch (e) { /* ignore */ }
+        onDone(r, false, undefined);
+      },
+      abort: () => { /* noop */ },
+    };
+    await RealMode._sendText('');
+    expect(silentDuringPub).toBe(true);
+    expect(RealMode._silent).toBe(false);
+  });
+
+  it('上一轮只有旁白时，请求里提示"这一轮请让某个角色开口"（别一直推进不对话）', async () => {
+    setupBook();
+    const calls = stubAPI([
+      sceneReply({ next: '旁白', narration: '风从铁轨间掠过。' }),   // 第一轮：只有旁白
+      sceneReply({ next: '悠真' }),                                // 第二轮
+      '悠真：嗯。',
+    ]);
+    await RealMode._sendText('');
+    await RealMode._sendText('');
+    const first = calls[0].msgs.map((m: any) => m.content).join('\n');
+    const second = calls[1].msgs.map((m: any) => m.content).join('\n');   // 第二轮还是场记那次调用
+    expect(first).not.toContain('上一轮只有旁白推进');
+    expect(second).toContain('上一轮只有旁白推进');
   });
 
   it('场记的公共事件带【公共事件】标记（渲染时压成一行小字，不再是一大段小说体）', async () => {
