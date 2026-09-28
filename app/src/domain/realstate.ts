@@ -152,6 +152,60 @@ function newId(): string {
   return 'rr_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 7);
 }
 
+  /** 取出所有 <内心> 块的内容（拼接；给"这一轮我心里想过什么"这类用途） */
+export function innerOf(text: string): string {
+  const s = String(text || '');
+  const blocks = s.match(/<\s*内心\s*>[\s\S]*?<\s*\/\s*内心\s*>/gi) || [];
+  const parts = blocks.map(function (b) {
+    return b.replace(/<\s*\/?\s*内心\s*>/gi, '').trim();
+  }).filter(Boolean);
+  // 模型漏写闭标记时，从开标记起都算内心（与 stripInner 的兜底一致）
+  const openAt = s.search(/<\s*内心\s*>/i);
+  if (openAt >= 0) {
+    const tail = s.slice(openAt).replace(/<\s*\/?\s*内心\s*>/gi, '').trim();
+    if (tail && parts.indexOf(tail) < 0) parts.push(tail);
+  }
+  return parts.join('\n');
+}
+
+/**
+ * 把某个角色的视角拆成两块——**为了 prompt 缓存**（不同角色的共同前缀越长，命中越多）：
+ *   · shared：在场者**人人一致**的部分（公开记录剥掉内心 + 私下记录的壳）→ 可以和其他角色共用同一段前缀；
+ *   · extra ：**只有他**知道的部分（他被点名听到的私下记录原文）。
+ * 顺序上先放 shared 再放 extra：换角色说话时，前面那一大段（共同经历）仍然逐字节相同。
+ */
+export function visibleSplit(log: RealRecord[], name: string): { shared: RealSliceItem[]; extra: RealSliceItem[] } {
+  const shared: RealSliceItem[] = [];
+  const extra: RealSliceItem[] = [];
+  const mineInner: string[] = [];
+  const me = String(name || '');
+  (log || []).forEach(function (r) {
+    if (!r || !Array.isArray(r.present) || r.present.indexOf(me) < 0) return;
+    const heard = Array.isArray(r.heard) ? r.heard : null;
+    if (heard && heard.length > 0) {
+      if (heard.indexOf(me) >= 0) {
+        extra.push({ id: r.id, speaker: r.speaker || '（作者）', text: String(r.raw || ''), degraded: false });
+      } else {
+        const shell = shellText(r.shell);      // 旁人只看到壳（所有旁观者拿到的是同一句）
+        if (shell) shared.push({ id: r.id, speaker: '', text: shell, degraded: true });
+      }
+      return;
+    }
+    // 公开记录：人人同一份（剥掉内心）——这样换角色说话时这段前缀逐字节相同，缓存才命中
+    const text = stripInner(String(r.raw || ''));
+    if (text) shared.push({ id: r.id, speaker: r.speaker || '', text: text, degraded: false });
+    // 我自己那轮想过什么，单独留最近两条（放在 extra，不污染共享块）
+    if (r.speaker === me) {
+      const inner = innerOf(String(r.raw || ''));
+      if (inner) mineInner.push('（我当时心里想的）' + inner.replace(/\s+/g, ' '));
+    }
+  });
+  mineInner.slice(-2).forEach(function (t, i) {
+    extra.push({ id: 'inner' + i, speaker: '', text: t, degraded: false });
+  });
+  return { shared: shared, extra: extra };
+}
+
 export const RealState = {
   _key: 'realState' as string,
 
@@ -342,7 +396,8 @@ export const RealState = {
     this._write(obj as Record<string, RealBookState>);
   },
 
-  /** 该角色的视角切片（他自己能看到、听到的全部） */
+
+/** 该角色的视角切片（他自己能看到、听到的全部） */
   visibleTo(name: string): RealSliceItem[] { return visibleIn(this.state().log, name); },
 
   /** 该角色的私有根记忆（世界书「初始记忆」条目，按绑定认人） */

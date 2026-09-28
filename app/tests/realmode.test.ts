@@ -529,15 +529,41 @@ describe('契约措辞：动作不加主语 / 公共信息如无必要不输出 
     expect(req).toContain('**多数轮次留空**');
   });
 
-  it('场记的思考纪律钉在最后一条（第 3 条 system 消息）', async () => {
+  it('场记的思考纪律在 system 里（固定文案并进系统提示词，便于缓存）', async () => {
     setupBook();
     const calls = stubAPI([sceneReply({ next: '旁白' })]);
     await RealMode._sendText('');
     const msgs = calls[0].msgs;
-    expect(msgs.length).toBe(3);
-    expect(String(msgs[2].role)).toBe('system');
-    expect(String(msgs[2].content)).toContain('【思考纪律】');
-    expect(String(msgs[2].content)).toContain('思考几十个字就够');
+    expect(msgs.length).toBe(2);
+    expect(String(msgs[0].role)).toBe('system');
+    expect(String(msgs[0].content)).toContain('【思考纪律】');
+    expect(String(msgs[0].content)).toContain('思考几十个字就够');
+  });
+
+  it('缓存前缀：不同角色的请求在"共同经历"结束前逐字节相同（换角色也命中缓存）', () => {
+    setupBook();
+    RealState.append({ kind: 'scene', speaker: '', raw: '雨停了。', present: ['千纱', '悠真', '美月'] });
+    RealState.append({ kind: 'npc', speaker: '千纱', raw: '「早。」<内心>别看他。</内心>', present: ['千纱', '悠真', '美月'] });
+    const a = RealMode._roleMessagesFor('悠真').map(m => String(m.content)).join('\n');
+    const b = RealMode._roleMessagesFor('美月').map(m => String(m.content)).join('\n');
+    let i = 0;
+    while (i < a.length && i < b.length && a[i] === b[i]) i++;
+    const cut = a.indexOf('## 你是谁');
+    expect(cut).toBeGreaterThan(300);            // 共同前缀至少包含系统契约 + 共同经历
+    expect(i).toBeGreaterThanOrEqual(cut);       // 两个人在这之前逐字节相同
+    expect(a.slice(0, cut)).toBe(b.slice(0, cut));
+    // 千纱的内心不在共享块里（对谁都不外泄，也不破坏前缀一致性）
+    expect(a.slice(0, cut)).not.toContain('别看他');
+  });
+  it('顺序按缓存前缀排：角色请求里"共同经历"在"你是谁"之前，系统提示词里带固定输出契约', () => {
+    setupBook();
+    RealState.append({ kind: 'scene', speaker: '', raw: '雨停了。', present: ['千纱', '悠真', '美月'] });
+    const msgs = RealMode._roleMessagesFor('悠真');
+    expect(String(msgs[0].content)).toContain('输出要求（固定契约');
+    const user = String(msgs[1].content);
+    expect(user.indexOf('## 共同经历')).toBeGreaterThanOrEqual(0);
+    expect(user.indexOf('## 共同经历')).toBeLessThan(user.indexOf('## 你是谁'));
+    expect(user.indexOf('## 你是谁')).toBeLessThan(user.indexOf('## 当前场景'));
   });
 });
 

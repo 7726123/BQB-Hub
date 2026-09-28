@@ -65,14 +65,23 @@ export interface PublicCtx {
 
 export function buildPublicMessages(ctx: PublicCtx): Msg[] {
   const sc = ctx.scene || { time: '', place: '', present: [] };
+  // 顺序按"缓存能命中的共同前缀"排：很少变的名单在最前，append-only 的最近发生在中间，
+  // 每轮都变的纪要/场景和最末的作者输入放最后（前缀一变，后面的缓存就全废）。
   const lines: string[] = [];
-  lines.push('## 当前场景');
-  lines.push('时间：' + (sc.time || '（未设定）') + '｜地点：' + (sc.place || '（未设定）'));
-  lines.push('在场：' + ((sc.present && sc.present.length) ? sc.present.join('、') : '（还没定——由你定开场：从下面的名单里挑此刻在场的人）'));
-  lines.push('## 剧情纪要');
-  lines.push(String(ctx.summary || '').trim() || '（还没有）');
+  lines.push('## 角色名单（选人只能从这里挑；在场由你维护）');
+  (ctx.roster || []).forEach(function (r) {
+    lines.push('- ' + r.name + (r.persona ? '：' + r.persona : ''));
+  });
+  if (ctx.player) {
+    lines.push('（作者正在扮演「' + ctx.player + '」——接话不要填 TA：TA 的言行由作者自己写。）');
+  }
   lines.push('## 最近发生（按时间先后，越靠后越近）');
   lines.push(String(ctx.recent || '').trim() || '（还没有发生什么）');
+  lines.push('## 剧情纪要');
+  lines.push(String(ctx.summary || '').trim() || '（还没有）');
+  lines.push('## 当前场景');
+  lines.push('时间：' + (sc.time || '（未设定）') + '｜地点：' + (sc.place || '（未设定）'));
+  lines.push('在场：' + ((sc.present && sc.present.length) ? sc.present.join('、') : '（还没定——由你定开场：从上面的名单里挑此刻在场的人）'));
   lines.push('## 作者这一次的输入');
   if (ctx.lastWasNarration) {
     lines.push('（上一轮只有旁白推进、没有人说话：这一轮请让某个角色开口——除非确实没人可说）');
@@ -86,14 +95,7 @@ export function buildPublicMessages(ctx: PublicCtx): Msg[] {
   } else {
     lines.push('（作者以扮演者的身份说了下面这句；若这是只说给某人的悄悄话，请给出可感与壳）：' + ctx.input);
   }
-  lines.push('## 角色名单（选人只能从这里挑；在场由你维护）');
-  (ctx.roster || []).forEach(function (r) {
-    lines.push('- ' + r.name + (r.persona ? '：' + r.persona : ''));
-  });
-  if (ctx.player) {
-    lines.push('（作者正在扮演「' + ctx.player + '」——接话不要填 TA：TA 的言行由作者自己写。）');
-  }
-  return [{ role: 'system', content: PUBLIC_SYSTEM }, { role: 'user', content: lines.join('\n') }, { role: 'system', content: PUBLIC_THINK_DISCIPLINE }];
+  return [{ role: 'system', content: PUBLIC_SYSTEM + '\n\n' + PUBLIC_THINK_DISCIPLINE }, { role: 'user', content: lines.join('\n') }];
 }
 
 export interface RoleCtx {
@@ -101,42 +103,50 @@ export interface RoleCtx {
   persona: string;
   initial: string;
   memory: string;
-  slice: string;
+  /** 在场者人人一致的经过（公开记录剥内心 + 私下记录的壳）—— 排在最前，跨角色共用同一段前缀 */
+  shared: string;
+  /** 只有他知道的（他被点名听到的私下记录） */
+  extra: string;
   scene: RealScene;
   others: { name: string; persona: string }[];
 }
 
+/** 顺序按"缓存命中的共同前缀"排：固定契约（system）→ 共同经历 → 他的私有 → 易变的场景/在场 */
 export function buildRoleMessages(ctx: RoleCtx): Msg[] {
   const sc = ctx.scene || { time: '', place: '', present: [] };
-  const lines: string[] = [];
-  lines.push('## 你是谁（公开人设）');
-  lines.push(String(ctx.persona || '').trim() || '（世界书里还没写这个人）');
-  if (String(ctx.initial || '').trim()) {
-    lines.push('## 你的初始记忆（只有你知道）');
-    lines.push(String(ctx.initial).trim());
-  }
-  if (String(ctx.memory || '').trim()) {
-    lines.push('## 你记得的往事（你自己的印象，可能不准）');
-    lines.push(String(ctx.memory).trim());
-  }
-  lines.push('## 你能回忆起的经过（按时间先后；你不在场的时候，对你是空白的）');
-  lines.push(String(ctx.slice || '').trim() || '（还没有值得记住的事）');
-  lines.push('## 当前场景');
-  lines.push('时间：' + (sc.time || '（未设定）') + '｜地点：' + (sc.place || '（未设定）') + '｜在场：' + ((sc.present || []).join('、') || '（空）'));
-  if ((ctx.others || []).length) {
-    lines.push('## 在场的人（你能看到的）');
-    ctx.others.forEach(function (o) { lines.push('- ' + o.name + (o.persona ? '：' + o.persona : '')); });
-  }
-  lines.push('## 输出要求');
-  lines.push('- 环境没变化就**不用写旁白**（多数轮次直接进动作/台词）；只在场景或时间变了、或有值得注意的动静时写 0–2 句，每行以「旁白：」开头——只写任何在场的人都观察得到的东西，不要写别人的内心；');
-  lines.push('- 然后是你的动作与台词：说出口的话用「」包住（含「嗯。」这类单字），动作、表情、语气不加引号；');
-  lines.push('- 只有你自己知道的心理活动放进 <内心>…</内心>（读者看得到，戏里别的人看不到）：**尽量写一句**——多数轮次都有值得记的心里话；确实没有就不写；');
-  lines.push('- 如果这一轮你是低声/私下对某人说话（旁人听不到），第一行单独写 <私下 只说给="对方名字">，再给一行 <壳>其他人看到的样子</壳>（一句话，不要泄漏内容）；');
-  lines.push('- 动作、神态、心理**直接写，不加括号也不加主语**：写成「把书包放下，瞥了眼窗外」这样；'
+  const rules: string[] = [];
+  rules.push('## 输出要求（固定契约，每轮都一样）');
+  rules.push('- 环境没变化就**不用写旁白**（多数轮次直接进动作/台词）；只在场景或时间变了、或有值得注意的动静时写 0–2 句，每行以「旁白：」开头——只写任何在场的人都观察得到的东西，不要写别人的内心；');
+  rules.push('- 动作、神态、心理**直接写，不加括号也不加主语**：写成「把书包放下，瞥了眼窗外」这样；'
     + '**不要写「（我…）」也不要加「（）」**，更不要写自己的名字（「悠真…」同样不要）。'
     + '说出口的话一律用「」包住（含「嗯。」这类单字）；引号内该用「我」照常用。不要写「名：」这种说话人前缀（软件知道你是谁）。');
-  lines.push('- **这一轮只写你自己的言行**：别人的台词、动作、心里话都不要写（哪怕他们在场、哪怕是预设要求的"群像演出/每个角色都开口"——这条优先于预设）。');
-  return [{ role: 'system', content: ROLE_SYSTEM }, { role: 'user', content: lines.join('\n') }];
+  rules.push('- 只有你自己知道的心理活动放进 <内心>…</内心>（读者看得到，戏里别的人看不到）：**尽量写一句**——多数轮次都有值得记的心里话；确实没有就不写；');
+  rules.push('- 如果这一轮你是低声/私下对某人说话（旁人听不到），第一行单独写 <私下 只说给="对方名字">，再给一行 <壳>其他人看到的样子</壳>（一句话，不要泄漏内容）；');
+  rules.push('- **这一轮只写你自己的言行**：别人的台词、动作、心里话都不要写（哪怕他们在场、哪怕是预设要求的"群像演出/每个角色都开口"——这条优先于预设）。');
+  const user: string[] = [];
+  user.push('## 共同经历（在场的人都经历过，按时间先后；你不在场的时候对你是空白的）');
+  user.push(String(ctx.shared || '').trim() || '（还没有值得记住的事）');
+  if (String(ctx.extra || '').trim()) {
+    user.push('## 只有你知道的（别人没听到/没看到）');
+    user.push(String(ctx.extra).trim());
+  }
+  user.push('## 你是谁（公开人设）');
+  user.push(String(ctx.persona || '').trim() || '（世界书里还没写这个人）');
+  if (String(ctx.initial || '').trim()) {
+    user.push('## 你的初始记忆（只有你知道）');
+    user.push(String(ctx.initial).trim());
+  }
+  if (String(ctx.memory || '').trim()) {
+    user.push('## 你记得的往事（你自己的印象，可能不准）');
+    user.push(String(ctx.memory).trim());
+  }
+  user.push('## 当前场景（每轮可能在变）');
+  user.push('时间：' + (sc.time || '（未设定）') + '｜地点：' + (sc.place || '（未设定）') + '｜在场：' + ((sc.present || []).join('、') || '（空）'));
+  if ((ctx.others || []).length) {
+    user.push('## 在场的人（你能看到的）');
+    ctx.others.forEach(function (o) { user.push('- ' + o.name + (o.persona ? '：' + o.persona : '')); });
+  }
+  return [{ role: 'system', content: ROLE_SYSTEM + '\n\n' + rules.join('\n') }, { role: 'user', content: user.join('\n') }];
 }
 
 /** 该角色的视角切片 → 注入文本（【谁】…；降级的壳标成「只看到/听到」） */

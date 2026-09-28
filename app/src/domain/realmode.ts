@@ -3,7 +3,7 @@
 //       ② 角色调用（本轮唯一说话人：只看自己可感的材料）
 // 单角色不变量：私有材料只出现在同一个角色的那一次请求里（回归守卫见 app/tests/realmode.test.ts）。
 // 界面元素由 web/index.html 的 #tab-real 提供（id 固定，见 app/tests/realmode-view.test.ts）。
-import { RealState } from './realstate';
+import { RealState, visibleSplit } from './realstate';
 import type { RealRecord, RealScene } from './realstate';
 import {
   buildPublicMessages, buildRoleMessages, buildMemoryMessages, cleanMemory,
@@ -543,12 +543,20 @@ export const RealMode = {
   _roleMessagesFor(name: string): Msg[] {
     const mem = RealState.memoryOf(name);
     const init = RealState.initialMemory(name);
+    let shared = '';
+    let extra = '';
+    try {
+      const sp = visibleSplit(RealState.log(), name);
+      shared = formatSlice(sp.shared.slice(-MAX_SLICE));
+      extra = formatSlice(sp.extra.slice(-12));
+    } catch (e) { /* ignore */ }
     const msgs = buildRoleMessages({
       name: name,
       persona: this._persona(name),
       initial: init ? init.text : '',
       memory: mem ? mem.text : '',
-      slice: formatSlice(RealState.visibleTo(name).slice(-MAX_SLICE)),
+      shared: shared,
+      extra: extra,
       scene: Object.assign({}, this.scene(), { present: this._presentList() }),
       others: this._others(name),
     });
