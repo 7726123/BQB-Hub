@@ -274,7 +274,7 @@ describe('压缩回忆：超窗口先把较早的部分折成"自己的回忆"�
 
 // ---------- 角色清单与下拉（这个模式没有固定扮演者） ----------
 describe('角色清单与「上帝模式」下拉', () => {
-  it('清单空时用在场名单种一次；之后加/移除由用户管（移除不会被自动加回来）', async () => {
+  it('参演名单用世界书的角色条目种一次；之后加/移除由用户管（移除不会被自动加回来）', async () => {
     setupBook();
     stubAPI([sceneReply({ next: '旁白' })]);
     await RealMode._sendText('');
@@ -283,6 +283,21 @@ describe('角色清单与「上帝模式」下拉', () => {
     expect(RealState.cast()).toEqual(['千纱', '悠真']);
     RealMode.render();
     expect(RealState.cast()).toEqual(['千纱', '悠真']);
+  });
+
+  it('开局不用先配场景：在场空着也能发送，场记请求里写明「由你定开场」，角色请求的在场名单回退到名单', async () => {
+    setupBook();
+    RealState.setScene({ time: '', place: '', present: [] });   // 用户什么都没设
+    const calls = stubAPI([sceneReply({ next: '悠真', present: '千纱、悠真' }), '悠真：早。']);
+    await RealMode._sendText('');
+    const pubReq = calls[0].msgs.map((m: any) => m.content).join('\n');
+    expect(pubReq).toContain('由你定开场');
+    expect(pubReq).toContain('## 角色名单');
+    expect(pubReq).toContain('- 悠真');
+    // 场记回填了在场 → 记录与后续都用它
+    expect(RealState.scene().present).toEqual(['千纱', '悠真']);
+    const roleReq = calls[1].msgs.map((m: any) => m.content).join('\n');
+    expect(roleReq).toContain('在场：千纱、悠真');
   });
 
   it('下拉切换：选角色退出上帝模式；选上帝模式清掉扮演者', () => {

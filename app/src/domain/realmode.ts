@@ -62,19 +62,22 @@ export const RealMode = {
     const e = this._entries().find(function (x: any) { return x && x.type === '角色' && String(x.name || '') === String(name || ''); });
     return e ? String(e.content || '') : '';
   },
-  /** 选人候选：在场角色里**排除作者正在扮演的那个**（软件不能替作者说话） */
+  /** 选人候选 = 本模式角色清单（排除作者正在扮演的那个）——在场由场记维护，不是候选的来源 */
   _roster(): { name: string; persona: string }[] {
-    const sc = this.scene();
     const me = this.player();
-    return (sc.present || []).filter(function (n: string) { return n !== me; })
+    return this.cast().filter(function (n: string) { return n !== me; })
       .map((n: string) => ({ name: n, persona: this._persona(n).replace(/\s+/g, ' ').slice(0, 60) }));
+  },
+  /** 有效在场名单：场景定过就用它；还没定（开局）用角色清单兜底，免得提示词里写「在场：（空）」 */
+  _presentList(): string[] {
+    const sc = this.scene();
+    if (sc.present && sc.present.length) return sc.present.slice();
+    return this.cast().slice(0, 12);
   },
   _others(name: string): { name: string; persona: string }[] {
-    const sc = this.scene();
-    return (sc.present || []).filter(function (n: string) { return n !== name; })
+    return this._presentList().filter(function (n: string) { return n !== name; })
       .map((n: string) => ({ name: n, persona: this._persona(n).replace(/\s+/g, ' ').slice(0, 60) }));
   },
-
   // ---------- 场景 / 扮演者 ----------
   scene(): RealScene { return RealState.scene(); },
   sceneInfo(): RealScene { return RealState.scene(); },
@@ -131,11 +134,14 @@ export const RealMode = {
     this._renderCastModal();
     try { (globalThis as any).UIManager?.showModal?.('modalRealCast'); } catch (e) { toast('弹窗打不开'); }
   },
-  /** 只在还没建过清单时用在场名单种一次——之后由用户自己管，免得"移除"被自动加回来 */
-  _ensureCast(names: string[]): void {
+  /** 只在还没种过时，用"世界书里所有「角色」条目"种一次参演名单——这样点「继续」就能开局，不用先配场景 */
+  _ensureCast(): void {
     try {
-      if (RealState.cast().length) return;
-      (names || []).forEach((n: string) => { if (n) RealState.addCast(n); });
+      if (RealState.castSeeded()) return;
+      RealState.setCastSeeded(true);
+      this._entries().filter(function (e: any) {
+        return e && e.type === '角色' && String(e.name || '').trim();
+      }).forEach((e: any) => RealState.addCast(String(e.name)));
     } catch (e) { /* ignore */ }
   },
   _renderCastModal(): void {
@@ -203,8 +209,8 @@ export const RealMode = {
       bits.push((sc.present && sc.present.length) ? '在场：' + sc.present.join('、') : '（在场未设定）');
       head.textContent = bits.join(' · ');
     }
-    // 在场的人先自动进"本模式角色"清单一次（之后这份清单由用户用「＋ 添加角色」自己管）
-    this._ensureCast(sc.present || []);
+    // 参演名单只种一次（世界书里的角色条目）；在场由场记维护，不在这里碰
+    this._ensureCast();
     const sel = el('realSpeakerSel');
     if (sel) {
       const cur = this.selected();
@@ -282,7 +288,7 @@ export const RealMode = {
     const log = RealState.log();
     let html = '';
     if (!log.length) {
-      html = '<div class="chat-note">还没有开局：先在「⚙ 场景」里设定时间/地点/在场，再点「▶ 继续」让剧情开始。</div>';
+      html = '<div class="chat-note">还没有开局：直接点「▶ 继续」，场记会自己定开场（时间、地点、在场）；也可以在输入框上方选个角色先开口。</div>';
     } else {
       log.forEach((r: RealRecord) => { html += this._recordHtml(r); });
     }
@@ -439,7 +445,7 @@ export const RealMode = {
       initial: init ? init.text : '',
       memory: mem ? mem.text : '',
       slice: formatSlice(RealState.visibleTo(name).slice(-MAX_SLICE)),
-      scene: this.scene(),
+      scene: Object.assign({}, this.scene(), { present: this._presentList() }),
       others: this._others(name),
     });
     const sys = this._presetSystem();
@@ -486,13 +492,10 @@ export const RealMode = {
   async _sendText(text: string): Promise<void> {
     if (this._sending) return;
     if (!this.bookId()) { toast('请先选择一本书'); return; }
+    this._ensureCast();                       // 第一次发送时把参演名单种上（不能只依赖渲染）
     const ta = el('realInput');
     const sc = this.scene();
-    if (!sc.present || !sc.present.length) {
-      toast('先在「⚙ 场景」里设定在场角色');
-      this.openScene();
-      return;
-    }
+    if (!this.cast().length) { toast('这本书的世界书里还没有「角色」条目：先在世界书页加人，或用「＋ 添加角色」加进来'); return; }
     if (!RealState.isGod() && !this.player()) { toast('先在输入框上方选一个角色，或选「上帝模式」'); return; }
     this._sending = true;
     this._reasonChars = 0;

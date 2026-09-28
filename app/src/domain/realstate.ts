@@ -41,6 +41,8 @@ export interface RealBookState {
   cast: string[];
   /** 上帝模式：这一轮不替任何人说话，只推进剧情（与 player 互斥） */
   god: boolean;
+  /** 角色清单是否已经自动种过（只种一次，之后由用户用「＋/移除」自己管，免得移除的又被加回来） */
+  castSeeded?: boolean;
   /** 公共纪要（公共调用每轮顺手维护；真实模式的长期上下文靠它 + 各角色的压缩回忆） */
   summary: string;
   log: RealRecord[];
@@ -140,6 +142,7 @@ function normalize(s: RealBookState): RealBookState {
   if (typeof s.player !== 'string') s.player = '';
   if (!Array.isArray(s.cast)) s.cast = [];
   if (typeof s.god !== 'boolean') s.god = false;
+  if (typeof s.castSeeded !== 'boolean') s.castSeeded = false;
   if (typeof s.summary !== 'string') s.summary = '';
   if (!s.version) s.version = STATE_VERSION;
   return s;
@@ -229,6 +232,9 @@ export const RealState = {
 
   /** 上帝模式：不替任何人说话，只推进剧情 */
   isGod(): boolean { return !!this.state().god; },
+  /** 角色清单是否自动种过（只种一次） */
+  castSeeded(): boolean { return !!this.state().castSeeded; },
+  setCastSeeded(on: boolean): void { this._mutate(function (s) { s.castSeeded = !!on; }); },
   setGod(on: boolean): void {
     this._mutate(function (s) {
       s.god = !!on;

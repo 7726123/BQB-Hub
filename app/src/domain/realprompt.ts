@@ -20,7 +20,8 @@ export const PUBLIC_SYSTEM =
   '**不要写任何角色的台词、动作或内心**：\n' +
   '1. 维护公共事实：时间、地点、在场名单（谁进场、谁离场）、在场所有人都能看到的事件。' +
   '**只写新增的公共事实**（时间流逝、环境变化、大家都看得到的动静）；' +
-  '**不要复述角色刚说过的话或刚做过的动作**（软件已经记进去了），也不要原样重复作者的旁白；\n' +
+  '**不要复述角色刚说过的话或刚做过的动作**（软件已经记进去了），也不要原样重复作者的旁白；' +
+  '**开场（在场还空着）由你定**：自己定时间、地点、先在场的人，从名单里挑，不要问作者要设定；\n' +
   '2. 维护纪要：把刚发生的事并进「剧情纪要」（≤300 字，只写客观发生了什么；' +
   '**悄悄话的内容一律不许写进纪要和公共事件**——只写「两人低声交谈了一会儿」这类外部现象）；\n' +
   '3. 判定可感范围：作者这一条如果是悄悄话（只对某个人说），给出「可感」名单和「壳」' +
@@ -58,7 +59,7 @@ export function buildPublicMessages(ctx: PublicCtx): Msg[] {
   const lines: string[] = [];
   lines.push('## 当前场景');
   lines.push('时间：' + (sc.time || '（未设定）') + '｜地点：' + (sc.place || '（未设定）'));
-  lines.push('在场：' + ((sc.present && sc.present.length) ? sc.present.join('、') : '（空）'));
+  lines.push('在场：' + ((sc.present && sc.present.length) ? sc.present.join('、') : '（还没定——由你定开场：从下面的名单里挑此刻在场的人）'));
   lines.push('## 剧情纪要');
   lines.push(String(ctx.summary || '').trim() || '（还没有）');
   lines.push('## 最近发生（按时间先后，越靠后越近）');
@@ -73,7 +74,7 @@ export function buildPublicMessages(ctx: PublicCtx): Msg[] {
   } else {
     lines.push('（作者以扮演者的身份说了下面这句；若这是只说给某人的悄悄话，请给出可感与壳）：' + ctx.input);
   }
-  lines.push('## 在场角色（选人只能从这里挑）');
+  lines.push('## 角色名单（选人只能从这里挑；在场由你维护）');
   (ctx.roster || []).forEach(function (r) {
     lines.push('- ' + r.name + (r.persona ? '：' + r.persona : ''));
   });
