@@ -41,6 +41,18 @@ function toast(msg: string): void {
  * 而真实模式一轮就是某一个人的回合——模型用小说体写（无前缀）时，那套兜底会把整轮reply全变成旁白块，
  * 气泡就没了（实测：say=2 act=3 但 rows=0 bubbles=0 narr=3）。所以这里只认引号。
  */
+/** 去掉一层包裹：对话模式的气泡也是这么做的——引号/括号只是分隔符，不上屏（内容一字不动） */
+function unquote(text: string): string {
+  let t = String(text).trim();
+  let m = t.match(/^[（(]([\s\S]*)[）)]$/);
+  if (m) t = m[1].trim();
+  m = t.match(/^\*([\s\S]*)\*$/);
+  if (m) t = m[1].trim();
+  m = t.match(/^[「『“"]([\s\S]*)[」』”"]$/);
+  if (m) t = m[1].trim();
+  return t;
+}
+
 function scanLine(line: string): { type: 'say' | 'act'; text: string }[] {
   const out: { type: 'say' | 'act'; text: string }[] = [];
   const re = /「([^」]*)」|『([^』]*)』|“([^”]*)”|"([^"]*)"/g;
@@ -52,7 +64,9 @@ function scanLine(line: string): { type: 'say' | 'act'; text: string }[] {
     i = m.index + m[0].length;
   }
   if (i < line.length) out.push({ type: 'act', text: line.slice(i) });
-  return out.filter(function (x) { return String(x.text).trim().length > 0; });
+  return out
+    .map(function (x) { return { type: x.type, text: unquote(x.text) }; })
+    .filter(function (x) { return String(x.text).trim().length > 0; });
 }
 
 function renderBlocks(blocks: { type: 'say' | 'act'; text: string }[]): string {
@@ -329,13 +343,15 @@ export const RealMode = {
   },
 
   _avatar(name: string): string {
+    // 点头像 = 打开角色简介（和对话模式同一个弹窗：世界书条目 + 就地换头像）
+    const click = ' onclick="ChatMode.openProfile(\'' + esc(String(name || '').replace(/'/g, '')) + '\')"';
     try {
       const C = (globalThis as any).ChatMode;
       const av = (C && typeof C.avatar === 'function') ? C.avatar(name) : null;
-      if (av && av.src) return '<img class="chat-av" src="' + esc(av.src) + '" alt="">';
-      if (av) return '<div class="chat-av chat-av-txt" style="background:' + esc(av.color || '#8b8b8b') + '">' + esc(av.initial || '') + '</div>';
+      if (av && av.src) return '<img class="chat-av" src="' + esc(av.src) + '"' + click + ' alt="">';
+      if (av) return '<div class="chat-av chat-av-txt" style="background:' + esc(av.color || '#8b8b8b') + '"' + click + '>' + esc(av.initial || '') + '</div>';
     } catch (e) { /* ignore */ }
-    return '<div class="chat-av chat-av-txt" style="background:#8b8b8b">' + esc(String(name || '?').slice(0, 1)) + '</div>';
+    return '<div class="chat-av chat-av-txt" style="background:#8b8b8b"' + click + '>' + esc(String(name || '?').slice(0, 1)) + '</div>';
   },
 
   render(): void {

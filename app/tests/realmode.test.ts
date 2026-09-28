@@ -494,9 +494,29 @@ describe('契约措辞：动作不加主语 / 公共信息如无必要不输出 
   it('角色契约：动作不加主语、不写「（我…）」、不写自己的名字（只在提示词层面约束，不硬剥离）', () => {
     setupBook();
     const req = RealMode._roleMessagesFor('悠真').map(m => String(m.content)).join('\n');
-    expect(req).toContain('动作、神态**不加主语**');
-    expect(req).toContain('不要写「（我…）」');
+    expect(req).toContain('直接写，不加括号也不加主语');
+    expect(req).toContain('不要写「（我…）」也不要加「（）」');
     expect(req).toContain('不要写自己的名字');
+  });
+
+  it('渲染对齐对话模式：引号和括号只是分隔符，不上屏（内容一字不动）', () => {
+    const html = (RealMode as any)._recordHtml({
+      id: 'z', at: 1, kind: 'npc', speaker: '悠真',
+      raw: '（把书包放下，凑近千纱）「早啊。」\n*托着下巴*', present: [],
+    });
+    expect(html).toContain('<span class="chat-act">把书包放下，凑近千纱</span>');
+    expect(html).toContain('<span class="chat-say">早啊。</span>');
+    expect(html).not.toContain('（把书包放下');
+    expect(html).not.toContain('「早啊。」');
+    expect(html).toContain('托着下巴');
+    expect(html).not.toContain('*托着下巴*');
+  });
+
+  it('点头像 = 打开角色简介（和对话模式同一个弹窗）', () => {
+    const html = (RealMode as any)._avatar('悠真');
+    expect(html).toContain('ChatMode.openProfile');
+    expect(html).toContain('悠真');
+    expect(html).toContain('chat-av');
   });
 
   it('公共契约：公共事件/旁白如无必要不输出，多数轮次只有对话', async () => {
