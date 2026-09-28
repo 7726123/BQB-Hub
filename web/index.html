@@ -243,14 +243,14 @@ label{font-size:13px;color:var(--text-secondary);display:block;margin-bottom:4px
 #editor:focus{outline:none}
 #editor-status{padding:4px 16px;font-size:12px;color:var(--text-muted);background:var(--bg-secondary);border-top:1px solid var(--border);flex-shrink:0}
 
-/* 写作底部输入框（RP-Hub 风格）；对话模式底部输入条与它同款（同一批选择器，改一处两边同步） */
-#writing-input-bar,#chat-input-bar{padding:12px 16px 14px;background:var(--bg-secondary);border-top:1px solid var(--border);flex-shrink:0;box-shadow:0 -1px 0 rgba(0,0,0,0.02)}
-/* 对话模式的输入条本身还带着 .chat-input-area（boot 里的自动增高委派认这个类），这里覆盖成上下两段式 */
-#chat-input-bar{display:flex;flex-direction:column;gap:0;align-items:stretch}
-#writing-input-row,#chatInputRow{display:flex;align-items:flex-end;gap:8px}
-#writingInput,#chatInput{flex:1;background:var(--bg-tertiary);color:var(--text);border:1px solid var(--border);border-radius:14px;padding:11px 14px;font-size:16px;font-family:inherit;line-height:1.5;resize:none;min-height:44px;max-height:calc(5 * 1.5em + 22px);outline:none;box-shadow:inset 0 1px 2px rgba(0,0,0,0.03);transition:all .2s;overflow-y:auto}
-#writingInput:focus,#chatInput:focus{background:var(--bg-secondary);border-color:var(--primary);box-shadow:0 0 0 3px var(--primary-light)}
-#writingInput::placeholder,#chatInput::placeholder{color:var(--text-muted)}
+/* 写作底部输入框（RP-Hub 风格）；对话/真实模式底部输入条与它同款（同一批选择器，改一处三边同步） */
+#writing-input-bar,#chat-input-bar,#real-input-bar{padding:12px 16px 14px;background:var(--bg-secondary);border-top:1px solid var(--border);flex-shrink:0;box-shadow:0 -1px 0 rgba(0,0,0,0.02)}
+/* 对话/真实模式的输入条本身还带着 .chat-input-area（boot 里的自动增高委派认这个类），这里覆盖成上下两段式 */
+#chat-input-bar,#real-input-bar{display:flex;flex-direction:column;gap:0;align-items:stretch}
+#writing-input-row,#chatInputRow,#realInputRow{display:flex;align-items:flex-end;gap:8px}
+#writingInput,#chatInput,#realInput{flex:1;background:var(--bg-tertiary);color:var(--text);border:1px solid var(--border);border-radius:14px;padding:11px 14px;font-size:16px;font-family:inherit;line-height:1.5;resize:none;min-height:44px;max-height:calc(5 * 1.5em + 22px);outline:none;box-shadow:inset 0 1px 2px rgba(0,0,0,0.03);transition:all .2s;overflow-y:auto}
+#writingInput:focus,#chatInput:focus,#realInput:focus{background:var(--bg-secondary);border-color:var(--primary);box-shadow:0 0 0 3px var(--primary-light)}
+#writingInput::placeholder,#chatInput::placeholder,#realInput::placeholder{color:var(--text-muted)}
 #writingSendBtn,#writing-input-bar #btnStop,#writing-input-bar #btnUndo,#chatSendBtn,#chat-input-bar #chatStopBtn,#chat-input-bar #chatUndoBtn{width:44px;height:44px;border-radius:12px;border:none;cursor:pointer;flex-shrink:0;display:flex;align-items:center;justify-content:center;transition:all .2s}
 #writingSendBtn,#chatSendBtn{background:var(--primary);color:#fff;box-shadow:0 2px 6px rgba(59,111,224,0.3)}
 #writingSendBtn:hover,#chatSendBtn:hover{background:var(--primary-hover);transform:translateY(-1px);box-shadow:0 4px 10px rgba(59,111,224,0.35)}
@@ -901,6 +901,7 @@ label{font-size:13px;color:var(--text-secondary);display:block;margin-bottom:4px
 .chip-red{background:#fee2e2;color:#b91c1c}
 .chip-purple{background:#f3e8ff;color:#7e22ce}
 .chip-gray{background:var(--bg-tertiary);color:var(--text-muted)}
+.chip-green{background:#dcfce7;color:#15803d}
 /* —— 分页 —— */
 .pg-pager{display:flex;align-items:center;justify-content:center;gap:6px;padding:10px 0}
 .pg-pager button{min-width:34px;height:34px;min-height:34px;padding:0 9px;border-radius:11px;border:1px solid var(--border);background:var(--bg-secondary);color:var(--text-secondary);font-size:14px;display:flex;align-items:center;justify-content:center;transition:all var(--transition)}
@@ -1063,17 +1064,17 @@ label{font-size:13px;color:var(--text-secondary);display:block;margin-bottom:4px
   .chat-toolbar button{min-height:30px}
 }
 
-/* ════ 写作下的两个子模块（小说模式 / 对话模式）════ */
+/* ════ 写作下的三个子模块（小说模式 / 对话模式 / 真实模式）════ */
 #writingSub{display:block}
 .nav-item.nav-sub{padding:7px 12px 7px 40px;font-size:13px;min-height:0;font-weight:500}
 .nav-item.nav-sub.active{background:transparent;color:var(--primary);font-weight:600;box-shadow:inset 2px 0 0 var(--primary)}
 #sidebar.sidebar-collapsed #writingSub{display:none}
 
-/* ════ 对话模式（#tab-chat）：气泡流 ════ */
-#tab-chat{display:none;flex-direction:column;height:100%;min-height:0;overflow:hidden}
-#tab-chat.active{display:flex}
+/* ════ 对话模式（#tab-chat）与真实模式（#tab-real）：同一套气泡流布局 ════ */
+#tab-chat,#tab-real{display:none;flex-direction:column;height:100%;min-height:0;overflow:hidden}
+#tab-chat.active,#tab-real.active{display:flex}
 #chatStreamWrap{flex:1;min-height:0;display:flex;flex-direction:column;position:relative}
-#chatStream{flex:1;min-height:0;overflow-y:auto;padding:6px 12px 2px;-webkit-overflow-scrolling:touch;position:relative;z-index:1}
+#chatStream,#realStream{flex:1;min-height:0;overflow-y:auto;padding:6px 12px 2px;-webkit-overflow-scrolling:touch;position:relative;z-index:1}
 /* 封面背景（对话模式，2026-09-25 用户要求）：气泡自带底色、不会挡字；没有封面就不设。
    背景层在气泡流**下面**（#chatStream 抬到 z-index:1），滚动时背景不动；垫层把封面压淡一层，
    让旁白/时间分隔这类没有底色的文字在图上也能看清。 */
@@ -1101,6 +1102,16 @@ label{font-size:13px;color:var(--text-secondary);display:block;margin-bottom:4px
 .chat-act{color:var(--text-muted)}
 .chat-narr{font-size:calc(var(--font-size) - 1px);color:var(--text-muted);line-height:1.85;margin:7px 2px;padding-left:9px;border-left:2px solid var(--border)}
 .chat-note{font-size:12px;color:var(--text-muted);background:var(--bg-secondary);border-left:2px solid var(--border);padding:6px 10px;border-radius:8px;margin:8px 0}
+/* 真实模式：<内心> 块（浅底 + 细斜体 + 左侧竖线：明显但安静，不抢台词）；壳 = 不可感者看到的降级小字 */
+.real-inner{margin:7px 0;padding:5px 10px;background:var(--primary-light);border-left:2px solid var(--text-muted);border-radius:0 8px 8px 0;font-size:calc(var(--font-size) - 1px);font-style:italic;color:var(--text-secondary);line-height:1.8;word-break:break-word}
+.real-shell{font-size:12px;color:var(--text-muted);line-height:1.7;margin:4px 2px}
+/* 真实模式：输入框上方的「以谁的身份说话」下拉 + 「＋ 添加角色」（下拉 flex:1;min-width:0，窄屏不撑破那行） */
+#realSpeakerRow{display:flex;align-items:center;gap:8px;margin-bottom:4px}
+#realSpeakerSel{flex:1;min-width:0;font-size:12.5px;padding:4px 6px;border:1px solid var(--border);border-radius:8px;background:var(--bg-tertiary);color:var(--text)}
+/* 选人弹窗（modalRealCast）里已加入角色的行：由 RealMode._renderCastModal 渲染 */
+.real-cast-row{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:6px 2px;border-bottom:1px solid var(--border);font-size:13px}
+.real-cast-row:last-child{border-bottom:none}
+.real-cast-row .ghost-btn{padding:3px 10px;font-size:12px}
 /* 流式占位（模型还在思考、正文未到）：呼吸一下表示"是在跑，不是这一轮没内容" */
 .chat-waiting{animation:chatWait 1.7s ease-in-out infinite}
 @keyframes chatWait{0%,100%{opacity:.55}50%{opacity:.95}}
@@ -1143,7 +1154,7 @@ label{font-size:13px;color:var(--text-secondary);display:block;margin-bottom:4px
         <button id="sidebarCollapseBtn" title="收起侧边栏">‹</button>
       </div>
       <nav id="sidebar-nav">
-        <button class="nav-item active" data-view="writing" id="navWriting" title="写作：小说模式 / 对话模式">
+        <button class="nav-item active" data-view="writing" id="navWriting" title="写作：小说模式 / 对话模式 / 真实模式">
           <svg class="nav-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"></path></svg>
           <span class="nav-label">写作</span>
         </button>
@@ -1153,6 +1164,9 @@ label{font-size:13px;color:var(--text-secondary);display:block;margin-bottom:4px
           </button>
           <button class="nav-item nav-sub" data-view="chat" title="对话模式：把同一本书演成聊天记录">
             <span class="nav-label">对话模式</span>
+          </button>
+          <button class="nav-item nav-sub" data-view="real" title="真实模式：一个场景多个角色，一轮只有一个人说话">
+            <span class="nav-label">真实</span>
           </button>
         </div>
         <button class="nav-item" data-view="plugins" title="插件">
@@ -1417,6 +1431,33 @@ label{font-size:13px;color:var(--text-secondary);display:block;margin-bottom:4px
                   <svg class="ic-20 rot-90" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"></path></svg>
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Real Tab（真实模式：一个场景多个角色，一轮只有一个人说话；输入留空＝让剧情自己往下走） -->
+        <div class="panel-tab" id="tab-real">
+          <!-- 场景栏：时间 · 地点 · 在场（#realSceneText 由 RealMode 渲染）+ 场景编辑 -->
+          <div id="realSceneBar" style="display:flex;align-items:center;gap:8px;padding:8px 12px;border-bottom:1px solid var(--border);flex-shrink:0;">
+            <span id="realSceneText" style="flex:1;min-width:0;font-size:12.5px;color:var(--text-secondary);line-height:1.5;">场景未设定</span>
+            <button id="realSceneEditBtn" class="ghost-btn" onclick="RealMode.openScene()" title="编辑场景（时间 / 地点 / 在场）">⚙ 场景</button>
+          </div>
+          <div id="realStream"></div>
+          <!-- 底部输入条：与对话模式同款（左撤回 / 输入框 / 停止 / 发送；空输入时发送按钮显示「▶ 继续」） -->
+          <div class="chat-input-area" id="real-input-bar">
+            <div class="var-strip">
+              <div id="realStatus" style="font-size:13px;color:var(--text-secondary);min-height:18px;margin-bottom:4px;"></div>
+            </div>
+            <!-- 以谁的身份说话：上帝模式（不发言，只推进剧情）或本模式已加入的任意角色，随时可切 -->
+            <div id="realSpeakerRow">
+              <select id="realSpeakerSel" onchange="RealMode.select(this.value)"></select>
+              <button id="realAddCharBtn" class="ghost-btn" type="button" onclick="RealMode.openCast()" title="把世界书里的角色加进来">＋ 添加角色</button>
+            </div>
+            <div id="realInputRow">
+              <button id="realUndoBtn" class="ghost-btn" onclick="RealMode.undoLast()" title="撤回上一轮（输入框里会留下这轮写的内容）">↶ 撤回</button>
+              <textarea id="realInput" rows="1" placeholder="（动作）和台词一起写；留空发送＝让剧情自己走；选「上帝模式」时写的是客观推进" oninput="RealMode.refreshSendLabel()" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();RealMode.send()}"></textarea>
+              <button id="realStopBtn" class="ghost-btn danger" style="display:none;" onclick="RealMode.stop()" title="停止生成">停止</button>
+              <button id="realSendBtn" class="primary" style="height:44px;border-radius:12px;" onclick="RealMode.send()" title="发送">发送</button>
             </div>
           </div>
         </div>

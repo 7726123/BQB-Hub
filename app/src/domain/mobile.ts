@@ -9,6 +9,7 @@ export function tabForView(viewName: string): string {
     protagonist: 'protagonist',
     feedback: 'feedback',
     chat: 'chat',
+    real: 'real',
     cardwriter: 'cardwriter', usageassist: 'usageassist',
     usage: 'usage', settings: 'advanced'
   };
@@ -99,10 +100,10 @@ export const MobileUI: {
     document.querySelectorAll('#sidebar .nav-item').forEach(b => {
       b.classList.toggle('active', (b as HTMLElement).dataset.view === viewName);
     });
-    // 「写作」是「小说模式 / 对话模式」两个子模块的父项：进任一个都让父项保持高亮
+    // 「写作」是「小说模式 / 对话模式 / 真实模式」三个子模块的父项：进任一个都让父项保持高亮
     // （否则在对话模式下侧栏看不出当前属于写作这一块）
     const writingParent = document.getElementById('navWriting');
-    if (writingParent) writingParent.classList.toggle('active', viewName === 'writing' || viewName === 'chat');
+    if (writingParent) writingParent.classList.toggle('active', viewName === 'writing' || viewName === 'chat' || viewName === 'real');
 
     const editorArea = document.getElementById('editor-area');
     const panel = document.getElementById('panel');
@@ -141,6 +142,8 @@ export const MobileUI: {
       if (viewName === 'feedback' && typeof Feedback !== 'undefined' && Feedback.render) Feedback.render();
       // 对话模式：进入时绑定一次 + 按当前书重载（记录按书分开，切书不串台）
       if (viewName === 'chat' && typeof ChatMode !== 'undefined' && ChatMode.init) ChatMode.init();
+      // 真实模式：进入时按当前书渲染（场景/记录按书分开）；逻辑模块可能还没入库，按存在性守卫访问
+      if (viewName === 'real' && typeof RealMode !== 'undefined' && RealMode.init) RealMode.init();
       if (viewName === 'memory' && typeof UIManager !== 'undefined' && UIManager.renderCtxBudgetHint) UIManager.renderCtxBudgetHint();
       // 设置：每次进入都回到「我的」主页并刷新动态状态
       if (viewName === 'settings' && typeof UIManager !== 'undefined' && UIManager.switchSubTab) {

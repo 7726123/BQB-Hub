@@ -18,8 +18,9 @@ export interface SystemPrompt { id: string; name: string; content: string }
 
 // 内置「轻小说·最小预设」：2026-09 起取代旧「标准预设」（旧预设文本源自第三方预设改写，
 // 随开源合规清理下架；存量用户设备里的副本仍在 localStorage，不受影响）。
-// 模块分组：视角 / 文风 / 字数 / 思维链 每组只启用一个；默认启用 12 个系统模块 + 2 个「思维链」尾部模块
-// （role='user'，不进系统提示词、追加到用户消息末尾，是思考纪律的唯一来源；系统侧那两条细则默认关闭）。
+// 模块分组：视角 / 文风 / 字数 / 思维链 每组只启用一个；默认启用 12 个系统模块 + 3 个「思维链」尾部模块
+// （role='user'，不进系统提示词、追加到用户消息末尾，是思考纪律的唯一来源；续写/演出/真实各一条；
+// 系统侧那两条细则默认关闭）。
 // （2026-09-25 增补「叙事焦点·去主角中心 / 出场角色·克制 / 情绪·不冷静」三条，用户反馈驱动）。
 // 注意：文本内不出现 <thinking> 字样（原生推理模型会被诱导弹标签）、不出现英文 user
 // （app.ts 会把任意 user 替换成主角名）、不出现 ${...}（预设展开时会剥壳）；含「梳理：」
@@ -424,23 +425,30 @@ const MINIMAL_PRESET_MODULES: Array<{ id: string; name: string; content: string;
 八、查文体 → 有没有要避免的写法（复述前一轮、解释潜台词、结尾升华、机器味词）。
 九、开演前确认【不要遗漏】→ 开演前最后过一遍：哪些格式与硬要求必须落实（各三五个词）。
 想完直接演，只演一次，演出里不留任何思考痕迹。`
+  },
+  {
+    // 真实模式（2026-09-28 脚手架）：模式刚建立，思考纪律先给最短的一句（口径与上面两条一致：
+    // 只讲"想什么/别写什么"，不写思考强度、不数数字）。
+    id: 'min_27_think_tail_real', name: '思维链·真实', enabled: true, role: 'user', slot: 'think', mode: 'real', order: 26,
+    content: `【思维链要求（硬性要求）】
+本模式的思考纪律：想清楚这一轮怎么回应即可——三五个词过一遍要点，不复述已知信息、不发散，也不把要说出口的话先写一遍。`
   }
 ];
 
 // ---- 模块的三个可选字段（2026-09-26 新增；不改的模块行为完全不变）----
 // role：'system'（默认）进系统提示词（稳定前缀，吃缓存）；'user' 追加到最后一条用户消息尾部（近端强调位）。
-// mode：'both'（默认）｜'novel'（仅续写）/ 'chat'（仅演出）——同一条预设可以按模式带不同文案，
-//       不需要为两个模式各建一个预设。
+// mode：'both'（默认）｜'novel'（仅续写）/ 'chat'（仅演出）/ 'real'（仅真实）——同一条预设可以按模式带不同文案，
+//       不需要为每个模式各建一个预设。
 // slot：'think' = 这条是"思考要求"：思考强度 off 时自动跳过；它的存在会抑制软件兜底条款。
 export type PresetModuleRole = 'system' | 'user';
-export type PresetModuleMode = 'both' | 'novel' | 'chat';
-export type PresetMode = 'novel' | 'chat';
+export type PresetModuleMode = 'both' | 'novel' | 'chat' | 'real';
+export type PresetMode = 'novel' | 'chat' | 'real';
 // 非 system/user 的角色（酒馆预设里的 assistant 预填等）一律按 system 处理：
 // 老版本是**静默丢弃**（列表里还标着 system），导入酒馆预设会因此丢掉大半内容（见 §13.75）。
 export function moduleRole(m: any): PresetModuleRole { return m && m.role === 'user' ? 'user' : 'system'; }
 export function moduleMode(m: any): PresetModuleMode {
   const v = m && m.mode;
-  return v === 'novel' || v === 'chat' ? v : 'both';
+  return v === 'novel' || v === 'chat' || v === 'real' ? v : 'both';
 }
 export function moduleSlot(m: any): 'think' | '' { return m && m.slot === 'think' ? 'think' : ''; }
 export function moduleAppliesTo(m: any, mode: PresetMode): boolean {
@@ -638,17 +646,18 @@ export function nativeModulesToModules(mods: any[]): any[] {
       role: m.role === 'user' ? 'user' : 'system',
       order: m.order != null ? m.order : i
     };
-    if (m.mode === 'novel' || m.mode === 'chat') out.mode = m.mode;
+    if (m.mode === 'novel' || m.mode === 'chat' || m.mode === 'real') out.mode = m.mode;
     if (m.slot === 'think') out.slot = 'think';
     return out;
   });
 }
 
 // 软件兜底：当前预设没有任何启用的「思考要求」尾部模块（本模式）时补上这一条。
-// 文案与内置预设里那两条完全一致（作者改了内置那两条 = 改文案；预设里一条都没有 = 用这份兜底）。
+// 文案与内置预设里那几条完全一致（作者改了内置那几条 = 改文案；预设里一条都没有 = 用这份兜底）。
 export const THINK_TAIL_FALLBACK: Record<PresetMode, string> = {
   novel: MINIMAL_PRESET_MODULES.filter(m => m.id === 'min_25_think_tail_novel')[0].content,
-  chat: MINIMAL_PRESET_MODULES.filter(m => m.id === 'min_26_think_tail_chat')[0].content
+  chat: MINIMAL_PRESET_MODULES.filter(m => m.id === 'min_26_think_tail_chat')[0].content,
+  real: MINIMAL_PRESET_MODULES.filter(m => m.id === 'min_27_think_tail_real')[0].content
 };
 
 
@@ -824,6 +833,12 @@ const MINIMAL_PRESET_LATE_MODULES_V3: Array<{ id: string; before: string[] }> = 
 const MINIMAL_PRESET_LATE_MODULES_V4: Array<{ id: string; before: string[] }> = [
   { id: 'min_25_think_tail_novel', before: [] },
   { id: 'min_26_think_tail_chat', before: [] }
+];
+
+// V5 批次（2026-09-28）：真实模式的思考尾部模块。存量设备的 V4 标记早已置位，加进 V4 收不到
+// （与 V2 的教训相同：每批必须用自己的标记键）；before 用空数组 = 追加到末尾（尾部内容按 order 拼接）。
+const MINIMAL_PRESET_LATE_MODULES_V5: Array<{ id: string; before: string[] }> = [
+  { id: 'min_27_think_tail_real', before: [] }
 ];
 
 // 一次性强制覆盖清单：常规路径（applyMinimalPresetPatches）是逐字比对，用户改过就不动——
@@ -1152,6 +1167,7 @@ export const PresetManager = {
     this._installLateModules('minimalPresetLateModulesV2', MINIMAL_PRESET_LATE_MODULES_V2);
     this._installLateModules('minimalPresetLateModulesV3', MINIMAL_PRESET_LATE_MODULES_V3);
     this._installLateModules('minimalPresetLateModulesV4', MINIMAL_PRESET_LATE_MODULES_V4);
+    this._installLateModules('minimalPresetLateModulesV5', MINIMAL_PRESET_LATE_MODULES_V5);
   },
 
   // 通用补装：flagKey 已置位就跳过（每批只处理一次；用户删过的模块不加回）
@@ -1244,5 +1260,5 @@ export const PresetManager = {
 };
 
 (globalThis as unknown as { PresetManager: typeof PresetManager }).PresetManager = PresetManager;
-export { MINIMAL_PRESET_NAME, MINIMAL_PRESET_MODULES, MINIMAL_PRESET_PATCHES, MINIMAL_PRESET_LATE_MODULES, MINIMAL_PRESET_LATE_MODULES_V4, MINIMAL_PRESET_FORCE_SYNC };
+export { MINIMAL_PRESET_NAME, MINIMAL_PRESET_MODULES, MINIMAL_PRESET_PATCHES, MINIMAL_PRESET_LATE_MODULES, MINIMAL_PRESET_LATE_MODULES_V4, MINIMAL_PRESET_LATE_MODULES_V5, MINIMAL_PRESET_FORCE_SYNC };
 export default PresetManager;

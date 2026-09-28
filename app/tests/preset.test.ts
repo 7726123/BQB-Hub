@@ -39,10 +39,10 @@ describe('PresetManager', () => {
   it('内置最小预设：启用文本满足注入管线约束', () => {
     PSM.initDefaults();
     const mods = ((PSM.getPresets()[0] as unknown as { promptModules: Array<{ content: string; enabled: boolean; role: string }> }).promptModules);
-    // 启用 = 12 个系统模块 + 2 个「思维链」尾部模块（role='user' 不进 system；
+    // 启用 = 12 个系统模块 + 3 个「思维链」尾部模块（role='user' 不进 system：续写/演出/真实各一条；
     // 系统侧那两条细则自 2026-09-26 合并起默认关闭）
-    expect(mods.filter((m) => m.enabled)).toHaveLength(14);
-    expect(mods.filter((m) => m.enabled && m.role === 'user')).toHaveLength(2);
+    expect(mods.filter((m) => m.enabled)).toHaveLength(15);
+    expect(mods.filter((m) => m.enabled && m.role === 'user')).toHaveLength(3);
     expect(mods.filter((m) => m.enabled && m.role !== 'user')).toHaveLength(12);
     // 进系统提示词的那部分：文本里的 user 会被 app 换成主角名，标签会诱导弹标签
     const sp = mods.filter((m) => m.enabled && m.role !== 'user').map((m) => m.content).join('\n\n');

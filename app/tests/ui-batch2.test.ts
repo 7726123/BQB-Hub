@@ -2,10 +2,10 @@ import { describe, it, expect } from 'vitest';
 import { Modals } from '../src/domain/modals';
 
 describe('Modals 模板完整性', () => {
-  it('26 个弹窗模板，每个都有唯一 id 且 div 正确闭合', () => {
+  it('28 个弹窗模板，每个都有唯一 id 且 div 正确闭合', () => {
     const ids = Object.keys(Modals._modals);
-    expect(ids).toHaveLength(26);
-    expect(new Set(ids).size).toBe(26);
+    expect(ids).toHaveLength(28);
+    expect(new Set(ids).size).toBe(28);
     ids.forEach(function (id) {
       const t = Modals._modals[id];
       expect(t).toContain('class="modal-overlay"');

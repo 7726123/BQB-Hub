@@ -6,7 +6,8 @@ export type ModalName =
   | 'modalCommunityLogin' | 'modalCommunityRegister' | 'modalCommunityForgot' | 'modalCommunityProfile'
   | 'modalCommunityWbUpload' | 'modalCommunityPresetUpload' | 'modalCommunityPresetDetail'
   | 'modalCommunityWbCrop' | 'modalCommunityWbDetail' | 'modalCommunityRename' | 'modalCharCardImport'
-  | 'modalDBRecord' | 'modalAppUpdate' | 'modalWbAddSheet' | 'modalWbBookSheet' | 'modalAdminAuth' | 'modalWBEntryView';
+  | 'modalDBRecord' | 'modalAppUpdate' | 'modalWbAddSheet' | 'modalWbBookSheet' | 'modalAdminAuth' | 'modalWBEntryView'
+  | 'modalRealScene' | 'modalRealCast';
 
 export const Modals: {
   _modals: Record<string, string>;
@@ -41,7 +42,7 @@ export const Modals: {
     <div class="form-group"><label>模块名称</label><input type="text" id="moduleEditName" placeholder="如：角色设定、文风指引"></div>
     <div class="form-row">
       <div class="form-group"><label>类型</label><select id="moduleEditKind"><option value="system">system</option><option value="user_think">user（思维链）</option></select></div>
-      <div class="form-group"><label>适用模式</label><select id="moduleEditMode"><option value="both">两个模式都用</option><option value="novel">只用在续写模式</option><option value="chat">只用在演出模式</option></select></div>
+      <div class="form-group"><label>适用模式</label><select id="moduleEditMode"><option value="both">三个模式都用</option><option value="novel">只用在续写模式</option><option value="chat">只用在演出模式</option><option value="real">仅真实</option></select></div>
     </div>
     <div style="font-size:12px;color:var(--text-muted);line-height:1.5;margin:-2px 0 10px;">类型＝这条模块的去处，位置由软件负责，模块里不用写「放在历史之后」这类说明。<br>・system：按顺序拼进<b>最前面的系统提示词</b>（世界书、正文/演出记录之前）——大部分设定、文风、协议放这里。<br>・user（思维链）：放在<b>最后一条用户消息的末尾</b>（贴着生成点，实测越靠后越管用）——讲「思考多长、想什么、什么时候停」的模块选它；思考强度设为关闭（或模型没有原生思考通道）时软件会自动跳过它。<br>导入的酒馆预设里 role=user 但与思考无关的条目（文风、禁词等）显示为「user（末尾·非思维链）」：同样放末尾，但不受思考开关影响。</div>
     <div class="form-group"><label>模块内容</label><textarea id="moduleEditContent" rows="8" placeholder="输入该模块的提示词内容..."></textarea></div>
@@ -82,8 +83,9 @@ modalWBEntry: `<div class="modal-overlay" id="modalWBEntry">
   <div class="modal"><div class="modal-header"><h3 id="modalWBEntryTitle">添加条目</h3><button class="icon-btn" onclick="UIManager.closeModal('modalWBEntry')">✕</button></div>
   <div class="modal-body">
     <input type="hidden" id="wbEntryEditId">
-    <div class="form-group"><label>类型</label><select id="wbEntryType" onchange="UIManager.toggleWBEntryFields()"><option>世界观</option><option>角色</option><option>初始</option><option>其他</option><option>变量</option></select></div>
+    <div class="form-group"><label>类型</label><select id="wbEntryType" onchange="UIManager.toggleWBEntryFields()"><option>世界观</option><option>角色</option><option>初始</option><option>初始记忆</option><option>其他</option><option>变量</option></select></div>
     <div class="form-group"><label>名称</label><input type="text" id="wbEntryName" placeholder="条目名称"></div>
+    <div class="form-group" id="wbEntryBindRow" style="display:none;"><label>绑定角色</label><select id="wbEntryBindId"></select></div>
     <div class="form-group"><label>内容</label><textarea id="wbEntryContent" rows="6" placeholder="条目的详细内容..."></textarea></div>
     <div id="wbEntryVarHint" style="display:none;font-size:12px;color:var(--text-muted);line-height:1.75;background:var(--bg-tertiary);border:1px solid var(--border);border-radius:8px;padding:8px 10px;margin-top:6px;">
       <b>变量条目：一个条目 = 一个变量。</b>名称就是变量名（如「任务数量」）；内容写它的讲解——是什么、怎么变化、范围或失败条件（可用 <code>{{user}}</code> 指代主角，也可用 <code>{{getvar::其它变量}}</code>）。<br>
@@ -96,6 +98,34 @@ modalWBEntry: `<div class="modal-overlay" id="modalWBEntry">
     </div>
   </div>
   <div class="modal-footer"><button onclick="UIManager.closeModal('modalWBEntry')">取消</button><button class="primary" onclick="UIManager.saveWBEntryFromModal()">保存</button></div></div>
+</div>`,
+
+    // 真实模式：场景编辑（时间 / 地点 / 在场。场景栏的「⚙ 场景」打开，保存走 UIManager.saveRealScene）
+    modalRealScene: `<div class="modal-overlay" id="modalRealScene">
+  <div class="modal"><div class="modal-header"><h3>场景</h3><button class="icon-btn" onclick="UIManager.closeModal('modalRealScene')">✕</button></div>
+  <div class="modal-body">
+    <div class="form-group"><label>时间</label><input type="text" id="realSceneTime" placeholder="如：次日清晨"></div>
+    <div class="form-group"><label>地点</label><input type="text" id="realScenePlace" placeholder="如：教室 / 走廊"></div>
+    <div class="form-group"><label>在场</label><textarea id="realScenePresent" rows="4" placeholder="一行一个名字（也可以用逗号/顿号分隔）"></textarea></div>
+  </div>
+  <div class="modal-footer"><button onclick="UIManager.closeModal('modalRealScene')">取消</button><button class="primary" onclick="UIManager.saveRealScene()">保存</button></div></div>
+</div>`,
+
+    // 真实模式：角色清单（输入框上方的「＋ 添加角色」打开）。候选 = 当前世界书里的任意「角色」条目；
+    // #realCastList 的行由 RealMode._renderCastModal 渲染——每行「移除」按钮的内联写法形如
+    // RealMode.removeCast(&quot;名字&quot;)（名字里的引号必须转义）。加进来只是「可切换的扮演者」，不自动等于主角。
+    // 切换（含「上帝模式」）走输入框上方 #realSpeakerSel 的 onchange → RealMode.select，与本弹窗无关。
+    modalRealCast: `<div class="modal-overlay" id="modalRealCast">
+  <div class="modal"><div class="modal-header"><h3>真实模式的角色</h3><button class="icon-btn" onclick="UIManager.closeModal('modalRealCast')">✕</button></div>
+  <div class="modal-body">
+    <div style="font-size:12px;color:var(--text-muted);line-height:1.65;margin-bottom:10px;">把世界书里的角色加进来，就能在输入框上面随时切换「以谁的身份说话」；选「上帝模式」则不发言、只推进剧情。</div>
+    <div style="display:flex;gap:6px;margin-bottom:12px;">
+      <select id="realCastSel" style="flex:1;min-width:0;"></select>
+      <button class="small primary" onclick="RealMode.addCastFromModal()" style="flex-shrink:0;">添加</button>
+    </div>
+    <div id="realCastList"></div>
+  </div>
+  <div class="modal-footer"><button onclick="UIManager.closeModal('modalRealCast')">关闭</button></div></div>
 </div>`,
 
     // 条目全文查看（只读）：点条目卡片右侧「查看」直接打开，内容区可滑动；需要改再点「编辑」。

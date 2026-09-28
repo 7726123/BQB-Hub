@@ -85,6 +85,9 @@ declare const ChatMode: {
   switchBook(id: string): void;
 };
 
+// 真实模式（domain/realmode.ts，逻辑由独立分支负责）：内联 onclick 与 mobile.ts 的切页钩子都按全局访问
+declare const RealMode: { [k: string]: any };
+
 declare const UIManager: {
   [k: string]: any;
   populateSystemPromptUI(): void;

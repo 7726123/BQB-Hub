@@ -17,6 +17,7 @@ import { ProtagonistManager } from './protagonist';
 import { CharacterManager } from './character';
 import { DatabaseManager } from './database';
 import { VariableManager } from '../lib/variables';
+import { RealState } from './realstate';
 import { autoGrow } from '../lib/inputgrow';
 import { UpdateManager } from './update';
 // 酒馆适配器：必须走模块导入。此前这里读的是 globalThis.TavernAdapter，而 tavern-adapter.ts
@@ -939,6 +940,8 @@ const App: AppShape = {
       VariableManager.clear();
       // 世界书「变量」值随书重置（两种模式那份都清）
       try { StatusVars.reset(); } catch (e) { /* ignore */ }
+      // 真实模式的记录/场景/回忆/角色清单也随书重置（2026-09-28 新增：漏了它，重置后旧剧情还留着）
+      try { RealState.reset(); } catch (e) { /* ignore */ }
       // 2. Reset worldbook chapters（世界书=小说，直接改当前 worldbook）
       const _wbReset = WorldBookManager.getActive();
       if (_wbReset) {
@@ -3672,6 +3675,8 @@ const stripped = _preProcessed.replace(/^#{1,3}\s+.*(\n|$)/gm, '').trim(); var _
       activeBookId: BookManager.getActiveId(),
       protagonists: ProtagonistManager!.getAll(),
       worldBooks: WorldBookManager.getAll(),
+      // 真实模式的记录/场景/回忆/角色清单（2026-09-28 新增；漏了它，换手机恢复后真实模式会空）
+      realState: RealState.exportAll(),
       apiConfig: SM().get<any>('apiConfig', {}), presets: PresetManager.getPresets(),
       systemPrompts: PresetManager.getSystemPrompts(), regexRules: RegexEngine.getRules(),
       currentPresetId: PresetManager.getCurrentPresetId(), currentSysPromptId: PresetManager.getCurrentSystemPromptId(),
@@ -3742,6 +3747,8 @@ const stripped = _preProcessed.replace(/^#{1,3}\s+.*(\n|$)/gm, '').trim(); var _
         }
         SM().remove('protagonist');
         if (worldBooks.length > 0) WorldBookManager.saveAll(worldBooks);
+        // 真实模式的记录随备份一起还原（旧备份没有这个字段 → 保持现状，不动现有数据）
+        try { if (backup.realState) RealState.importAll(backup.realState); } catch (e) { /* ignore */ }
         if (backup.apiConfig) SM().set('apiConfig', backup.apiConfig);
         if (backup.presets) PresetManager.savePresets(backup.presets);
         if (backup.systemPrompts) PresetManager.saveSystemPrompts(backup.systemPrompts);
@@ -3789,6 +3796,11 @@ const stripped = _preProcessed.replace(/^#{1,3}\s+.*(\n|$)/gm, '').trim(); var _
       const _chatProse = (typeof ChatMode !== 'undefined' && ChatMode.toProseText) ? ChatMode.toProseText() : '';
       if (_chatProse) text += '## 对话演出（对话模式）\n\n' + _chatProse + '\n\n';
     } catch (e) { /* 导出不能因为对话记录失败而中断 */ }
+    // 真实模式的记录（用户确认：导出要包含演出类内容）——旁白成段、台词带说话人、内心标成（心声）
+    try {
+      const _realProse = (typeof RealMode !== 'undefined' && RealMode.toProseText) ? String(RealMode.toProseText() || '') : '';
+      if (_realProse) text += '## 真实模式记录（真实模式）\n\n' + _realProse + '\n\n';
+    } catch (e) { /* 导出不能因为真实模式失败而中断 */ }
     const saved = await this.downloadFile((d.title||'小说') + '.txt', text, 'text/plain'); App.toast('TXT 导出完成' + (saved ? ' → ' + saved : ''));
   },
 

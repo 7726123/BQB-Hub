@@ -133,11 +133,15 @@ export const UsageStats = {
    * 一轮记录属于哪个模式：按调用标签判（小说模式 label='generate'，对话模式 label='chat'）。
    * 混着出现（一轮里两种都有，比如后台填表/二审搭在正文轮上）就标"混合"，不要瞎归类。
    */
-  modeOfRecord(r: UsageRecord): 'novel' | 'chat' | 'mixed' | 'bg' {
+  modeOfRecord(r: UsageRecord): 'novel' | 'chat' | 'real' | 'mixed' | 'bg' {
     const labels = Object.keys(r.byLabel || {});
     const hasNovel = labels.indexOf('generate') >= 0;
     const hasChat = labels.indexOf('chat') >= 0;
-    if (hasNovel && hasChat) return 'mixed';
+    // 真实模式：场记（real-scene）/ 角色（real-role）/ 记忆压缩（real-mem）三个标签都算它
+    const hasReal = labels.some(function (l) { return l.indexOf('real-') === 0; });
+    const n = (hasNovel ? 1 : 0) + (hasChat ? 1 : 0) + (hasReal ? 1 : 0);
+    if (n > 1) return 'mixed';
+    if (hasReal) return 'real';
     if (hasChat) return 'chat';
     if (hasNovel) return 'novel';
     return 'bg';
@@ -146,6 +150,7 @@ export const UsageStats = {
   modeLabel(mode: string): { text: string; cls: string } {
     if (mode === 'chat') return { text: '对话', cls: 'chip-primary' };
     if (mode === 'novel') return { text: '小说', cls: 'chip-default' };
+    if (mode === 'real') return { text: '真实', cls: 'chip-green' };
     if (mode === 'mixed') return { text: '混合', cls: 'chip-default' };
     return { text: '后台', cls: 'chip-default' };
   },

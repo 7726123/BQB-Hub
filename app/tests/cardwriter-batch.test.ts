@@ -1158,6 +1158,8 @@ describe('写卡思考纪律：预设分块可编辑 + 钉在请求最后一条'
     expect(String(b.base)).toContain('检查只做一遍');
     expect(String(b.base)).toContain('判定完即执行');
     expect(String(b.base)).toContain('不必在回复里逐条汇报');
+    // v27：真实模式——秘密不进角色条目，写进「初始记忆」
+    expect(String(b.base)).toContain('初始记忆');
     // think 不属于 system 常驻段（它单独作为最后一条消息发）
     expect(String(Cw()._composePresetText(b))).not.toContain('【思考纪律');
   });
@@ -1194,7 +1196,7 @@ describe('写卡思考纪律：预设分块可编辑 + 钉在请求最后一条'
     // 用户把该分块清空 → 完全不注入
     anyG.StorageManager = {
       get: (k: string, d: unknown) => (k === 'cwPresetBlocks'
-        ? { base: '基础指令', method: '', selfcheck: '', think: '', nsfw: '', handgun: '', __version: 26 }
+        ? { base: '基础指令', method: '', selfcheck: '', think: '', nsfw: '', handgun: '', __version: Cw()._defaultBlocks().__version }
         : d),
       set: () => undefined, remove: () => undefined,
     };

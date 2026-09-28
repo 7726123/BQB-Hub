@@ -48,7 +48,7 @@ export interface UIManagerShape {
 // 尾部由 build-legacy.mjs 自动追加全局挂载（IIFE 产物内顶层声明不可见）。
 // 类型 → 彩色 chip 类（世界书条目共用，颜色集中在 index.html 的 .chip-* 定义）
 // 只列当前可创建/迁移后仍存在的类型：其余旧类型在启动时被 migrateEntryTypes 统一改成「其他」
-const TYPE_CHIPS: Record<string, string> = { '角色': 'chip-red', '世界观': 'chip-purple', '初始': 'chip-blue', '其他': 'chip-gray', '变量': 'chip-amber' };
+const TYPE_CHIPS: Record<string, string> = { '角色': 'chip-red', '世界观': 'chip-purple', '初始': 'chip-blue', '初始记忆': 'chip-green', '其他': 'chip-gray', '变量': 'chip-amber' };
 function typeChip(t: any) { return 'chip ' + (TYPE_CHIPS[t] || 'chip-gray'); }
 
 // 变量页时间显示：今天只给时分，其它日期带上月日
@@ -454,7 +454,7 @@ const UIManager: UIManagerShape = {
       const _tail = m.role === 'user';
       const _think = m.slot === 'think';
       const _tag = _tail ? (_think ? 'user·思维链' : 'user·末尾') : 'system';
-      const _modeTag = m.mode === 'novel' ? '·仅续写' : (m.mode === 'chat' ? '·仅演出' : '');
+      const _modeTag = m.mode === 'novel' ? '·仅续写' : (m.mode === 'chat' ? '·仅演出' : (m.mode === 'real' ? '·仅真实' : ''));
       return '<div class="module-row" data-drag-item="' + m.id + '" data-drag-id="' + m.id + '" data-drag-idx="' + i + '">' +
         '<span class="drag-handle" title="拖动排序">≡</span>' +
         '<span class="mod-name" title="' + htmlEscape(m.name) + '">' + htmlEscape(m.name) + '</span>' +
@@ -530,7 +530,7 @@ const UIManager: UIManagerShape = {
         if (isTail && !isThink) kindSel.innerHTML = BASE_KINDS + '<option value="user_tail">user（末尾·非思维链）</option>';
         kindSel.value = isTail ? (isThink ? 'user_think' : 'user_tail') : 'system';
         (document.getElementById('moduleEditMode') as HTMLSelectElement).value =
-          (mod.mode === 'novel' || mod.mode === 'chat') ? mod.mode : 'both';
+          (mod.mode === 'novel' || mod.mode === 'chat' || mod.mode === 'real') ? mod.mode : 'both';
       }
     }
     this.showModal('modalModuleEdit');
@@ -553,7 +553,7 @@ const UIManager: UIManagerShape = {
       m.role = (kind === 'user_think' || kind === 'user_tail') ? 'user' : 'system';
       if (kind === 'user_think') m.slot = 'think'; else delete m.slot;
       // mode 只在非 both 时落盘（保持老模块的对象形状不变，别给所有模块凭空加字段）
-      if (mode === 'novel' || mode === 'chat') m.mode = mode; else delete m.mode;
+      if (mode === 'novel' || mode === 'chat' || mode === 'real') m.mode = mode; else delete m.mode;
     };
     if (id) {
       const mod = preset.promptModules.find(function (m: any) { return m.id === id; });
@@ -1027,6 +1027,8 @@ const UIManager: UIManagerShape = {
       // 两种模式共用这一个选书入口：切完书要让对话模式也换到新书（演出记录按书分开存）。
       // 对话模式自己的选书栏已下线（用户要求），这里是唯一的同步点。
       try { if (typeof ChatMode !== 'undefined' && ChatMode.reload) { ChatMode.reload(); } } catch (e) { /* 忽略 */ }
+      // 真实模式的记录也按书分开存：换完书让它跟着换（不然还停在上本书的剧情上）
+      try { if (typeof RealMode !== 'undefined' && RealMode.render) { RealMode.render(); } } catch (e) { /* 忽略 */ }
     }
   },
 
@@ -1312,7 +1314,7 @@ const UIManager: UIManagerShape = {
   saveWBEntryFromModal() {
     const wb = WorldBookManager.getActive();
     if (!wb) { App.toast('请先选择一个世界书'); return; }
-    const data = {
+    const data: any = {
       type: document.getElementById('wbEntryType')!.value,
       name: document.getElementById('wbEntryName')!.value.trim(),
       content: document.getElementById('wbEntryContent')!.value.trim(),
@@ -1322,6 +1324,29 @@ const UIManager: UIManagerShape = {
     // 变量条目：名称会被当作回报格式里的键（模型按「名称：值」写），带冒号/换行会把格式打乱
     if (data.type === '变量' && /[:：\n\r]/.test(data.name)) { App.toast('变量名里不能有冒号或换行（模型按「名称：值」回报）'); return; }
     const editId = document.getElementById('wbEntryEditId')!.value;
+    if (data.type === '初始记忆') {
+      // 绑定角色：落 bindId（角色条目的 id）+ bindName（冗余一份名字，方便别处直接显示）。
+      // 1 对 1：同一本书里一个角色只能被一条「初始记忆」绑——已有别人绑着就拒绝保存，不覆盖、不静默。
+      const bindSel = document.getElementById('wbEntryBindId') as HTMLSelectElement | null;
+      const bindId = bindSel ? String(bindSel.value || '') : '';
+      if (bindId) {
+        const ch = (wb.entries || []).find(function (e) { return e.id === bindId; });
+        const bindName = ch ? String(ch.name || '')
+          : (bindSel && bindSel.selectedIndex >= 0 ? String(bindSel.options[bindSel.selectedIndex].text || '') : '');
+        const dup = (wb.entries || []).find(function (e) {
+          // 名字也当一次判据：绑定字段可能因为老版本的 addEntry 丢过（见 worldbook.ts 的注释），
+          // 只按 bindId 查会漏掉那些"看着绑了、其实没存上"的条目。
+          const sameName = !!bindName && String((e as any).bindName || '') === bindName;
+          return e.id !== editId && e.type === '初始记忆' && ((e as any).bindId === bindId || sameName);
+        });
+        if (dup) {
+          App.toast((bindName || '这个角色') + ' 已经有初始记忆了，一条只能绑一个角色');
+          return;
+        }
+        data.bindId = bindId;
+        data.bindName = bindName;
+      }
+    }
     if (editId) { WorldBookManager.updateEntry(wb.id, editId, data); }
     else { WorldBookManager.addEntry(wb.id, data); }
     this.closeModal('modalWBEntry');
@@ -1332,17 +1357,36 @@ const UIManager: UIManagerShape = {
     App.toast(editId ? '条目已更新' : '条目已添加');
   },
 
-  // 类型下拉＝世界观/角色/初始/其他/变量（'前端' 已随类型精简迁移消失），字段区始终显示；
-  // 类型为「变量」时多显示一段说明（一个条目 = 一个变量：名称=变量名、内容=讲解、注入开关=启用）。
+  // 类型下拉＝世界观/角色/初始/初始记忆/其他/变量（'前端' 已随类型精简迁移消失），字段区始终显示；
+  // 类型为「变量」时多显示一段说明（一个条目 = 一个变量：名称=变量名、内容=讲解、注入开关=启用），
+  // 类型为「初始记忆」时多显示一行「绑定角色」。
   // 保留这个钩子是因为 select 的 onchange 还在调它。
   toggleWBEntryFields() {
     const el = document.getElementById('wbEntryFields');
     if (el) el.style.display = '';
+    let type = '';
+    try { type = String((document.getElementById('wbEntryType') as any)?.value || ''); } catch (e) { type = ''; }
     const hint = document.getElementById('wbEntryVarHint');
-    if (hint) {
-      let type = '';
-      try { type = String((document.getElementById('wbEntryType') as any)?.value || ''); } catch (e) { type = ''; }
-      hint.style.display = type === '变量' ? '' : 'none';
+    if (hint) hint.style.display = type === '变量' ? '' : 'none';
+    // 「初始记忆」的绑定角色下拉：选项 = 当前书里 type='角色' 的条目（显示条目名）；
+    // 选中项存进条目的 bindId + bindName。切换回其它类型只隐藏这一行，不动已存的字段。
+    const bindRow = document.getElementById('wbEntryBindRow');
+    const bindSel = document.getElementById('wbEntryBindId') as HTMLSelectElement | null;
+    if (bindRow) bindRow.style.display = type === '初始记忆' ? '' : 'none';
+    if (bindSel && type === '初始记忆') {
+      const wb = WorldBookManager.getActive();
+      const entries = (wb && wb.entries) || [];
+      const editId = String((document.getElementById('wbEntryEditId') as HTMLInputElement | null)?.value || '');
+      const cur = editId ? entries.find(function (e) { return e.id === editId; }) : null;
+      const keep = String((cur && (cur as any).bindId) || bindSel.value || '');
+      bindSel.innerHTML = entries.filter(function (e) { return e.type === '角色'; })
+        .map(function (e) { return '<option value="' + htmlEscape(e.id) + '">' + htmlEscape(e.name || '未命名') + '</option>'; })
+        .join('');
+      // 绑定的角色条目已被删除（或改成了别的类型）时补一条占位，避免保存时把 bindId 静默丢掉
+      if (keep && !entries.some(function (e) { return e.id === keep && e.type === '角色'; })) {
+        bindSel.innerHTML += '<option value="' + htmlEscape(keep) + '">' + htmlEscape((cur && (cur as any).bindName) || '已删除的角色') + '</option>';
+      }
+      if (keep) bindSel.value = keep;
     }
   },
 
@@ -1357,6 +1401,38 @@ const UIManager: UIManagerShape = {
       this.renderWBSwitch();
       App.toast('条目已删除');
     });
+  },
+
+  // ===== 真实模式：场景编辑弹窗（时间 / 地点 / 在场）=====
+  // 弹窗模板在 modals.ts 的 modalRealScene；这两个函数必须挂在 UIManager 上（内联 onclick 按全局取）。
+  openRealScene() {
+    let info: any = { time: '', place: '', present: [] };
+    try { if (typeof RealMode !== 'undefined' && RealMode.sceneInfo) info = RealMode.sceneInfo() || info; } catch (e) { /* 逻辑层未就绪时按空场景打开 */ }
+    const timeEl = document.getElementById('realSceneTime');
+    const placeEl = document.getElementById('realScenePlace');
+    const presentEl = document.getElementById('realScenePresent');
+    const present = Array.isArray(info && info.present) ? info.present : [];
+    if (timeEl) timeEl.value = String((info && info.time) || '');
+    if (placeEl) placeEl.value = String((info && info.place) || '');
+    if (presentEl) presentEl.value = present.join('\n');
+    this.showModal('modalRealScene');
+  },
+
+  saveRealScene() {
+    const timeEl = document.getElementById('realSceneTime');
+    const placeEl = document.getElementById('realScenePlace');
+    const presentEl = document.getElementById('realScenePresent');
+    const present: string[] = [];
+    String((presentEl && presentEl.value) || '').split(/[\n,，、]+/).forEach(function (n: string) {
+      const v = n.trim();
+      if (v && present.indexOf(v) < 0) present.push(v);
+    });
+    try {
+      if (typeof RealMode !== 'undefined' && RealMode.saveScene) {
+        RealMode.saveScene({ time: String((timeEl && timeEl.value) || '').trim(), place: String((placeEl && placeEl.value) || '').trim(), present: present });
+      }
+    } catch (e) { /* 逻辑层未就绪时静默关窗 */ }
+    this.closeModal('modalRealScene');
   },
 
   // ===== 头像（世界书角色条目 & 数据库角色档案）=====
