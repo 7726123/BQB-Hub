@@ -21,7 +21,14 @@
 //
 // 用户手动改过 communityServer（StorageManager）时以用户配置为准（见各处调用方）。
 
-const HOST = '43.155.128.242';
+// 干净版（离线版）：这里**直接引用构建期开关**而不是 isClean()——esbuild 的 --define 会把条件折叠成常量，
+// 于是"服务器地址"这个字符串根本不会出现在干净版产物里（不是"不调用"，是"没有"）。
+// 各调用方即便漏了 isClean() 守卫，拿到的也是空串：defaultServerBase() 返回 '' → 相对路径，
+// 打不到任何服务器（纵深防御，见 tests/clean-mode.test.ts）。
+declare const __BQB_CLEAN__: boolean;
+const CLEAN_BUILD = typeof __BQB_CLEAN__ !== 'undefined' && __BQB_CLEAN__ === true;
+
+const HOST = CLEAN_BUILD ? '' : '43.155.128.242';
 const HTTP_PORT = 8899;
 const HTTPS_PORT = 80;
 
@@ -37,8 +44,10 @@ export function supportsCustomCa(): boolean {
   } catch (e) { return false; }
 }
 
-/** 默认服务基址（无尾斜杠）。判断不出系统能力时返回明文地址（保持原行为）。 */
+/** 默认服务基址（无尾斜杠）。判断不出系统能力时返回明文地址（保持原行为）。
+ *  干净版没有服务器，返回空串（调用方一律按"没有服务器"处理）。 */
 export function defaultServerBase(): string {
+  if (!HOST) return '';
   return supportsCustomCa()
     ? 'https://' + HOST + ':' + HTTPS_PORT
     : 'http://' + HOST + ':' + HTTP_PORT;

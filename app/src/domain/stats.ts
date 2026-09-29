@@ -12,6 +12,7 @@ import { SM } from '../infra/gate';
 import { defaultServerBase } from '../lib/server-url';
 import { getWebVersion } from '../lib/webver';
 import { ClientLog } from './clientlog';
+import { isClean } from '../lib/buildflags';
 
 const ID_KEY = 'usageInstallId';
 const PENDING_KEY = 'usagePendingPing';
@@ -97,6 +98,7 @@ export const UsagePing = {
 
   /** 启动时调用一次：立刻上报 + 起前台心跳。重复调用无副作用。 */
   init(appVersion?: string): void {
+    if (isClean()) return;   // 干净版：没有匿名使用统计（不上报、不起心跳）
     if (typeof appVersion === 'string' && appVersion) this._appVersion = appVersion;
     if (this._started) return;   // 幂等：热更新后重新 init 也不重复起定时器
     this._started = true;

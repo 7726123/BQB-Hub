@@ -55,6 +55,7 @@ import { ClientLog } from './clientlog';
 import { HotBundle } from './hotbundle';
 import { UsagePing } from './stats';
 import { defaultServerBase } from '../lib/server-url';
+import { isClean } from '../lib/buildflags';
 
 export const UpdateManager: {
   server: string;
@@ -94,6 +95,8 @@ export const UpdateManager: {
 
   init(): void {
     const self = this;
+    // 干净版：没有在线更新（网页包热更新 / APK 自更新 / 使用统计）——启动画面直接收掉，不发任何请求
+    if (isClean()) { try { BootSplash.hide(); } catch (e) { /* 忽略 */ } return; }
     // 默认地址：按系统版本选协议（Android 7+ 走内置自签 CA 信任的 HTTPS 端口）。
     // 放在平台检查之前，保证非 Android 环境下 server 也有可用默认值。
     self.server = defaultServerBase();
@@ -108,6 +111,9 @@ export const UpdateManager: {
     // 网页包热更新：读状态 + 确认启动 + 有回退时告知。放在版本检查之前——它决定"当前跑的是哪个网页包"，
     // 后续版本显示与错误上报都要用（失败静默，绝不阻塞启动）。
     try { HotBundle.init(); } catch (e) { /* 忽略 */ }
+    // 并行预取网页包 manifest（与下面那串 /api/app/version 检查同时跑）：把启动时的串行三跳压成两跳，
+    // 8 秒启动预算尽量留给真正的下载。只是 1KB 的 JSON，不安装、不提示；没有插件时不发请求。
+    try { HotBundle.prefetch('启动'); } catch (e) { /* 忽略 */ }
     // 与社区同源：用户改过社区服务器地址时，更新也走同一台
     try {
       if (typeof StorageManager !== 'undefined') {
@@ -133,6 +139,11 @@ export const UpdateManager: {
   check(manual?: boolean): void {
     const self = this;
     if (self.downloading) return;
+    // 干净版：更新只走应用商店，应用内不联服务器（手动点也如实说）
+    if (isClean()) {
+      if (manual) App.toast('本版本通过应用商店更新，应用内不含在线检查');
+      return;
+    }
     // 管理员模式入口：连点 10 下「检查更新」（间隔 > 2.5s 重新计数）。
     // 未开启 → 弹口令框（服务器校验）；已开启 → 退出。命中时不再走更新检查。
     if (manual) {

@@ -19,6 +19,7 @@ import { ClientLog } from './clientlog';
 import { BootSplash } from './bootsplash';
 import { defaultServerBase } from '../lib/server-url';
 import { getWebVersion, setWebVersion } from '../lib/webver';
+import { isClean } from '../lib/buildflags';
 
 export interface HotBundleState {
   active: string;      // 正在运行的热包版本（'' = 内置资源）
@@ -77,6 +78,18 @@ export function manualResultText(r: { installed?: boolean; version?: string; rea
   return r.reason || '已是最新版本';
 }
 
+/**
+ * 取一次（已签名）manifest。**不解析也不信任其中任何字段**——只有原生 install 认签名后的 payload，
+ * 这里读 v 仅用于"跳不跳"一次的判断（见 check 的注释）。
+ */
+function _fetchManifest(server: string): Promise<HotBundleManifest> {
+  return fetch(server + '/api/app/web-bundle?_=' + Date.now(), { cache: 'no-store' })
+    .then(function (r) {
+      if (!r.ok) throw new Error('http ' + r.status);
+      return r.json() as Promise<HotBundleManifest>;
+    });
+}
+
 /** 启动期间的安装等待预算：超时就不再等（原生那边继续装，装好后切后台/回前台/下次启动都能生效，见 _bindApplyHooks）——启动画面绝不能变成"卡住"。 */
 const BOOT_INSTALL_BUDGET_MS = 8000;
 
@@ -129,6 +142,7 @@ export const HotBundle = {
 
   /** 启动时调用一次（早于版本检查）。失败静默，绝不阻塞启动。 */
   init(): void {
+    if (isClean()) return;   // 干净版：没有热更新（不读状态、不绑生效时机）
     const p = _plugin();
     if (!p || !p.getState) return;
     // 抓机会生效的三个时机：切后台 / 回前台 / 网络恢复（错过启动窗口的包靠它自己换上，不必退出再进）
@@ -175,6 +189,46 @@ export const HotBundle = {
   },
 
   /**
+   * 启动时**并行**预取一次 manifest（和 /api/app/version 同时发出去）。
+   *
+   * 为什么：启动这条路原来是串行的三跳——本地 version.json → /api/app/version →
+   * /api/app/web-bundle →（才开始）下载 zip。移动网络每一跳 100~500ms，全花在 8 秒启动预算里，
+   * 留给真正下载的时间被压掉一大截，于是常常"装不完 → 这次启动还是旧版"。
+   * 预取只是 1KB 的 JSON，不安装、不提示、不阻塞；真装不装仍然由 check 按签名后的 payload 决定。
+   *
+   * 一次性：结果只给紧接着的那一次 check 用（用掉即清），之后（如 60 秒后的前台补检查）一律重新取，
+   * 免得拿着几秒前的旧 manifest 误判"已是最新"。
+   * 失败返回 null，check 会自己重来一次——偶发抖动不该让这次启动白白错过更新。
+   * 代价：如果这次启动其实是要更新 APK（check 会直接弹安装对话框、不进热更新分支），这 1KB 就白取一次。
+   */
+  prefetch(reason?: string): void {
+    if (isClean()) return;                  // 干净版：不发这个请求
+    if (this._prefetchP) return;
+    if (!_plugin()) return;                 // 没有原生插件（浏览器 / 老 APK）：不白跑一次请求
+    let server = '';
+    try { server = _serverBase(); } catch (e) { server = ''; }
+    if (!server) return;
+    try {
+      ClientLog.note('热更新', '并行预取 manifest（' + String(reason || '') + '）');
+      this._prefetchP = _fetchManifest(server).catch(function (e) {
+        ClientLog.note('热更新', '预取失败（check 自己重来）：' + String((e && (e as Error).message) || e));
+        return null;
+      });
+    } catch (e) { this._prefetchP = null; }
+  },
+
+  /** 取走预取结果（只给下一次 check 用；取走即清） */
+  _takeManifest(): Promise<HotBundleManifest | null> | null {
+    const p = this._prefetchP;
+    this._prefetchP = null;
+    if (p) ClientLog.note('热更新', '使用预取的 manifest（少一次往返）');
+    return p;
+  },
+
+  /** 启动时并行预取的 manifest（一次性，见 prefetch） */
+  _prefetchP: null as null | Promise<HotBundleManifest | null>,
+
+  /**
    * 检查并安装新网页包。**本模块只负责"装了/已就绪/失败"的提示**；"没有更新的包"这一情形留静默，
    * 由调用方（update.ts 的「检查更新」流程）统一提示，避免同一次手动检查弹两条 toast。
    * done 回调保证恰好被调用一次（含无插件/异常等提前返回路径），便于调用方编排提示。
@@ -185,6 +239,11 @@ export const HotBundle = {
    * 判断，装不装仍由原生按签名后的 payload 决定，攻击者即便伪造 v 也只会让我们少装一次。
    */
   check(manual?: boolean, done?: (r: HotBundleResult) => void): void {
+    // 干净版：没有热更新通道，直接按"没有更新"收口（不弹提示、不下载）
+    if (isClean()) {
+      if (done) { try { done({ installed: false }); } catch (e) { /* 调用方异常不影响自身 */ } }
+      return;
+    }
     const finish = function (r: HotBundleResult): void {
       HotBundle._lastResult = r;
       if (manual && r.installed) _toast(manualResultText(r));
@@ -206,8 +265,10 @@ export const HotBundle = {
     const st = HotBundle._state || { active: '', pending: '', code: 0, blocked: '', nativeCode: 0 };
     // getState 还没回来时先占位：安装成功后要把 pending 记在这儿，事件钩子才找得到它
     if (!HotBundle._state) HotBundle._state = st;
-    fetch(server + '/api/app/web-bundle?_=' + Date.now(), { cache: 'no-store' })
-      .then(function (r) { if (!r.ok) throw new Error('http ' + r.status); return r.json() as Promise<HotBundleManifest>; })
+    // 有启动时的预取就用它（省掉一次往返）；预取失败（null）则自己重来一次
+    const pre = this._takeManifest();
+    const manP = pre ? pre.then(function (j) { return j || _fetchManifest(server); }) : _fetchManifest(server);
+    manP
       .then(function (j) {
         if (!j || !j.payload || !j.sig) { finish({ installed: false }); return; }
         const v = String(j.v || '');
@@ -283,6 +344,7 @@ export const HotBundle = {
    * 若新包起不来，25 秒后自动回退并拉黑该版本。
    */
   applyPending(): Promise<boolean> {
+    if (isClean()) return Promise.resolve(false);
     const st = HotBundle._state;
     const p = _plugin();
     if (!p || !st || !st.pending) return Promise.resolve(false);
@@ -296,6 +358,7 @@ export const HotBundle = {
    * 原生优先；原生失败时退回 WebView 路径。
    */
   applyPendingNow(): boolean {
+    if (isClean()) return false;
     const st = HotBundle._state;
     const p = _plugin();
     if (!p || !st || !st.pending) return false;
@@ -338,6 +401,7 @@ export const HotBundle = {
    * 返回是否真的发出了切换（没有待生效的包 / 环境不支持时 false）。
    */
   commitPending(reason: string): boolean {
+    if (isClean()) return false;   // 干净版：不存在待生效的包
     const st = HotBundle._state;
     if (!st || !st.pending) return false;
     // 这次状态下切不了（跑内置资源、拿不到热包目录）：别反复试、也别让提示每回一次弹一次，
@@ -368,6 +432,7 @@ export const HotBundle = {
 
   /** 绑定"切后台/回前台/网络恢复"三个时机。重复调用无副作用。 */
   _bindApplyHooks(): void {
+    if (isClean()) return;   // 干净版：不绑任何生效时机
     if (this._applyHooksBound) return;
     this._applyHooksBound = true;
     const self = this;

@@ -20,6 +20,7 @@ const DEBOUNCE_MS = 8000;
 import { UpdateManager } from './update'; // 版本信息（错误上报上下文）；update 亦 import 本模块——环仅在调用期访问
 import { defaultServerBase } from '../lib/server-url';
 import { getWebVersion } from '../lib/webver';
+import { isClean } from '../lib/buildflags';
 
 export interface ErrEntry { t: number; k: string; m: string }
 
@@ -84,6 +85,8 @@ function pending(): ErrEntry[] {
 // 上报（尽力而为）：成功记签名与配额；失败静默进冷却。fire-and-forget，调用方永不 await。
 function flush(reason?: string): void {
   try {
+    // 干净版：不做任何上报——日志只留在本机（localStorage + 控制台），一条都不出设备
+    if (isClean()) return;
     if (_debounce) { clearTimeout(_debounce); _debounce = null; } // 顺带取消防抖任务（本次已合并执行）
     if (Date.now() - _failAt < FAIL_COOLDOWN_MS) return; // 冷却期：服务器刚失联，不再空试
     const items = pending();

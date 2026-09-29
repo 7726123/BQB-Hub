@@ -9,6 +9,7 @@
 import { SM } from '../infra/gate';
 import { defaultServerBase } from '../lib/server-url';
 import { ensureInstallId } from './stats';
+import { isClean } from '../lib/buildflags';
 
 export const FEEDBACK_MAX_LEN = 300;
 const MINE_KEY = 'feedbackMine';
@@ -105,6 +106,11 @@ export const Feedback = {
 
   /** 提交：只有服务端 2xx 才感谢；被限流/失败要如实说，且不清空、不感谢。 */
   async submit(): Promise<FeedbackResult> {
+    // 干净版：没有反馈通道（反馈必须经过服务器）——入口已隐藏，这里再兜一层
+    if (isClean()) {
+      try { this._setStatus('本版本不含在线反馈', 'warn'); } catch (e) { /* 无 DOM 环境 */ }
+      return { ok: false, kind: 'invalid', message: '离线版不含在线反馈' };
+    }
     const ta = document.getElementById('fbText') as HTMLTextAreaElement | null;
     if (!ta) return { ok: false, kind: 'invalid', message: '界面未就绪' };
     if (this._sending) return { ok: false, kind: 'invalid', message: '正在提交，请稍候' };

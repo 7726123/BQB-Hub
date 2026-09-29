@@ -12,6 +12,7 @@
 // （lib/contextbudget.ts）。旧版会把窗口压到 1 万字，随窗口设置可调而下线。
 import { SM } from '../infra/gate';
 import { defaultServerBase } from '../lib/server-url';
+import { isClean } from '../lib/buildflags';
 
 export const ADMIN_TAPS = 10;
 export const ADMIN_TAP_GAP_MS = 2500;
@@ -34,6 +35,7 @@ export const AdminMode = {
   _lastTap: 0,
 
   isOn(): boolean {
+    if (isClean()) return false;   // 干净版：没有管理端（口令由服务器校验，本版本不联服务器）
     try { return SM().get<boolean>(this.KEY, false) === true; } catch (e) { return false; }
   },
   set(on: boolean): void {
@@ -48,6 +50,7 @@ export const AdminMode = {
 
   /** 记一次「检查更新」点击。返回 'enter'（该弹口令框）/ 'exit'（该退出）/ null（继续正常检查更新） */
   tap(now?: number): 'enter' | 'exit' | null {
+    if (isClean()) return null;   // 干净版：连点也不会进入管理员模式
     const t = typeof now === 'number' ? now : Date.now();
     if (t - this._lastTap > ADMIN_TAP_GAP_MS) this._taps = 0;   // 间隔过久 → 重新计数
     this._lastTap = t;
@@ -76,6 +79,7 @@ export const AdminMode = {
   /** 上报一轮留档（指令 / 续写 / 记忆召回内容）。仅管理员模式 + 有令牌时发送；失败静默。 */
   sendTrace(payload: Record<string, unknown>): void {
     try {
+      if (isClean()) return;   // 干净版：不留档上报
       if (!this.isOn()) return;
       const token = this.traceToken();
       if (!token) { console.log('[AdminTrace] 无有效令牌（重启后需重新连点 10 下进一次管理员模式）'); return; }

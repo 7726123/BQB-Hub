@@ -20,6 +20,7 @@ import { VariableManager } from '../lib/variables';
 import { RealState } from './realstate';
 import { autoGrow } from '../lib/inputgrow';
 import { UpdateManager } from './update';
+import { applyCleanUI } from './cleanui';
 // 酒馆适配器：必须走模块导入。此前这里读的是 globalThis.TavernAdapter，而 tavern-adapter.ts
 // 从不挂全局（单 bundle 改造后成了纯 ES 模块）→ 拿到的永远是 undefined，
 // 于是「世界书 → 导入角色卡」只建了空书、一条条目都不落（卡内世界书全丢，v1.5.88 修复）。
@@ -3857,6 +3858,8 @@ const stripped = _preProcessed.replace(/^#{1,3}\s+.*(\n|$)/gm, '').trim(); var _
 function _bootApp(): void {
   void (async () => {
     try { await _storageInit; } catch (e) { console.warn('[Init] 存储就绪等待异常:', e); }
+    // 干净版（离线版）：先把联机入口从 DOM 里摘掉，再起各模块（完整版调用本函数直接返回）
+    try { applyCleanUI(); } catch (e) { /* 界面收尾失败不影响启动 */ }
     App.init();
     if (typeof BiqiAgent !== 'undefined' && BiqiAgent.init) BiqiAgent.init();
     if (typeof UsageAssistant !== 'undefined' && UsageAssistant.init) {

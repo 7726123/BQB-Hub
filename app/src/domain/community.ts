@@ -3,6 +3,7 @@ import { WorldBookManager } from './worldbook';
 import { AdminMode } from './adminmode'; // 管理员令牌（世界书接口按需附带）
 import { defaultServerBase } from '../lib/server-url';
 import { buildWbMetaPrompt, parseWbMeta } from '../lib/wbmeta';
+import { isClean } from '../lib/buildflags';
 export interface CommunityChatShape {
   [k: string]: any;
   DEFAULT_SERVER?: any;
@@ -42,6 +43,8 @@ const CommunityChat: CommunityChatShape = {
 
   // ---------- 生命周期（async: 等 StorageManager 就绪） ----------
   init() {
+    // 干净版：没有社区（入口与面板已由 cleanui 摘除）——不解析地址、不渲染登录态
+    if (isClean()) return;
     this.server = String(SM().get<any>('communityServer', '') || this.DEFAULT_SERVER).trim().replace(/\/+$/, '');
     this.loadState();
     this.renderStatus();
@@ -88,6 +91,7 @@ const CommunityChat: CommunityChatShape = {
   // ---------- 找卡检索（助手用）：整句口语查询 → 候选列表 ----------
   // 返回 { items:[{id,title,description,tags,meta:{genre,audience,relation,franchise,nsfw,chars,entryCount,words},downloads}], total, modes }
   searchCards(q: any, opts?: any): Promise<any> {
+    if (isClean()) return Promise.reject(new Error('本版本不含社区检索'));   // 干净版：不发检索请求
     var o = opts || {};
     var url = this.server + '/api/worldbook/search?q=' + encodeURIComponent(String(q || '')) + '&pageSize=' + (o.limit || 8);
     if (o.sort) url += '&sort=' + encodeURIComponent(o.sort);
@@ -133,6 +137,7 @@ const CommunityChat: CommunityChatShape = {
 
   // ---------- 进入社区（由 mobile.js switchView 调用） ----------
   onEnter() {
+    if (isClean()) return;   // 干净版：没有社区页
     this.loadState(); // 每次进入都重新读取存储，确保登录状态一致
     this.renderStatus();
     // 「管理」入口与社区登录无关（它只依赖管理员模式）→ 放在登录判断之前同步，
@@ -343,6 +348,7 @@ const CommunityChat: CommunityChatShape = {
   _fbMeta: null as any,
 
   syncAdminEntry() {
+    if (isClean()) return;   // 干净版：没有管理端入口
     var self = this;
     try {
       var on = !(typeof AdminMode === 'undefined' || !AdminMode.isOn || !AdminMode.isOn());
@@ -386,6 +392,7 @@ const CommunityChat: CommunityChatShape = {
   },
   /** 进入管理页：切到该 tab 并拉取统计与待审队列（侧边栏入口与面板 tab 都调它） */
   openAdminPanel() {
+    if (isClean()) return;   // 干净版：没有管理端
     this._rvwType = '';
     this._rvwStatus = 'pending';
     try { MobileUI.switchView('admin'); } catch (e) { /* 视图切换失败也照样拉数据 */ }

@@ -1556,7 +1556,7 @@ label{font-size:13px;color:var(--text-secondary);display:block;margin-bottom:4px
           </div>
           <div class="chat-toolbar">
             <button class="small" onclick="UsageAssistant.clearHistory()" title="清空助手对话">清空</button>
-            <span style="font-size:11px;color:var(--text-muted);align-self:center;">只解答本软件的使用问题 · 可帮你找卡</span>
+            <span id="assistantHint" style="font-size:11px;color:var(--text-muted);align-self:center;">只解答本软件的使用问题 · 可帮你找卡</span>
           </div>
           <div class="chat-input-area">
             <textarea id="assistantInput" placeholder="问用法，或让我帮你找卡（如「有没有剑与魔法的世界观」）" rows="1" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();UsageAssistant.sendMessage()}"></textarea>
@@ -1868,7 +1868,7 @@ label{font-size:13px;color:var(--text-secondary);display:block;margin-bottom:4px
                 </div>
                 <div class="set-row set-row-static">
                   <div class="set-icon">↕</div>
-                  <div class="set-main"><div class="set-title">全局字号</div><div class="set-sub">正文、写卡、比奇、社区消息统一</div></div>
+                  <div class="set-main"><div class="set-title">全局字号</div><div class="set-sub" id="fontScopeSub">正文、写卡、比奇、社区消息统一</div></div>
                   <div class="seg-control" id="sizeSeg"></div>
                 </div>
                 <div class="preview-block">
@@ -1920,7 +1920,7 @@ label{font-size:13px;color:var(--text-secondary);display:block;margin-bottom:4px
                   <div class="set-icon">ⓘ</div>
                   <div class="set-main"><div class="set-title">版本</div></div>
                   <span class="set-value" id="meVersion">…</span>
-                  <button class="seg-cta" onclick="UpdateManager.check(true)">⟳ 检查更新</button>
+                  <button class="seg-cta" id="aboutUpdateBtn" onclick="UpdateManager.check(true)">⟳ 检查更新</button>
                 </div>
               </section>
 

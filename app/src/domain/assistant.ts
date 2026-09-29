@@ -4,10 +4,11 @@
 // 未覆盖时输出【手册未覆盖】标记 → 展示剥离 + 静默上报（供作者改进手册）。
 import { SM } from '../infra/gate';
 import { renderMdStrong } from '../lib/mdtext';
+import { isClean } from '../lib/buildflags';
 
 export interface AssistantMessage { role: 'user' | 'assistant'; content: string }
 
-export const USAGE_MANUAL = [
+const MANUAL_FULL = [
 '【BQB Hub 使用手册】',
 '一、开始写作',
 '1. 默认进入写作页。底部输入栏输入续写指示（如"她推门而入"），按发送或回车即可让 AI 续写；留空直接发送=自动续写。',
@@ -104,21 +105,80 @@ export const USAGE_MANUAL = [
 '4. 下一个谁说话由「场记」看着场景和在场名单判断，你不用指定；想指定就用输入框上方的下拉切到谁再说话——**你刚用谁说过话，软件就不会安排 TA 替你接话**。',
 '5. 心里话：角色没说出口的心理活动放在 `<内心>…</内心>` 里，**你看得到、戏里别的人看不到**（也不会进别人的上下文）；你直接写「（心里想着…）」也行，转述会替你收进 `<内心>`。低声/私下说话会被判成"只有对方知道"，其他人只看到一句壳（"两人在低声交谈"）。',
 '6. 大家都知道的事：这是**唯一一条跨角色**的信息通道——场记每轮顺手维护一份公开的通知/传闻（"下周六开运动会""明天停课"这类客观上公开的事），**发给每一个角色，不管他当时在不在场**；悄悄话和私下的心思永远不会进来。想看或想改（比如开局就先播一条设定）就打开场景栏的「⚙ 场景」，里面有一栏「大家都知道的事」，改完下一轮以你这份为准。',
-'7. 记忆与撤回：每个角色只记得自己经历过的事（不在场就是空白）；长局里软件会把较早的经过折成 TA 自己的回忆（≤250 字，阈值用记忆页的「正文窗口」）。输入行左侧「↶ 撤回」把上一轮连同场景变化一起回滚，你打的那句会回到输入框。',
+'7. 记忆与撤回：每个角色只记得自己经历过的事（不在场就是空白）；长局里软件会把较早的经过折成 TA 自己的回忆（≤250 字，阈值用记忆页的「正文窗口」）。输入行左侧「↶ 撤回」把上一轮连同场景变化一起回滚，你打的那句会回到输入框；场景栏的「清空」把这本书的记录、场景**和输入栏里的内容**一起清掉（参演名单与你在扮演的角色保留，世界书不动）。',
 '8. 预设怎么写：真实模式的**格式契约由软件给定**（场记、角色两张契约都不用你写），预设只放**文风、语气、协议**这类模块——新建模块时「适用模式」选「仅真实」——**真实模式默认不吃预设**：只有标了「仅真实」的模块才生效，导入的酒馆预设那套（续写+演出都用）不会进来，所以不用担心它把"一轮只扮演一个人"盖掉。别让预设输出状态栏、自检、选项这类格式块（和写作模式同一条规矩）。',
 '9. 给角色写资料记住一条：真实模式的"谁知道什么"一共四条通道，按**多少人知道**分——①世界书「角色」条目 = **别人都看得到的公开人设**（外貌、身份、表层性格）；②「初始记忆」条目 = **只有一个人**知道（一个角色一条、1 对 1 绑定，只发给 TA 本人）；③「部分人知道」条目 = **一个小组**知道、别人不知道（名称=标题、内容=这件事、知情者=列出所有知道的人；只有名单里的角色拿得到内容，场记和名单外的人一点都看不到）；④「大家都知道的事」= 公开的通知/传闻，由场记自己维护。**秘密、隐情、"谁知道什么"绝对不要写在角色条目里**。写卡 agent 也按这条来，拿不准它会先问你一句。'
 ].join('\n');
 
-export const ASSISTANT_SYSTEM = '你是 BQB Hub 使用助手，是给用户说明本软件怎么使用的小客服。' +
+/** 完整版手册。干净版（离线版）不直接用这份，见 manualForClean()。 */
+export const USAGE_MANUAL = MANUAL_FULL;
+
+// ==================== 干净版手册（离线版） ====================
+// 手册是两版共用的活文档：这里**只替换与联机功能有关的小节和句子**，其余一字不动
+// （抄成两份必然改一处忘一处，最后误导用户）。
+// 键是"序号 + 、"，与完整版标题文字解耦：以后改标题也不会漏替。
+const CLEAN_SECTION_OVERRIDES: Record<string, string> = {
+  '十二、': [
+    '十二、联机功能（本版本没有）',
+    '1. 本版本不含社区：没有账号注册 / 登录，也没有世界书与预设的上传、下载、评论、点赞。',
+    '2. 世界书与预设都走「导出 / 导入 JSON」在本机或聊天软件里传递（世界书页右上「＋」里有导出与导入）。',
+  ].join('\n'),
+  '十三、': [
+    '十三、更新',
+    '1. 本版本通过应用商店更新：应用商店会自动更新；也可以打开应用商店 → 我的 → 应用更新手动检查。',
+    '2. 应用内不检查更新、也不下载安装包。数据（世界书 / 预设 / Key / 正文）都在这台设备上，更新应用不会动它们。',
+    '3. 换机或备份自己留一份：世界书 / 预设导出 JSON，正文用导出功能。',
+  ].join('\n'),
+  '十五、': [
+    '十五、意见反馈（本版本没有在线通道）',
+    '1. 本版本不含在线反馈（反馈要经过服务器）。想提意见请用带社区的版本，或在社区渠道反馈。',
+  ].join('\n'),
+};
+
+/** 干净版里逐句修正的点（完整版手册里提到联机功能的零散句子）；值为 null = 整句删掉。 */
+const CLEAN_LINE_FIXES: Array<[RegExp, string | null]> = [
+  [/^4\. 世界书可导出 JSON 备份，也可从社区下载他人分享的世界书。$/,
+    '4. 世界书可导出 / 导入 JSON 备份（文件在本机）：备份、换机、分享给别人都走这个。'],
+  [/^2\. 它还能按需求在社区里找卡.*$/, null],
+  [/^3\. 找卡需要先登录社区.*$/, null],
+  [/（正文、写卡、比奇、社区消息统一生效）/, '（正文、写卡、比奇统一生效）'],
+];
+
+/** 干净版手册：按小节整体替换 + 逐句修正，其余部分与完整版逐字一致。 */
+export function manualForClean(): string {
+  const lines = String(MANUAL_FULL || '').split('\n');
+  const out: string[] = [];
+  let skipping = false;
+  for (const raw of lines) {
+    const m = /^([一二三四五六七八九十]+、)/.exec(raw);
+    if (m) {
+      if (Object.prototype.hasOwnProperty.call(CLEAN_SECTION_OVERRIDES, m[1])) {
+        out.push(CLEAN_SECTION_OVERRIDES[m[1]]);
+        skipping = true;
+        continue;
+      }
+      skipping = false;
+    }
+    if (skipping) continue;
+    let line: string | null = raw;
+    for (const [re, to] of CLEAN_LINE_FIXES) { if (re.test(raw)) { line = to; break; } }
+    if (line === null) continue;
+    out.push(line);
+  }
+  return out.join('\n');
+}
+
+const ASSISTANT_BASE = '你是 BQB Hub 使用助手，是给用户说明本软件怎么使用的小客服。' +
   '你只负责解答关于 BQB Hub 的使用方法、功能说明与操作步骤的问题。' +
   '回答要求：简洁、步骤清晰、友好，必要时分点或分步骤说明；不确定时先说明然后给出最可能的方式。' +
   '如果用户问的不是 BQB Hub 软件使用相关的问题（例如其他软件、编程、新闻、闲聊等），' +
   '礼貌回复"我是 BQB Hub 的使用助手，只解答本软件的使用问题"，并引导回本软件的话题，不要展开无关内容。\n' +
   '特别规则：如果用户的问题没有出现在使用手册中、或你无法确定正确答案，请在回答的最前面单独输出标记【手册未覆盖】，' +
   '然后再正常写出你的回答（可以直接说明这个点你可能还没有覆盖到，或给出尽力而为的回答）。' +
-  '【手册未覆盖】是内部反馈标记，不要向用户解释它，也不要省略标记之外的回答内容。\n\n' +
-  // —— 找卡（社区世界书检索）：ReAct 工具循环 ——
-  '【找卡能力】当用户想找社区里的世界书/角色卡时（"有没有…""想要…""推荐几张…""跟这个差不多的…""有没有 XX 的同人/XX 出场的"），' +
+  '【手册未覆盖】是内部反馈标记，不要向用户解释它，也不要省略标记之外的回答内容。\n\n';
+
+// —— 找卡（社区世界书检索）：ReAct 工具循环（干净版没有这一段）——
+const CARD_ABILITY = '【找卡能力】当用户想找社区里的世界书/角色卡时（"有没有…""想要…""推荐几张…""跟这个差不多的…""有没有 XX 的同人/XX 出场的"），' +
   '你必须先用 search_cards 检索，再根据结果回答；**绝不允许凭印象编造卡名或编号**。\n' +
   '1. 检索：把用户的话直接作为 query（口语整句也行，服务端会做分词与条件识别）。必要时自己补同义词再搜一次（最多 3 次）。\n' +
   '2. 确认：结果里若有不熟悉的卡、或用户强调"差不多的/那种感觉的"，可对最像的 1-2 张调 get_card_detail 看条目构成再决定。\n' +
@@ -131,7 +191,16 @@ export const ASSISTANT_SYSTEM = '你是 BQB Hub 使用助手，是给用户说�
   '7. 找卡以外的普通使用问题照旧按手册回答，不要调用工具。\n' +
   '8. **未登录社区**（工具返回 needLogin:true）：不要只说"检索失败"就结束，必须明确告诉用户"找社区里的卡需要先登录"，' +
   '并给出登录路径：打开底部「社区」页 → 右上角头像 → 注册/登录，登录后再来问我；同时说明这不是卡不存在、也不是软件故障。' +
-  '不要因为没登录就凭印象推荐卡名。\n\n' + USAGE_MANUAL;
+  '不要因为没登录就凭印象推荐卡名。\n\n';
+
+/** 完整版 system（历史行为一字不变：人设 + 找卡能力 + 完整手册）。 */
+export const ASSISTANT_SYSTEM = ASSISTANT_BASE + CARD_ABILITY + USAGE_MANUAL;
+
+/** 当前版本实际用的 system：干净版去掉找卡能力，换用离线版手册。 */
+export function assistantSystem(): string {
+  if (!isClean()) return ASSISTANT_SYSTEM;
+  return ASSISTANT_BASE + manualForClean();
+}
 
 // ==================== 可测纯逻辑 ====================
 
@@ -309,7 +378,7 @@ export const UsageAssistant: {
   // ReAct 工具循环：模型可先检索/看详情，再给出推荐（最多 4 轮工具调用）
   async _runLoop(_userText: string): Promise<void> {
     const self = this;
-    const msgs: any[] = [{ role: 'system', content: ASSISTANT_SYSTEM }].concat(recentContext(this.messages) as any[]);
+    const msgs: any[] = [{ role: 'system', content: assistantSystem() }].concat(recentContext(this.messages) as any[]);
     let finalText = '';
     let lastErr = '';
     const setStatus = (t: string) => { this._status = t; this.renderMessages(); };
@@ -408,6 +477,7 @@ export const UsageAssistant: {
 
   // 工具定义（只读社区世界书检索 + 导入；不写任何远程数据）
   _tools(): unknown[] {
+    if (isClean()) return [];   // 干净版：没有社区可检索，一个工具都不给
     return [
       {
         type: 'function',
@@ -445,6 +515,7 @@ export const UsageAssistant: {
   },
 
   async _executeTool(t: any): Promise<string> {
+    if (isClean()) return JSON.stringify({ ok: false, error: '本版本不含社区检索' });
     const a = t.arguments || {};
     const C = (globalThis as any).CommunityChat;
     if (!C || !C.searchCards) return JSON.stringify({ ok: false, error: '社区模块不可用' });
@@ -608,6 +679,7 @@ export const UsageAssistant: {
 
   // 静默上传最近三轮对话到社区服务器（连不上/被拦截都不影响回答）
   _uploadMissed(): void {
+    if (isClean()) return;   // 干净版：手册未覆盖的问题一律不上报
     if (this._uploadCount >= this._uploadLimit) return;
     this._uploadCount++;
     const conv = buildMissConversation(this.messages, 6, 500);
@@ -632,7 +704,7 @@ export const UsageAssistant: {
 
 // 初始化由 app.js 在存储就绪后调用（indexedDB 异步加载，过早读取会把历史读成空）
 
-(globalThis as unknown as { USAGE_MANUAL: string; ASSISTANT_SYSTEM: string; UsageAssistant: typeof UsageAssistant }).USAGE_MANUAL = USAGE_MANUAL;
-(globalThis as unknown as { USAGE_MANUAL: string; ASSISTANT_SYSTEM: string; UsageAssistant: typeof UsageAssistant }).ASSISTANT_SYSTEM = ASSISTANT_SYSTEM;
+(globalThis as unknown as { USAGE_MANUAL: string; ASSISTANT_SYSTEM: string; UsageAssistant: typeof UsageAssistant }).USAGE_MANUAL = isClean() ? manualForClean() : USAGE_MANUAL;
+(globalThis as unknown as { USAGE_MANUAL: string; ASSISTANT_SYSTEM: string; UsageAssistant: typeof UsageAssistant }).ASSISTANT_SYSTEM = isClean() ? assistantSystem() : ASSISTANT_SYSTEM;
 (globalThis as unknown as { USAGE_MANUAL: string; ASSISTANT_SYSTEM: string; UsageAssistant: typeof UsageAssistant }).UsageAssistant = UsageAssistant;
 export default UsageAssistant;

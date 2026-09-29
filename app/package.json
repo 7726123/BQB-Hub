@@ -11,7 +11,8 @@
     "lint": "eslint src tests",
     "test": "vitest run",
     "test:watch": "vitest",
-    "sync:legacy": "node scripts/build-legacy.mjs"
+    "sync:legacy": "node scripts/build-legacy.mjs",
+    "sync:legacy:clean": "node scripts/build-clean.mjs"
   },
   "devDependencies": {
     "@types/node": "^26.2.0",

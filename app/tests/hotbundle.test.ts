@@ -3,6 +3,8 @@
 // 说明：验签与解包在原生侧（已由 tools/hotbundle-selftest 用真密钥实测），
 // 这里只测前端职责：状态读取、确认时机、手动与静默两种反馈路径、以及绝不阻塞/绝不抛出。
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 
 import { HotBundle, manualResultText } from '../src/domain/hotbundle';
 import { offerHotApply } from '../src/domain/update';
@@ -44,6 +46,7 @@ beforeEach(() => {
   notes.length = 0; toasts.length = 0;
   HotBundle._state = null;      // 模块级状态：不清会串到下一个用例（导致跳过安装）
   HotBundle._lastResult = null;
+  HotBundle._prefetchP = null;  // 同上：预取是一次性的，残留会让下一个用例少发一次请求
   stateReply = { active: '', pending: '', code: 0, blocked: '', nativeCode: 157 };
   installReply = { ok: true, version: '1.5.97w1', code: 157001, seeded: 2, useState: 'nextLaunch' };
   installReject = null;
@@ -226,6 +229,83 @@ describe('检查与安装', () => {
     HotBundle.clearBlocked();
     await flush();
     expect(calls.clearBlocked).toBe(1);
+  });
+});
+
+// 启动时并行预取 manifest（2026-09-29）：原来启动是串行三跳（version.json → /api/app/version →
+// /api/app/web-bundle → 才开始下载），移动网络每一跳 100~500ms 全吃在 8 秒预算里，
+// 留给下载的时间被压掉一大截，常有"装不完 → 这次启动还是旧版"。
+describe('启动并行预取 manifest', () => {
+  const manifest = { payload: 'cGF5bG9hZA==', sig: 'c2ln', v: '1.5.99.37' };
+
+  function countingFetch(body: unknown): () => number {
+    let n = 0;
+    (globalThis as unknown as Record<string, unknown>).fetch = () => {
+      n++;
+      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(body) });
+    };
+    return () => n;
+  }
+
+  test('预取之后 check 复用同一份：只发一个请求，且安装用的是预取到的 payload', async () => {
+    installReply = { ok: true, version: manifest.v, code: 160037 };   // 原生回的就是这一版
+    const fetches = countingFetch(manifest);
+    HotBundle.prefetch('启动');
+    expect(fetches()).toBe(1);
+    const seen: unknown[] = [];
+    HotBundle.check(false, (r) => seen.push(r));
+    await flush();
+    expect(fetches()).toBe(1);                       // 没有第二次请求（省下一次往返）
+    expect(calls.install.length).toBe(1);
+    expect(calls.install[0].payload).toBe(manifest.payload);
+    expect(notes.join('\n')).toContain('使用预取的 manifest');
+    expect(seen).toEqual([{ installed: true, version: '1.5.99.37' }]);
+  });
+
+  test('预取是一次性的：用掉之后再 check 会重新取（前台补检查不会拿到陈旧 manifest）', async () => {
+    stateReply = { active: '', pending: '1.5.99.37', code: 160037, blocked: '', nativeCode: 160 };  // 第二次：装好了等重启
+    const fetches = countingFetch(manifest);
+    HotBundle.prefetch('启动');
+    HotBundle.check(false);
+    await flush();
+    expect(fetches()).toBe(1);
+    HotBundle.check(false);
+    await flush();
+    expect(fetches()).toBe(2);                       // 第二次自己取
+  });
+
+  test('预取失败（网络抖动）→ check 自己重来一次，不白白错过这次的更新', async () => {
+    const m2 = { payload: 'cGF5bG9hZA==', sig: 'c2ln', v: '1.5.99.37' };
+    installReply = { ok: true, version: m2.v, code: 160037 };
+    let n = 0;
+    (globalThis as unknown as Record<string, unknown>).fetch = () => {
+      n++;
+      return n === 1 ? Promise.reject(new Error('blip'))
+        : Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(m2) });
+    };
+    HotBundle.prefetch('启动');
+    const seen: unknown[] = [];
+    HotBundle.check(false, (r) => seen.push(r));
+    await flush(); await flush();
+    expect(n).toBe(2);                               // 预取 1 次 + check 重来 1 次
+    expect(calls.install.length).toBe(1);
+    expect(seen).toEqual([{ installed: true, version: '1.5.99.37' }]);
+  });
+
+  test('没有原生插件（浏览器 / 老 APK）不发预取请求', () => {
+    delete (globalThis as unknown as Record<string, unknown>).Capacitor;
+    const fetches = countingFetch(manifest);
+    HotBundle.prefetch('启动');
+    expect(fetches()).toBe(0);
+  });
+
+  test('启动流程里真的调了它（源码守卫：update.ts 的 init 里 HotBundle.prefetch）', () => {
+    const src = readFileSync(resolve(__dirname, '../src/domain/update.ts'), 'utf8');
+    const initAt = src.indexOf('init(): void {');
+    const prefetchAt = src.indexOf('HotBundle.prefetch(');
+    expect(initAt).toBeGreaterThan(-1);
+    expect(prefetchAt).toBeGreaterThan(initAt);      // 在 init 里，不是别处
+    expect(src).toContain("HotBundle.prefetch('启动')");
   });
 });
 

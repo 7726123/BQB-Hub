@@ -37,6 +37,10 @@ function el(id: string): any {
 function toast(msg: string): void {
   try { (globalThis as any).App?.toast?.(msg); } catch (e) { /* ignore */ }
 }
+/** 排查用留痕（客户端日志会随版本检查上报到服务器 client_logs 表）：只在"异常分支"记，不记每轮 */
+function noteReal(tag: string, msg: string): void {
+  try { (globalThis as any).ClientLog?.note?.('真实模式·' + tag, msg); } catch (e) { /* ignore */ }
+}
 
 /**
  * 把一行拆成「说出口的台词」与「动作/其余」两类片段。
@@ -89,6 +93,11 @@ export const RealMode = {
   _silent: false,
   /** 用户刚做了一个动作（发送/撤回/换书）→ 下一次重画贴一次底；之后重画不再动滚动位置 */
   _scrollOnce: false,
+  /**
+   * 「清空」按下后为真：这一轮剩下的流程不许再把原话填回输入框、也不许把清空前的现场回滚回来
+   * （快照是清空前的，回滚等于把刚清掉的记录又变回来）。下一次发送时复位。
+   */
+  _suppressRefill: false,
   _reasonChars: 0,
   _lastPaint: 0,
   _streamSpeaker: '',
@@ -164,9 +173,26 @@ export const RealMode = {
   },
 
   // ---------- 清空（和对话模式一样的一键清空） ----------
+  /**
+   * 清空这本书的记录与场景。**输入栏与当轮状态也一并清干净**——与对话模式 2026-09-25 的处理一致
+   * （只清记录不请输入框，用户看到的就是"我点了清空，输入框里的字还在"）。
+   * 正在生成时先停掉：不然清空之后，那一轮的半截输出会落进刚清干净的记录里。
+   */
   clearAll(): void {
     const go = () => {
+      if (this._sending) { try { this.stop(); } catch (e) { /* ignore */ } }
+      this._suppressRefill = true;      // 撤回/停止那两条"原话回输入框"在这之后一律不许再填
       try { RealState.clearStory(); } catch (e) { /* ignore */ }
+      const ta = el('realInput');
+      if (ta) { ta.value = ''; autoGrow(ta); }
+      this._acc = '';
+      this._status = '';
+      this._next = '';
+      this._streamSpeaker = '';
+      this._reasonChars = 0;
+      this._playerInput = '';
+      this._playerCanon = '';
+      this._playerRecId = '';
       this._scrollOnce = true;
       this.render();
       toast('已清空这本书的真实模式记录');
@@ -174,7 +200,7 @@ export const RealMode = {
     try {
       const U = (globalThis as any).UIManager;
       if (U && typeof U.showConfirm === 'function') {
-        U.showConfirm('清空这本书的真实模式记录与场景？参演名单和你在扮演的角色会保留（世界书不动）。', go);
+        U.showConfirm('清空这本书的真实模式记录与场景？参演名单和你在扮演的角色会保留（世界书不动），输入栏里的内容也会一起清掉。', go);
       } else go();
     } catch (e) { go(); }
   },
@@ -305,6 +331,24 @@ export const RealMode = {
   _bindGrow(): void {
     const ta = el('realInput');
     if (ta && !ta.__growBound) { ta.__growBound = true; bindAutoGrow(ta); }
+  },
+
+  /**
+   * 发送后清空输入框：`value=''` + 收高度，并**迟一拍再确认一次**。
+   * 为什么要那一拍：安卓 WebView 上输入法还在组合（拼音没上屏）时程序改 value，
+   * 输入法随后可能把刚才那段补回输入框——用户看到的就是"发出去了、输入框里还留着字"。
+   * 只在内容**和刚发出去的那句完全相同**时才再清一次，所以不会吃掉用户这一瞬间新打的字。
+   */
+  _clearInputForSend(ta: any, sent: string): void {
+    if (!ta) return;
+    ta.value = '';
+    autoGrow(ta);
+    if (!sent) return;
+    setTimeout(function () {
+      try {
+        if (String(ta.value || '') === sent) { ta.value = ''; autoGrow(ta); }
+      } catch (e) { /* ignore */ }
+    }, 60);
   },
 
   _recordHtml(rec: RealRecord): string {
@@ -525,6 +569,8 @@ export const RealMode = {
     this._silent = false;
     this._acc = '';
     if (raw == null) return false;
+    // 「清空」在这一轮进行中按下了：这一轮什么都不写（否则半截的场记账本会落进刚清干净的记录里）
+    if (this._suppressRefill) return false;
     const pub = parsePublicReply(raw);
     if (!pub) {
       // 场记这次没按格式回：**别整轮作废**——把它的正文当世界侧旁白收下（剥掉标签与字段行），
@@ -658,6 +704,8 @@ export const RealMode = {
     this.render();
     const raw = await this._call(msgs, 'real-role');
     if (raw == null) return;
+    // 「清空」在这一轮进行中按下了：这半句话不要（记录刚被清空，落进去就是"清除后又冒出一条"）
+    if (this._suppressRefill) return;
     const rep = parseRoleReply(raw, name);
     if (!String(rep.text || '').trim()) {
       toast(name + ' 这一轮什么都没写');
@@ -695,6 +743,7 @@ export const RealMode = {
     this._playerRecId = '';
     this._playerCanon = '';
     this._stopped = false;
+    this._suppressRefill = false;      // 新的一轮：清空留下的"不许回填"旗标复位
     this._next = '';
     this._playerInput = text;
     // 上帝模式（输入框上方的下拉）：写的就是客观推进，不替任何人说话
@@ -707,7 +756,7 @@ export const RealMode = {
     // 否则 _sending 会永远卡在 true——整个模式就再也发不出去了（一条记录都发不出去，只能重开页面）。
     try {
     if (text) {
-      if (ta) { ta.value = ''; autoGrow(ta); }   // 发出去就把框收回一行（程序改 value 不触发 input）
+      this._clearInputForSend(ta, text);   // 发出去就把框清空并收回一行（含输入法补回内容的兜底）
       if (this._inputKind === 'narration') {
         // 上帝模式的旁白是客观事实、不是"你说的话"：落成旁白记录（居中淡色），不要挂在扮演者身上
         RealState.append({ kind: 'scene', speaker: '', raw: text.replace(/^\s*旁白\s*[:：]\s*/, '') });
@@ -729,20 +778,27 @@ export const RealMode = {
           this._playerCanon = text;
         }
       }
-      // 整理这段等待里用户按了「停止」→ 这一轮整体退回（别整理完还接着喊场记），原话回输入框
+      // 整理这段等待里用户按了「停止」→ 这一轮整体退回（别整理完还接着喊场记），原话回输入框。
+      // **必须提示**：不然用户只看到"我发出去的字又回到输入框"，会以为发送没生效/输入框没清空。
+      // 但「清空」按过之后不回填也不回滚——用户要的是清干净，不是把刚才那轮再变回来。
       if (this._stopped) {
+        if (this._suppressRefill) return;
         try {
           const snap0 = RealState.turnSnap();
           if (snap0) { RealState.restore(snap0); RealState.clearTurnSnap(); }
         } catch (e) { /* ignore */ }
         const ta0 = el('realInput');
         if (ta0 && text) { ta0.value = text; autoGrow(ta0); }
+        if (text) toast('已停止：刚才那句放回输入框了（这一轮没记进去）');
+        noteReal('停止', '把作者那句放回输入框');
         return;
       }
     }
     this.render();
     const ok = await this._publicCall(this._playerCanon || text);
     if (!ok) {
+      // 「清空」按过之后：不回滚、不回填（快照是清空前的现场，回滚会把刚清掉的记录变回来）
+      if (this._suppressRefill) return;
       // 场记失败：把这一轮撤回去、作者那句放回输入框（和对话模式一个待遇），
       // 否则记录里会留一句"没人接"的话，用户再发一次就重复了。
       try {
@@ -753,6 +809,7 @@ export const RealMode = {
           const ta2 = el('realInput');
           if (ta2) { ta2.value = text; autoGrow(ta2); }
           toast('这一轮没走成，刚才那句已放回输入框');
+          noteReal('场记失败', '把作者那句放回输入框');
         }
       } catch (e) { /* ignore */ }
       return;

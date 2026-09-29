@@ -431,6 +431,68 @@ describe('开箱体验（首次进入、清空、公共事件显示）', () => {
     expect(RealState.cast().length).toBe(castBefore);   // 名单保留
   });
 
+  it('清空同时清掉输入框与当轮状态（用户 2026-09-29：点了清空，框里还留着上一句没发出去的话）', () => {
+    setupBook();
+    const anyG = globalThis as any;
+    const ta: any = { value: '一句还没发出去的话', style: { height: '142px' } };
+    anyG.document = { getElementById: (id: string) => (id === 'realInput' ? ta : null) };
+    let confirmMsg = '';
+    anyG.UIManager = { showConfirm: (m: string, cb: () => void) => { confirmMsg = m; cb(); } };
+    try {
+      (RealMode as any)._status = '悠真 正在回应…';
+      (RealMode as any)._acc = '半截输出';
+      (RealMode as any)._next = '悠真';
+      (RealMode as any)._playerInput = '上一句';
+      RealMode.clearAll();
+    } finally {
+      delete anyG.document; delete anyG.UIManager;
+    }
+    expect(ta.value).toBe('');                    // 输入框清空
+    expect(ta.style.height).toBe('');             // 高度收回一行
+    expect((RealMode as any)._status).toBe('');
+    expect((RealMode as any)._acc).toBe('');
+    expect((RealMode as any)._next).toBe('');
+    expect((RealMode as any)._playerInput).toBe('');
+    expect(confirmMsg).toContain('输入栏里的内容也会一起清掉');
+  });
+
+  it('生成中清空：这一轮剩下的流程不再写记录、也不把原话填回输入框', async () => {
+    setupBook();
+    const anyG = globalThis as any;
+    const ta: any = { value: '', style: {} };
+    anyG.document = { getElementById: (id: string) => (id === 'realInput' ? ta : null) };
+    let release: () => void = () => { /* 占位 */ };
+    const gate = new Promise<void>((r) => { release = r; });
+    let installed: any = null;
+    anyG.APIHandler = {
+      fetchCompletions: (msgs: any, onChunk: any, onDone: any, _e: any, opts: any) => {
+        // 整理那次卡住不返回：等测试按下「清空」再放行
+        void (async () => {
+          if (opts && opts.callLabel === 'real-echo') await gate;
+          const r = opts && opts.callLabel === 'real-scene' ? sceneReply({ next: '悠真' }) : '「早。」';
+          if (opts && opts.callLabel === 'real-role') installed = r;
+          try { onChunk(r); } catch (e) { /* ignore */ }
+          onDone(r, false, undefined);
+        })();
+      },
+      abort: () => { /* noop */ },
+    };
+    anyG.UIManager = { showConfirm: (_m: string, cb: () => void) => cb() };
+    try {
+      const p = RealMode._sendText('会被清掉的一句');
+      await new Promise((r) => setTimeout(r, 20));
+      RealMode.clearAll();                        // 这一轮还在"整理"中就清空
+      expect(ta.value).toBe('');
+      release();
+      await p;
+    } finally {
+      delete anyG.document; delete anyG.UIManager; delete anyG.APIHandler;
+    }
+    expect(RealState.log().length).toBe(0);        // 清空后没有任何记录被写回来
+    expect(ta.value).toBe('');                     // 也没有把原话填回输入框
+    expect(installed).toBe(null);                  // 角色调用根本没发生
+  });
+
   it('模型用小说体写（没有「说话人：」前缀）时，整轮仍是 TA 的气泡，不会判成旁白', () => {
     const raw = '列车碾过接缝，减速驶入月台。\n悠真站在黄线后，抬手挡住灯光。「来得正好。」\n他歪了歪头。';
     const html = (RealMode as any)._recordHtml({ id: 'x', at: 1, kind: 'npc', speaker: '悠真', raw, present: [] });
@@ -697,6 +759,35 @@ describe('共知：公开的通知/传闻，每个角色都知道（不管在不
     }
     expect(ta.value).toBe('');
     expect(ta.style.height).toBe('');
+  });
+
+  it('输入法把刚清掉的内容补回来 → 迟一拍再清一次（只在这一模一样时才动手）', async () => {
+    setupBook();
+    const ta: any = { value: '', style: { height: '142px' } };
+    (globalThis as any).document = { getElementById: (id: string) => (id === 'realInput' ? ta : null) };
+    try {
+      RealMode._clearInputForSend(ta, '发送的那句');
+      expect(ta.value).toBe('');
+      ta.value = '发送的那句';                    // 模拟输入法把它补回来
+      await new Promise((r) => setTimeout(r, 120));
+      expect(ta.value).toBe('');                  // 再清一次
+      // 用户在这一瞬间新打的字（内容不同）不能被吃掉
+      RealMode._clearInputForSend(ta, '原来那句');
+      ta.value = '新打的一句';
+      await new Promise((r) => setTimeout(r, 120));
+      expect(ta.value).toBe('新打的一句');
+    } finally {
+      delete (globalThis as any).document;
+    }
+  });
+
+  it('停止 / 场记失败把原话放回输入框时，都给提示并留一条日志（不然用户以为"没清空"）', () => {
+    const src = readSrc('../src/domain/realmode.ts');
+    expect(src).toContain('已停止：刚才那句放回输入框了');
+    expect(src).toContain('这一轮没走成，刚才那句已放回输入框');
+    expect(src).toContain('把作者那句放回输入框');
+    expect(src).toContain("noteReal('停止'");
+    expect(src).toContain("noteReal('场记失败'");
   });
 });
 

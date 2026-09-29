@@ -17,6 +17,12 @@ web/modules/
 web/cordova.js
 web/cordova_plugins.js
 
+# 干净版（离线版）构建产物：整棵都由命令生成，不入库
+#   node scripts/make-android-clean.mjs   → android-clean/
+#   cd app && npm run sync:legacy:clean   → web-clean/（并同步进 android-clean 的 assets）
+web-clean/
+android-clean/
+
 # 服务端运行时数据（数据库/上传/日志，不入库）
 server/data/
 server/uploads/
