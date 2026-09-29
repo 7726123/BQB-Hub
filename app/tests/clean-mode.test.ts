@@ -81,7 +81,7 @@ describe('干净版：任何启动链路都不发请求', () => {
   it('反馈：提交直接拒绝，且不发请求', async () => {
     const r = await Feedback.submit();
     expect(r.ok).toBe(false);
-    expect(r.message).toContain('离线版');
+    expect(r.message).toContain('本版本');
     expect(calls).toEqual([]);
   });
 

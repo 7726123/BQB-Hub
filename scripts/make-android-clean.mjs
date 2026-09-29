@@ -25,8 +25,9 @@ const APP_ID = 'com.bqbhub.app';
 /** 干净版自己的版本号（应用商店的首版）。 */
 const VERSION_CODE = 1;
 const VERSION_NAME = '1.0.0';
-/** 应用名（桌面图标下的名字）。上架前改成与软著 / 商店名称完全一致的那个名字。 */
-const APP_NAME = 'BQB Hub 离线版';
+/** 应用名（桌面图标下的名字，也是商店里要一致的名称）。改这里要连带确认：软著名称、
+ *  App 备案名称、商店列表名称三者与它完全一致（应用名不一致是审核退回的常见原因）。 */
+const APP_NAME = 'BQB-Hub';
 /** 要摘掉的原生类（文件级删除）：APK 自更新 + 网页包热更新——商店审核的两条红线。 */
 const DROP_JAVA = ['UpdateCheckerPlugin.java', 'HotBundlePlugin.java', 'HotBundleCore.java'];
 

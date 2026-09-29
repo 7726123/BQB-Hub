@@ -109,7 +109,7 @@ export const Feedback = {
     // 干净版：没有反馈通道（反馈必须经过服务器）——入口已隐藏，这里再兜一层
     if (isClean()) {
       try { this._setStatus('本版本不含在线反馈', 'warn'); } catch (e) { /* 无 DOM 环境 */ }
-      return { ok: false, kind: 'invalid', message: '离线版不含在线反馈' };
+      return { ok: false, kind: 'invalid', message: '本版本不含在线反馈' };
     }
     const ta = document.getElementById('fbText') as HTMLTextAreaElement | null;
     if (!ta) return { ok: false, kind: 'invalid', message: '界面未就绪' };
