@@ -46,6 +46,11 @@ export interface RealBookState {
   cast: string[];
   /** 上帝模式：这一轮不替任何人说话，只推进剧情（与 player 互斥） */
   god: boolean;
+  /**
+   * 作者点名的接话人（输入框上方「让 TA 接话」下拉；'' = 自动，由场记挑）。
+   * **只在下一轮生效**：这一轮走完由调用方清回 ''；它进本轮快照，所以撤回会把那次点名放回来。
+   */
+  forcedNext?: string;
   /** 角色清单是否已经自动种过（只种一次，之后由用户用「＋/移除」自己管，免得移除的又被加回来） */
   castSeeded?: boolean;
   /** 公共纪要（公共调用每轮顺手维护；真实模式的长期上下文靠它 + 各角色的压缩回忆） */
@@ -62,7 +67,7 @@ export interface RealBookState {
   turnSnap?: any;
 }
 export interface RealSliceItem { id: string; speaker: string; text: string; degraded: boolean }
-export interface RealSnapshot { scene: RealScene; player: string; summary: string; common: string; logLen: number; memories: Record<string, RealMemory> }
+export interface RealSnapshot { scene: RealScene; player: string; summary: string; common: string; logLen: number; memories: Record<string, RealMemory>; forcedNext?: string }
 
 const INNER_OPEN = /<\s*内心\s*>/i;
 const INNER_BLOCK = /<\s*内心\s*>[\s\S]*?<\s*\/\s*内心\s*>/gi;
@@ -170,7 +175,7 @@ export function subsetKnowledgeFor(name: string, entries: any[]): { title: strin
 }
 
 function emptyState(): RealBookState {
-  return { version: STATE_VERSION, scene: { time: '', place: '', present: [] }, player: '', cast: [], god: false, summary: '', common: '', log: [], memories: {} };
+  return { version: STATE_VERSION, scene: { time: '', place: '', present: [] }, player: '', cast: [], god: false, forcedNext: '', summary: '', common: '', log: [], memories: {} };
 }
 
 function normalize(s: RealBookState): RealBookState {
@@ -184,6 +189,7 @@ function normalize(s: RealBookState): RealBookState {
   if (typeof s.player !== 'string') s.player = '';
   if (!Array.isArray(s.cast)) s.cast = [];
   if (typeof s.god !== 'boolean') s.god = false;
+  if (typeof s.forcedNext !== 'string') s.forcedNext = '';
   if (typeof s.castSeeded !== 'boolean') s.castSeeded = false;
   if (typeof s.summary !== 'string') s.summary = '';
   if (typeof s.common !== 'string') s.common = '';
@@ -339,6 +345,12 @@ export const RealState = {
     });
   },
 
+  /** 作者点名的接话人（输入框上方的「让 TA 接话」；'' = 自动）——一轮走完由调用方清回 ''，撤回随快照恢复 */
+  forcedNext(): string { return String(this.state().forcedNext || ''); },
+  setForcedNext(name: string): void {
+    this._mutate(function (s) { s.forcedNext = String(name || '').trim(); });
+  },
+
   log(): RealRecord[] { return this.state().log; },
 
   /** 公共纪要（给公共调用当长期上下文；超预算由它顺手压缩） */
@@ -396,7 +408,7 @@ export const RealState = {
   snapshot(): RealSnapshot | null {
     const s = this.state();
     try {
-      return JSON.parse(JSON.stringify({ scene: s.scene, player: s.player, summary: s.summary || '', common: s.common || '', logLen: (s.log || []).length, memories: s.memories })) as RealSnapshot;
+      return JSON.parse(JSON.stringify({ scene: s.scene, player: s.player, summary: s.summary || '', common: s.common || '', logLen: (s.log || []).length, memories: s.memories, forcedNext: s.forcedNext || '' })) as RealSnapshot;
     } catch (e) { return null; }
   },
   restore(snap: RealSnapshot | null): void {
@@ -406,6 +418,7 @@ export const RealState = {
       if (typeof snap.player === 'string') s.player = snap.player;
       if (typeof snap.summary === 'string') s.summary = snap.summary;
       if (typeof snap.common === 'string') s.common = snap.common;
+      if (typeof snap.forcedNext === 'string') s.forcedNext = snap.forcedNext;
       const n = Math.max(0, Number(snap.logLen) || 0);
       if (Array.isArray(s.log) && s.log.length > n) s.log = s.log.slice(0, n);
       if (snap.memories && typeof snap.memories === 'object') s.memories = snap.memories;
@@ -421,6 +434,7 @@ export const RealState = {
       s.common = '';
       s.memories = {};
       s.god = false;
+      s.forcedNext = '';
       s.turnSnap = null;
     });
   },

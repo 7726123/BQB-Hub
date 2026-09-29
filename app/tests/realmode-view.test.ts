@@ -22,7 +22,7 @@ const realmode = fs.readFileSync(path.join(ROOT, 'app', 'src', 'domain', 'realmo
 const REAL_IDS = [
   'realSceneBar', 'realSceneText', 'realSceneEditBtn',
   'realStream', 'realStatus',
-  'realSpeakerRow', 'realSpeakerSel', 'realAddCharBtn',
+  'realSpeakerRow', 'realSpeakerSel', 'realNextSel', 'realAddCharBtn',
   'realInput', 'realSendBtn', 'realStopBtn', 'realUndoBtn',
 ];
 
@@ -40,9 +40,10 @@ describe('真实模式：侧栏入口与 #tab-real 容器', () => {
     }
   });
 
-  it('内联 on* 只指向 RealMode 的既有方法（send / stop / undoLast / select / openCast / openScene / refreshSendLabel）', () => {
+  it('内联 on* 只指向 RealMode 的既有方法（send / stop / undoLast / select / pick / openCast / openScene / refreshSendLabel）', () => {
     for (const call of [
       'RealMode.select(this.value)',
+      'RealMode.pick(this.value)',
       'RealMode.openCast()',
       'RealMode.openScene()',
       'RealMode.refreshSendLabel()',
@@ -80,6 +81,20 @@ describe('真实模式：扮演者下拉搬到输入框上方', () => {
   it('这一行有自己的小 CSS（窄屏不撑破：下拉 flex:1;min-width:0）', () => {
     expect(html).toContain('#realSpeakerRow{');
     expect(html).toMatch(/#realSpeakerSel\{[^}]*flex:1;min-width:0/);
+  });
+
+  it('「让 TA 接话」下拉与视角下拉同一行（#realSpeakerRow 里、输入行之前），默认（自动）由 RealMode 渲染', () => {
+    const row = html.indexOf('id="realSpeakerRow"');
+    const next = html.indexOf('id="realNextSel"');
+    const input = html.indexOf('id="realInputRow"');
+    expect(next).toBeGreaterThan(row);
+    expect(next).toBeLessThan(input);
+    expect(html).toContain('onchange="RealMode.pick(this.value)"');
+    expect(html).toContain('（自动）');                       // 下拉第一项（由 _renderHead 渲染）
+    expect(realmode).toContain(">（自动）</option>");
+    expect(realmode).toContain('setForcedNext');
+    // 点名中给个主色边（一眼看出这一轮不是自动挑的）
+    expect(html).toMatch(/#realNextSel\.pick-on\{[^}]*border-color:var\(--primary\)/);
   });
 });
 

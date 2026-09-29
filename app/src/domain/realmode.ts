@@ -101,7 +101,9 @@ export const RealMode = {
   _reasonChars: 0,
   _lastPaint: 0,
   _streamSpeaker: '',
-  _inputKind: 'empty' as 'empty' | 'line' | 'narration' | 'direct',
+  _inputKind: 'empty' as 'empty' | 'line' | 'narration',
+  /** 这一轮由作者点名的接话人（「让 TA 接话」下拉；'' = 随场记）——每轮开始时重新解析 */
+  _forcedNext: '',
   _playerInput: '',
   /** 作者这一轮实际落进记录的那一句（转述成功 = 整理后的；没转述 = 原话）——给场记当输入 */
   _playerCanon: '',
@@ -127,6 +129,22 @@ export const RealMode = {
     return this.cast().filter(function (n: string) { return n !== me; })
       .map((n: string) => ({ name: n, persona: this._persona(n).replace(/\s+/g, ' ').slice(0, 60) }));
   },
+  /**
+   * 「让 TA 接话」下拉的候选 = 在场 ∩ 参演名单，且排除作者正在扮演的那位
+   * （软件不能替作者说话；点到不在场的人会写出一条他自己都看不见的记录，所以干脆不给点）。
+   */
+  _nextCandidates(): string[] {
+    const me = this.player();
+    const cast = this.cast();
+    return this._presentList().filter(function (n: string) {
+      return n !== me && cast.indexOf(n) >= 0;
+    });
+  },
+  /** 点名下一轮由谁接话（'' = 自动）：只在下一轮生效，一轮走完自动回到「自动」 */
+  pick(name: string): void {
+    RealState.setForcedNext(name);
+    this.render();
+  },
   /** 有效在场名单：场景定过就用它；还没定（开局）用角色清单兜底，免得提示词里写「在场：（空）」 */
   _presentList(): string[] {
     const sc = this.scene();
@@ -151,6 +169,9 @@ export const RealMode = {
     const k = String(key || '');
     if (k === GOD) { RealState.setGod(true); }
     else { RealState.setGod(false); RealState.setPlayer(k); }
+    // 换了扮演者之后，之前点名的接话人可能失效（比如点到的是自己）：退回「自动」，别留个点不动的选项
+    const want = RealState.forcedNext();
+    if (want && this._nextCandidates().indexOf(want) < 0) RealState.setForcedNext('');
     this.render();
   },
   selected(): string { return RealState.isGod() ? GOD : this.player(); },
@@ -323,6 +344,18 @@ export const RealMode = {
     }
     const st = el('realStatus');
     if (st) st.textContent = this._status || '';
+    // 「让 TA 接话」：默认「（自动）」= 场记挑；点一个人 → 这一轮就由 TA 接话（走完自动回「自动」）
+    const nsel = el('realNextSel');
+    if (nsel) {
+      const cand = this._nextCandidates();
+      const want = RealState.forcedNext();
+      const cur = cand.indexOf(want) >= 0 ? want : '';
+      nsel.innerHTML = '<option value=""' + (cur ? '' : ' selected') + '>（自动）</option>' +
+        cand.map(function (n: string) {
+          return '<option value="' + esc(n) + '"' + (n === cur ? ' selected' : '') + '>' + esc(n) + '</option>';
+        }).join('');
+      try { nsel.classList.toggle('pick-on', !!cur); } catch (e) { /* ignore */ }
+    }
     this._bindGrow();
     this.refreshSendLabel();
   },
@@ -559,6 +592,7 @@ export const RealMode = {
       roster: this._roster(),
       player: this.player(),
       lastWasNarration: this._lastWasNarration(),
+      forcedNext: this._forcedNext,
     });
     this._status = '场记整理中…';
     this._streamSpeaker = '';
@@ -748,6 +782,12 @@ export const RealMode = {
     this._playerInput = text;
     // 上帝模式（输入框上方的下拉）：写的就是客观推进，不替任何人说话
     this._inputKind = !text ? 'empty' : (RealState.isGod() ? 'narration' : 'line');
+    // 「让 TA 接话」：点名只在候选（在场 ∩ 参演名单 − 扮演者）里才作数。
+    // 失效的点名（换过人、那人已离场）当场清掉退回「自动」——别留一个点不动的选项。
+    const cand = this._nextCandidates();
+    const want = RealState.forcedNext();
+    this._forcedNext = cand.indexOf(want) >= 0 ? want : '';
+    if (want && !this._forcedNext) { try { RealState.setForcedNext(''); } catch (e) { /* ignore */ } }
     this._snap();
     this._scrollOnce = true;
     try { (globalThis as any).UsageStats?.beginSession?.(); } catch (e) { /* ignore */ }
@@ -814,8 +854,14 @@ export const RealMode = {
       } catch (e) { /* ignore */ }
       return;
     }
-    if (this._next && this._next !== '旁白') {
-      await this._roleCall(this._next);
+    // 点名的人一定接话（不听场记挑的）：这就是「让 TA 接话」的全部意义
+    const next = this._forcedNext || this._next;
+    if (next && next !== '旁白') {
+      await this._roleCall(next);
+    }
+    // 点名只用一轮：走完就回「自动」（失败回滚的轮次不走这里——点名留着，再发一次还是 TA）
+    if (this._forcedNext) {
+      try { RealState.setForcedNext(''); } catch (e) { /* ignore */ }
     }
     } finally {
       this._sending = false;
@@ -825,6 +871,7 @@ export const RealMode = {
       this._streamSpeaker = '';
       this._playerRecId = '';
       this._playerCanon = '';
+      this._forcedNext = '';
       this._reasonChars = 0;
       this.render();
       // 记账：这一轮实际写进记录的正文长度（以前一律传 0，用量统计里看不到产出）

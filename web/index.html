@@ -1111,9 +1111,12 @@ label{font-size:13px;color:var(--text-secondary);display:block;margin-bottom:4px
 .real-echo-tag{font-size:11px;color:var(--text-muted);border:1px solid var(--border);border-radius:8px;padding:1px 7px;cursor:pointer;display:inline-block;opacity:.75}
 .real-echo-raw{display:none;margin-top:5px;font-size:12px;color:var(--text-muted);background:var(--bg-secondary);border-left:2px solid var(--border);border-radius:0 8px 8px 0;padding:4px 8px;line-height:1.7;white-space:pre-wrap;word-break:break-word}
 .real-echo.open .real-echo-raw{display:block}
-/* 真实模式：输入框上方的「以谁的身份说话」下拉 + 「＋ 添加角色」（下拉 flex:1;min-width:0，窄屏不撑破那行） */
+/* 真实模式：输入框上方的「以谁的身份说话」下拉 + 「让 TA 接话」下拉 +「＋ 添加角色」（窄屏不撑破那行） */
 #realSpeakerRow{display:flex;align-items:center;gap:8px;margin-bottom:4px}
 #realSpeakerSel{flex:1;min-width:0;font-size:12.5px;padding:4px 6px;border:1px solid var(--border);border-radius:8px;background:var(--bg-tertiary);color:var(--text)}
+/* 点名接话：默认「（自动）」；点名中给个主色边（一眼看出这一轮不是自动挑的） */
+#realNextSel{flex:0 1 32%;min-width:92px;font-size:12.5px;padding:4px 6px;border:1px solid var(--border);border-radius:8px;background:var(--bg-tertiary);color:var(--text)}
+#realNextSel.pick-on{border-color:var(--primary);color:var(--primary)}
 /* 选人弹窗（modalRealCast）里已加入角色的行：由 RealMode._renderCastModal 渲染 */
 .real-cast-row{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:6px 2px;border-bottom:1px solid var(--border);font-size:13px}
 .real-cast-row:last-child{border-bottom:none}
@@ -1456,8 +1459,10 @@ label{font-size:13px;color:var(--text-secondary);display:block;margin-bottom:4px
               <div id="realStatus" style="font-size:13px;color:var(--text-secondary);min-height:18px;margin-bottom:4px;"></div>
             </div>
             <!-- 以谁的身份说话：上帝模式（不发言，只推进剧情）或本模式已加入的任意角色，随时可切 -->
+            <!-- 让 TA 接话：默认「（自动）」由场记挑；点一个人 → 这一轮由 TA 接话（走完自动回到「（自动）」） -->
             <div id="realSpeakerRow">
               <select id="realSpeakerSel" onchange="RealMode.select(this.value)"></select>
+              <select id="realNextSel" title="让 TA 接话：这一轮由谁接话（默认「（自动）」由场记挑；选完一轮后自动回到「（自动）」）" onchange="RealMode.pick(this.value)"></select>
               <button id="realAddCharBtn" class="ghost-btn" type="button" onclick="RealMode.openCast()" title="把世界书里的角色加进来">＋ 添加角色</button>
             </div>
             <div id="realInputRow">
@@ -2169,7 +2174,7 @@ label{font-size:13px;color:var(--text-secondary);display:block;margin-bottom:4px
     <button type="button" class="bs-skip" id="bootSplashSkip">稍后</button>
   </div>
 </div>
-<script id="bootMain" data-src="modules/main.js?v=1086063688-160"></script>
+<script id="bootMain" data-src="modules/main.js?v=1369384347-160"></script>
 <script>
 (function () {
   var el = document.getElementById('bootSplash');

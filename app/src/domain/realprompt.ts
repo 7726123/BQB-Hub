@@ -64,11 +64,16 @@ export interface PublicCtx {
   common?: string;
   recent: string;
   input: string;
-  /** empty = 作者没发言（推进）；line = 作者以扮演者身份说的话；narration = 作者旁白推进；direct = 作者指定谁接话 */
-  inputKind: 'empty' | 'line' | 'narration' | 'direct';
+  /** empty = 作者没发言（推进）；line = 作者以扮演者身份说的话；narration = 作者旁白推进 */
+  inputKind: 'empty' | 'line' | 'narration';
   roster: { name: string; persona: string }[];
   /** 作者正在扮演的角色：选人时要排除 TA（软件不能替作者说话） */
   player?: string;
+  /**
+   * 作者点名的接话人（输入框上方的「让 TA 接话」下拉）：这一轮由 TA 接话。
+   * 软件随后会强制用它（不听场记挑的），这里写明只是让场记的旁白/纪要方向一致。
+   */
+  forcedNext?: string;
   /** 上一轮只有旁白、没人说话 → 提示场记这一轮让角色开口（别一直推进不对话） */
   lastWasNarration?: boolean;
 }
@@ -102,8 +107,6 @@ export function buildPublicMessages(ctx: PublicCtx): Msg[] {
     lines.push('（作者没有发言：请推进剧情——让时间流逝、环境变化，或让某个角色主动做点什么）');
   } else if (ctx.inputKind === 'narration') {
     lines.push('（作者以「旁白」推进剧情，这是客观发生的事实，所有人都看得到）：' + ctx.input);
-  } else if (ctx.inputKind === 'direct') {
-    lines.push('（作者指定接话人）：' + ctx.input);
   } else {
     // 只给"旁人能感知到的部分"：作者（或转述）写下的 <内心> 是那个角色自己的事，
     // 场记知道了就可能顺手写进公共事件/旁白/纪要——那是最隐蔽的一次泄漏。
@@ -113,6 +116,10 @@ export function buildPublicMessages(ctx: PublicCtx): Msg[] {
     } else {
       lines.push('（作者扮演的角色这一轮只有心里活动——那是他自己的事，你不需要知道，也不要写进公共事件、旁白或纪要）');
     }
+  }
+  // 作者点名（输入框上方的「让 TA 接话」）：明说这一轮由谁接话（软件随后会强制用它）
+  if (ctx.forcedNext) {
+    lines.push('（作者指定这一轮由「' + ctx.forcedNext + '」接话：请把「接话」写成「' + ctx.forcedNext + '」。）');
   }
   return [{ role: 'system', content: PUBLIC_SYSTEM + '\n\n' + PUBLIC_THINK_DISCIPLINE }, { role: 'user', content: lines.join('\n') }];
 }

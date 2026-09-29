@@ -368,6 +368,90 @@ describe('角色清单与「上帝模式」下拉', () => {
   });
 });
 
+// ---------- 「让 TA 接话」：作者点名这一轮由谁接话 ----------
+describe('接话点名（输入框上方的「让 TA 接话」下拉）', () => {
+  it('点名后：场记请求里写明这一轮由 TA 接话，角色调用就落在 TA（不听场记挑的）', async () => {
+    setupBook();
+    const calls = stubAPI([
+      sceneReply({ next: '美月', events: '上课铃响了。' }),   // 场记挑的是别人
+      '「……嗯。」<内心>她怎么突然问我。</内心>',
+    ]);
+    RealState.setForcedNext('悠真');
+    await RealMode._sendText('');
+    expect(calls.length).toBe(2);
+    expect(calls[0].msgs.map((m: any) => m.content).join('\n')).toContain('作者指定这一轮由「悠真」接话');
+    expect(calls[1].msgs.map((m: any) => m.content).join('\n')).toContain('爱开玩笑');   // 悠真的人设：确实是他在说
+    expect(RealState.log().map((r: any) => r.speaker)).toEqual(['', '悠真']);
+  });
+
+  it('没点名时不写点名行（现状不变）', async () => {
+    setupBook();
+    const calls = stubAPI([sceneReply({ next: '悠真' }), '「早。」']);
+    await RealMode._sendText('');
+    expect(calls[0].msgs.map((m: any) => m.content).join('\n')).not.toContain('作者指定这一轮由');
+  });
+
+  it('一轮走完自动回到「（自动）」', async () => {
+    setupBook();
+    stubAPI([sceneReply({ next: '旁白' }), '「早。」']);
+    RealState.setForcedNext('悠真');
+    await RealMode._sendText('');
+    expect(RealState.forcedNext()).toBe('');
+  });
+
+  it('撤回上一轮：那次点名一并回来（重来还是 TA 接话）', async () => {
+    setupBook();
+    stubAPI([sceneReply({ next: '旁白' }), '「早。」']);
+    RealState.setForcedNext('美月');
+    await RealMode._sendText('');
+    expect(RealState.forcedNext()).toBe('');
+    RealMode.undoLast();
+    expect(RealState.forcedNext()).toBe('美月');
+    expect(RealState.log().length).toBe(0);
+  });
+
+  it('场记失败整轮回滚：点名留着（再发一次还是 TA）', async () => {
+    setupBook();
+    const ta = { value: '' };
+    (globalThis as any).document = { getElementById: (id: string) => (id === 'realInput' ? ta : null) };
+    stubAPI(['「你好。」', '我不按格式写。']);
+    try {
+      RealState.setForcedNext('悠真');
+      await RealMode._sendText('你好。');
+    } finally {
+      delete (globalThis as any).document;
+    }
+    expect(RealState.log().length).toBe(0);
+    expect(RealState.forcedNext()).toBe('悠真');
+  });
+
+  it('候选 = 在场 ∩ 参演名单，排除作者正在扮演的人', () => {
+    setupBook();                                    // 在场 千纱/悠真/美月，作者演千纱
+    (RealMode as any)._ensureCast();                // 参演名单平时由 _renderHead / 发送时种上
+    expect((RealMode as any)._nextCandidates()).toEqual(['悠真', '美月']);
+    RealState.setScene({ present: ['千纱', '悠真'] });
+    expect((RealMode as any)._nextCandidates()).toEqual(['悠真']);
+  });
+
+  it('点名的人不在场：这一轮按「自动」走，点名当场清掉（不留点不动的选项）', async () => {
+    setupBook();
+    const calls = stubAPI([sceneReply({ next: '美月', events: '上课铃响了。' }), '「早。」']);
+    RealState.setForcedNext('悠真');
+    RealState.setScene({ present: ['千纱', '美月'] });   // 悠真离场
+    await RealMode._sendText('');
+    expect(calls[0].msgs.map((m: any) => m.content).join('\n')).not.toContain('作者指定这一轮由');
+    expect(RealState.log()[1].speaker).toBe('美月');      // 场记挑的照常走
+    expect(RealState.forcedNext()).toBe('');
+  });
+
+  it('换扮演者后点到自己：点名失效退回「自动」', () => {
+    setupBook();
+    RealState.setForcedNext('悠真');
+    RealMode.select('悠真');                        // 作者改演悠真——不能再点名自己接话
+    expect(RealState.forcedNext()).toBe('');
+  });
+});
+
 // ---------- 配套：用量统计 / 备份导出 / 重置本书 / 换书 ----------
 describe('配套接线（用量统计、备份、重置、换书）', () => {
   it('用量统计把 real-* 三个标签算成「真实」，不再掉进「后台」', () => {
