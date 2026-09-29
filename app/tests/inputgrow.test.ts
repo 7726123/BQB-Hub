@@ -67,6 +67,26 @@ describe('自动增高', () => {
     const bare = fakeTa();
     expect(() => autoGrow(bare)).not.toThrow();
   });
+
+  it('形如 {value} 的假元素 / 没有 getComputedStyle 的环境也不炸（真实模式与测试里都会遇到）', () => {
+    const saved = g.getComputedStyle;
+    delete g.getComputedStyle;
+    try {
+      expect(() => autoGrow({ value: '有字' } as any)).not.toThrow();        // 连 style 都没有
+      expect(() => bindAutoGrow({ value: '有字' } as any)).not.toThrow();    // 也没有 addEventListener
+      const noCs = fakeTa({ value: '有字', scrollHeight: 46, style: { height: '' } });
+      autoGrow(noCs);
+      expect(noCs.style.height).toBe('46px');                               // 没有 CSS 时兜底 120
+    } finally {
+      g.getComputedStyle = saved;
+    }
+  });
+
+  it('真实模式输入框（#realInput）也走这一套实现', () => {
+    const src = readFileSync(resolve(here, '../src/domain/realmode.ts'), 'utf8');
+    expect(src).toContain("from '../lib/inputgrow'");
+    expect(src).toContain('bindAutoGrow(ta)');
+  });
 });
 
 describe('绑定与共用', () => {

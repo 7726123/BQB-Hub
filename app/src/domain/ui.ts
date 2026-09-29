@@ -10,6 +10,7 @@ import { BookManager } from './book';
 import { ProtagonistManager } from './protagonist';
 import { DatabaseManager } from './database';
 import { StatusVars } from './statusvars';
+import { parseKnowers } from './realstate';   // 「部分人知道」的知情者名单解析（与读取侧共用一份）
 import { formatVersion } from '../lib/webver';
 import { avatarUrl } from '../lib/avatarurl';
 // 社区聊天：独立 legacy 全局（modules/community.js），运行时成员按 typeof 探测
@@ -48,7 +49,7 @@ export interface UIManagerShape {
 // 尾部由 build-legacy.mjs 自动追加全局挂载（IIFE 产物内顶层声明不可见）。
 // 类型 → 彩色 chip 类（世界书条目共用，颜色集中在 index.html 的 .chip-* 定义）
 // 只列当前可创建/迁移后仍存在的类型：其余旧类型在启动时被 migrateEntryTypes 统一改成「其他」
-const TYPE_CHIPS: Record<string, string> = { '角色': 'chip-red', '世界观': 'chip-purple', '初始': 'chip-blue', '初始记忆': 'chip-green', '其他': 'chip-gray', '变量': 'chip-amber' };
+const TYPE_CHIPS: Record<string, string> = { '角色': 'chip-red', '世界观': 'chip-purple', '初始': 'chip-blue', '初始记忆': 'chip-green', '部分人知道': 'chip-teal', '其他': 'chip-gray', '变量': 'chip-amber' };
 function typeChip(t: any) { return 'chip ' + (TYPE_CHIPS[t] || 'chip-gray'); }
 
 // 变量页时间显示：今天只给时分，其它日期带上月日
@@ -1347,6 +1348,19 @@ const UIManager: UIManagerShape = {
         data.bindName = bindName;
       }
     }
+    if (data.type === '部分人知道') {
+      // 知情者名单：存 bindNames（角色名数组）。名字写错（世界书里没有这个角色）时提醒一句——
+      // 不拦着保存（角色条目以后可能会补），但用户得知道这条现在发不出去。
+      const subEl = document.getElementById('wbEntryBindNames') as HTMLTextAreaElement | null;
+      const names = parseKnowers((subEl && subEl.value) || '');
+      if (!names.length) { App.toast('「部分人知道」要写清楚谁知道（一行一个角色名），不然这条不会发给任何人'); return; }
+      const roleNames = (wb.entries || []).filter(function (e) { return e.type === '角色'; })
+        .map(function (e) { return String(e.name || '').trim(); });
+      const unknown = names.filter(function (n) { return roleNames.indexOf(n) < 0; });
+      data.bindNames = names;
+      delete data.bindName;                       // 只用 bindNames（bindName 是兼容读取用的）
+      if (unknown.length) App.toast('注意：' + unknown.join('、') + ' 不是当前世界书里的「角色」条目——这条对 TA 不会生效');
+    }
     if (editId) { WorldBookManager.updateEntry(wb.id, editId, data); }
     else { WorldBookManager.addEntry(wb.id, data); }
     this.closeModal('modalWBEntry');
@@ -1388,6 +1402,19 @@ const UIManager: UIManagerShape = {
       }
       if (keep) bindSel.value = keep;
     }
+    // 「部分人知道」的知情者名单：一行一个角色名（或顿号/逗号分隔）。开弹窗时回填该条目已存的名字。
+    const subRow = document.getElementById('wbEntrySubsetRow');
+    const subEl = document.getElementById('wbEntryBindNames') as HTMLTextAreaElement | null;
+    if (subRow) subRow.style.display = type === '部分人知道' ? '' : 'none';
+    if (subEl && type === '部分人知道') {
+      const wb = WorldBookManager.getActive();
+      const entries = (wb && wb.entries) || [];
+      const editId = String((document.getElementById('wbEntryEditId') as HTMLInputElement | null)?.value || '');
+      const cur: any = editId ? entries.find((e: any) => e.id === editId) : null;
+      const names = Array.isArray(cur && cur.bindNames) ? cur.bindNames.map((n: any) => String(n || ''))
+        : parseKnowers((cur && cur.bindName) || '');
+      subEl.value = names.map((n: string) => n.trim()).filter(Boolean).join('\n');
+    }
   },
 
   deleteWBEntry(entryId: any) {
@@ -1403,18 +1430,22 @@ const UIManager: UIManagerShape = {
     });
   },
 
-  // ===== 真实模式：场景编辑弹窗（时间 / 地点 / 在场）=====
+  // ===== 真实模式：场景编辑弹窗（时间 / 地点 / 在场 / 大家都知道的事）=====
   // 弹窗模板在 modals.ts 的 modalRealScene；这两个函数必须挂在 UIManager 上（内联 onclick 按全局取）。
   openRealScene() {
     let info: any = { time: '', place: '', present: [] };
+    let common = '';
     try { if (typeof RealMode !== 'undefined' && RealMode.sceneInfo) info = RealMode.sceneInfo() || info; } catch (e) { /* 逻辑层未就绪时按空场景打开 */ }
+    try { if (typeof RealMode !== 'undefined' && RealMode.common) common = RealMode.common(); } catch (e) { /* ignore */ }
     const timeEl = document.getElementById('realSceneTime');
     const placeEl = document.getElementById('realScenePlace');
     const presentEl = document.getElementById('realScenePresent');
+    const commonEl = document.getElementById('realSceneCommon');
     const present = Array.isArray(info && info.present) ? info.present : [];
     if (timeEl) timeEl.value = String((info && info.time) || '');
     if (placeEl) placeEl.value = String((info && info.place) || '');
     if (presentEl) presentEl.value = present.join('\n');
+    if (commonEl) commonEl.value = String(common || '');
     this.showModal('modalRealScene');
   },
 
@@ -1422,6 +1453,7 @@ const UIManager: UIManagerShape = {
     const timeEl = document.getElementById('realSceneTime');
     const placeEl = document.getElementById('realScenePlace');
     const presentEl = document.getElementById('realScenePresent');
+    const commonEl = document.getElementById('realSceneCommon');
     const present: string[] = [];
     String((presentEl && presentEl.value) || '').split(/[\n,，、]+/).forEach(function (n: string) {
       const v = n.trim();
@@ -1430,6 +1462,10 @@ const UIManager: UIManagerShape = {
     try {
       if (typeof RealMode !== 'undefined' && RealMode.saveScene) {
         RealMode.saveScene({ time: String((timeEl && timeEl.value) || '').trim(), place: String((placeEl && placeEl.value) || '').trim(), present: present });
+      }
+      // 共知由用户手工改（场记每轮自己维护；这里改完下一轮就以这份为准）
+      if (commonEl && typeof RealMode !== 'undefined' && RealMode.setCommon) {
+        RealMode.setCommon(String(commonEl.value || ''));
       }
     } catch (e) { /* 逻辑层未就绪时静默关窗 */ }
     this.closeModal('modalRealScene');

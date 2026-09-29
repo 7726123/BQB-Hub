@@ -3,9 +3,10 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import '../src/infra/storage';
 import { RealMode } from '../src/domain/realmode';
-import { RealState } from '../src/domain/realstate';
+import { RealState, parseKnowers } from '../src/domain/realstate';
 import {
   parsePublicReply, parseRoleReply, formatPublicRecent, readField, splitNames, extractBlocks,
+  buildEchoMessages, cleanEcho,
 } from '../src/domain/realprompt';
 import { WorldBookManager as WBM } from '../src/domain/worldbook';
 import { UsageStats } from '../src/lib/usage';
@@ -48,7 +49,7 @@ function stubAPI(replies: string[]): any[] {
 
 function sceneReply(o: {
   time?: string; place?: string; present?: string; events?: string; narration?: string;
-  summary?: string; next?: string; heard?: string; shell?: string;
+  summary?: string; next?: string; heard?: string; shell?: string; common?: string;
 }): string {
   return '<场记>\n' +
     '时间：' + (o.time || '次日清晨') + '\n' +
@@ -57,6 +58,7 @@ function sceneReply(o: {
     '公共事件：' + (o.events || '无') + '\n' +
     (o.narration ? '旁白：' + o.narration + '\n' : '') +
     '纪要：' + (o.summary || '早上，教室里。') + '\n' +
+    (o.common !== undefined ? '共知：' + o.common + '\n' : '') +
     '接话：' + (o.next || '旁白') + '\n' +
     (o.heard ? '可感：' + o.heard + '\n' : '') +
     (o.shell ? '壳：' + o.shell + '\n' : '') +
@@ -95,6 +97,13 @@ describe('结构化块解析', () => {
 
   it('不是 <场记> 块 → null（不许瞎猜）', () => {
     expect(parsePublicReply('好的，我来当这个场记。')).toBeNull();
+  });
+  it('共知：多行清单读得出来；「无/同上」当没变化（调用方保留旧值）', () => {
+    const r = parsePublicReply(sceneReply({ common: '- 下周六开运动会\n- 明天停课' }))!;
+    expect(r.common).toContain('运动会');
+    expect(r.common).toContain('停课');
+    expect(parsePublicReply(sceneReply({ common: '（无）' }))!.common).toBeUndefined();
+    expect(parsePublicReply(sceneReply({ common: '同上' }))!.common).toBeUndefined();
   });
   it('角色回复：私下说话自动把自己算进可感；壳剥掉；内心留在正文', () => {
     const rep = parseRoleReply('<私下 只说给="悠真">\n<壳>（她低声对悠真说了句什么）</壳>\n旁白：她凑近了些。\n<内心>不能让他看出来。</内心>「……那个，昨天的事。」', '千纱');
@@ -159,7 +168,7 @@ describe('空发送：场记选人 → 角色回应', () => {
 
   it('场记失败（短推脱）→ 这一轮整轮回滚、作者那句放回输入框（不留在记录里等重复）', async () => {
     setupBook();
-    stubAPI(['我不按格式写。']);
+    stubAPI(['「你好。」', '我不按格式写。']);       // 第一次是转述（作者那句 → 规范的一轮）
     const ta = { value: '' };
     (globalThis as any).document = { getElementById: (id: string) => (id === 'realInput' ? ta : null) };
     try {
@@ -186,7 +195,11 @@ describe('空发送：场记选人 → 角色回应', () => {
 describe('物理隔离（回归守卫）', () => {
   async function whisperTurn(): Promise<void> {
     setupBook();
-    stubAPI([sceneReply({ heard: '悠真', shell: '（她把悠真拉到一边，低声说了些什么）', next: '旁白' })]);
+    stubAPI([
+      // 转述：作者那句"（把悠真拉到一边）…"被判成悄悄话（可感 + 壳都由它自己给）
+      '<私下 只说给="悠真">\n<壳>（她把悠真拉到一边，低声说了些什么）</壳>\n「我跟你说，雨宫同学昨天有些奇怪。」',
+      sceneReply({ heard: '悠真', shell: '（她把悠真拉到一边，低声说了些什么）', next: '旁白' }),
+    ]);
     await RealMode._sendText('（把悠真拉到一边）我跟你说，雨宫同学昨天有些奇怪。');
   }
 
@@ -594,11 +607,345 @@ describe('撤回：回到这一轮之前', () => {
 
   it('作者那一轮也一起回滚（含作者那句话）', async () => {
     setupBook();
-    stubAPI([sceneReply({ next: '旁白' })]);
+    stubAPI(['「我说了一句。」', sceneReply({ next: '旁白' })]);
     await RealMode._sendText('我说了一句。');
     expect(RealState.log().length).toBe(1);   // 场记这轮没产出公共文字 → 只有作者那句
     expect(RealState.log()[0].kind).toBe('player');
     RealMode.undoLast();
     expect(RealState.log().length).toBe(0);
+  });
+});
+
+// ---------- 大家都知道的事（共知） ----------
+describe('共知：公开的通知/传闻，每个角色都知道（不管在不在场）', () => {
+  it('场记维护的共知发给不在场的角色；两个人的那一段逐字节相同（缓存）', async () => {
+    setupBook();
+    stubAPI([sceneReply({ common: '- 下周六开运动会\n- 明天下午停课', next: '旁白' })]);
+    await RealMode._sendText('');
+    expect(RealState.common()).toContain('下周六开运动会');
+    // 美月不在场（后来的记录里都没有她）
+    RealState.setScene({ present: ['千纱', '悠真'] });
+    RealState.append({ kind: 'npc', speaker: '悠真', raw: '「早。」', present: ['千纱', '悠真'] });
+    const mei = RealMode._roleMessagesFor('美月').map(m => String(m.content)).join('\n');
+    const qian = RealMode._roleMessagesFor('千纱').map(m => String(m.content)).join('\n');
+    expect(mei).toContain('下周六开运动会');        // 不在场也知道（这就是这条通道的意义）
+    expect(mei).toContain('不在场也知道');          // 段落抬头明写这一点，模型别把它当成"我在场才知道的"
+    expect(qian).toContain('下周六开运动会');
+    const cut = (s: string) => s.slice(s.indexOf('## 大家都知道的事'));
+    expect(cut(mei)).toBe(cut(qian));               // 逐字节一致 → 换角色说话也能命中缓存
+  });
+
+  it('位置在追加式前缀之后（共知每轮可能变，别把它插在共同经历前面，否则缓存前缀全废）', () => {
+    setupBook();
+    RealState.append({ kind: 'scene', speaker: '', raw: '雨停了。', present: ['千纱', '悠真', '美月'] });
+    RealMode.setCommon('- 下周六开运动会');
+    const user = String(RealMode._roleMessagesFor('悠真')[1].content);
+    expect(user.indexOf('## 共同经历')).toBeGreaterThanOrEqual(0);
+    expect(user.indexOf('## 大家都知道的事')).toBeGreaterThan(user.indexOf('## 你是谁'));
+    expect(user.indexOf('## 大家都知道的事')).toBeGreaterThan(user.indexOf('## 共同经历'));
+  });
+
+  it('场记没写/写「（无）」→ 保留旧值（不把大家已经知道的事清空）', async () => {
+    setupBook();
+    RealMode.setCommon('- 下周六开运动会');
+    stubAPI([sceneReply({ common: '（无）', next: '旁白' })]);
+    await RealMode._sendText('');
+    expect(RealState.common()).toContain('下周六开运动会');
+  });
+
+  it('撤回把共知一起回滚（和场景/纪要一个待遇）', async () => {
+    setupBook();
+    RealMode.setCommon('- 原来是旧值');
+    stubAPI([sceneReply({ place: '走廊', common: '- 下周六开运动会', next: '旁白' })]);
+    await RealMode._sendText('');
+    expect(RealState.common()).toContain('运动会');
+    RealMode.undoLast();
+    expect(RealState.common()).toBe('- 原来是旧值');
+  });
+
+  it('公共契约的红线：写明只收公开的事、绝不写悄悄话；请求里带上当前清单', async () => {
+    setupBook();
+    RealMode.setCommon('- 下周六开运动会');
+    const calls = stubAPI([sceneReply({ next: '旁白' })]);
+    await RealMode._sendText('');
+    const req = calls[0].msgs.map((m: any) => m.content).join('\n');
+    expect(req).toContain('绝对不能写进来');           // 悄悄话不许进共知
+    expect(req).toContain('不管他当时在不在场');
+    expect(req).toContain('下周六开运动会');           // 上一轮的清单给它照抄
+    expect(req).toContain('最新的完整清单');
+  });
+
+  it('用户能在场景弹窗里看和改（RealMode.common/setCommon + 弹窗字段）', () => {
+    setupBook();
+    RealMode.setCommon('  - 一行\n- 两行  ');
+    expect(RealMode.common()).toBe('- 一行\n- 两行');
+    const modals = readSrc('../src/domain/modals.ts');
+    expect(modals).toContain('realSceneCommon');
+    const ui = readSrc('../src/domain/ui.ts');
+    expect(ui).toContain('RealMode.setCommon');
+    expect(ui).toContain('RealMode.common');
+  });
+  it('发出去就把输入框收回一行（长文发送后不会挂着一大坨）', async () => {
+    setupBook();
+    stubAPI(['「早。」', sceneReply({ next: '旁白' })]);
+    const ta: any = { value: '', style: { height: '142px' } };
+    (globalThis as any).document = { getElementById: (id: string) => (id === 'realInput' ? ta : null) };
+    try {
+      await RealMode._sendText('很长的一句'.repeat(20));
+    } finally {
+      delete (globalThis as any).document;
+    }
+    expect(ta.value).toBe('');
+    expect(ta.style.height).toBe('');
+  });
+});
+
+// ---------- 部分人知道（内情） ----------
+describe('部分人知道：只有名单里的角色拿得到（作者额外设定的那一层）', () => {
+  function addSubset(name: string, content: string, knowers: string[], inject = true): void {
+    const all = WBM.getAll();
+    const id = WBM.getActiveId();
+    const bk = all.find(w => w.id === id)!;
+    bk.entries = (bk.entries || []).concat([{ id: 'sub_' + name, type: '部分人知道', name, content, bindNames: knowers, inject }] as any);
+    WBM.saveAll(all);
+  }
+
+  it('名单里的人拿得到、并写明"谁知道"；名单外的角色一个字都拿不到', () => {
+    setupBook();
+    addSubset('初中同学', '我和悠真初中就认识，一直瞒着班上的同学。', ['千纱', '悠真']);
+    const qian = RealMode._roleMessagesFor('千纱').map(m => String(m.content)).join('\n');
+    const you = RealMode._roleMessagesFor('悠真').map(m => String(m.content)).join('\n');
+    const mei = RealMode._roleMessagesFor('美月').map(m => String(m.content)).join('\n');
+    expect(qian).toContain('初中就认识');
+    expect(qian).toContain('知道的人：千纱、悠真');
+    expect(you).toContain('初中就认识');
+    expect(you).toContain('知道的人：千纱、悠真');
+    expect(mei).not.toContain('初中就认识');          // 硬隔离：她连内容都拿不到
+    expect(mei).not.toContain('初中同学');
+  });
+
+  it('场记（公共调用）拿不到内情——它是私下的，公共侧知道了就可能顺手写进纪要/共知', async () => {
+    setupBook();
+    addSubset('初中同学', '我和悠真初中就认识。', ['千纱']);
+    const calls = stubAPI([sceneReply({ next: '旁白' })]);
+    await RealMode._sendText('');
+    const pub = calls[0].msgs.map((m: any) => m.content).join('\n');
+    expect(pub).not.toContain('初中就认识');
+    expect(pub).toContain('## 大家都知道的事');
+  });
+
+  it('转述请求也拿不到（转述只做规范化，不需要内情）', async () => {
+    setupBook();
+    addSubset('初中同学', '我和悠真初中就认识。', ['千纱']);
+    const calls = stubAPI(['「早。」', sceneReply({ next: '旁白' })]);
+    await RealMode._sendText('早');
+    const echo = calls[0].msgs.map((m: any) => m.content).join('\n');
+    expect(echo).not.toContain('初中就认识');
+  });
+
+  it('关掉注入 / 内容为空 / 名单为空 / 名字不在书里 → 都不注入', () => {
+    setupBook();
+    addSubset('关掉的', '不该出现的内容A', ['千纱'], false);
+    addSubset('空的', '   ', ['千纱']);
+    addSubset('没名单', '不该出现的内容B', []);
+    addSubset('名字打错了', '不该出现的内容C', ['千纱织']);
+    const qian = RealMode._roleMessagesFor('千纱').map(m => String(m.content)).join('\n');
+    expect(qian).not.toContain('不该出现的内容A');
+    expect(qian).not.toContain('不该出现的内容B');
+    expect(qian).not.toContain('不该出现的内容C');
+    expect(qian).not.toContain('只有你和某些人知道的事');   // 一条都没有时，这一段根本不出现
+  });
+
+  it('位置在私有区（共同经历之后）、场景之前——不插在追加式前缀前面', () => {
+    setupBook();
+    addSubset('初中同学', '我和悠真初中就认识。', ['千纱', '悠真']);
+    const user = String(RealMode._roleMessagesFor('千纱')[1].content);
+    expect(user.indexOf('## 只有你和某些人知道的事')).toBeGreaterThan(user.indexOf('## 共同经历'));
+    expect(user.indexOf('## 只有你和某些人知道的事')).toBeGreaterThan(user.indexOf('## 记得的往事'));
+    expect(user.indexOf('## 只有你和某些人知道的事')).toBeLessThan(user.indexOf('## 当前场景'));
+  });
+
+  it('bindName 手写兼容：「甲、乙」这种也认', () => {
+    setupBook();
+    const all = WBM.getAll();
+    const bk = all.find(w => w.id === WBM.getActiveId())!;
+    bk.entries = (bk.entries || []).concat([{ id: 'sub_x', type: '部分人知道', name: '旧写法', content: '手写绑定的内容D', bindName: '千纱、美月', inject: true }] as any);
+    WBM.saveAll(all);
+    expect(RealMode._roleMessagesFor('千纱').map(m => String(m.content)).join('\n')).toContain('手写绑定的内容D');
+    expect(RealMode._roleMessagesFor('美月').map(m => String(m.content)).join('\n')).toContain('手写绑定的内容D');
+    expect(RealMode._roleMessagesFor('悠真').map(m => String(m.content)).join('\n')).not.toContain('手写绑定的内容D');
+  });
+
+  it('名单解析 parseKnowers：换行/顿号/逗号/分号都能分，去重去空（编辑器与读取共用）', () => {
+    expect(parseKnowers('千纱\n悠真')).toEqual(['千纱', '悠真']);
+    expect(parseKnowers('千纱、悠真, 美月；千纱 ')).toEqual(['千纱', '悠真', '美月']);
+    expect(parseKnowers('\n\n')).toEqual([]);
+    expect(parseKnowers(null)).toEqual([]);
+  });
+
+  it('迁移白名单保留「部分人知道」；常规世界书注入里没有它（不进公共注入）', () => {
+    setupBook();
+    addSubset('初中同学', '我和悠真初中就认识。', ['千纱']);
+    expect(WBM.migrateEntryTypes()).toBe(false);
+    const t = (WBM.getActive() as any).entries.find((e: any) => e.type === '部分人知道');
+    expect(t).toBeTruthy();
+    const injected = WBM.filterRelevantEntries().map((e: any) => e.name);
+    expect(injected).not.toContain('初中同学');
+    const src = readSrc('../src/domain/worldbook.ts');
+    expect(src).toContain("'部分人知道'");
+  });
+
+  it('编辑器：类型下拉有这个类型、有知情者名单字段、保存走 bindNames 且名字打错会提醒', () => {
+    const modals = readSrc('../src/domain/modals.ts');
+    expect(modals).toContain('<option>部分人知道</option>');
+    expect(modals).toContain('wbEntryBindNames');
+    const ui = readSrc('../src/domain/ui.ts');
+    expect(ui).toContain("type === '部分人知道'");
+    expect(ui).toContain('data.bindNames');
+    expect(ui).toContain('不是当前世界书里的「角色」条目');
+    expect(ui).toContain('不然这条不会发给任何人');       // 名单为空 → 拒绝保存
+    expect(ui).toContain('parseKnowers');
+    expect(ui).toContain("'部分人知道': 'chip-teal'");
+    expect(readSrc('../../web/index.html')).toContain('.chip-teal');
+  });
+});
+
+// ---------- 转述（作者那句话 → 规范的一轮） ----------
+describe('转述：作者随手写的一句 → 规范的一轮（整理不成就照原话）', () => {
+  const ECHO_IN = '我把书合上（其实我心里很在意她昨天去哪了）';
+  const ECHO_OUT = '把书合上。\n「昨天你去哪了？」<内心>其实我很在意她昨天去哪了。</内心>';
+
+  it('台词/动作/心里话分开落地：别人只拿到旁人能感知的那部分，原话留给作者自己看', async () => {
+    setupBook();
+    stubAPI([ECHO_OUT, sceneReply({ next: '旁白' })]);
+    await RealMode._sendText(ECHO_IN);
+    const rec = RealState.log().find(r => r.kind === 'player')!;
+    expect(rec.raw).toContain('「昨天你去哪了？」');
+    expect(rec.raw).toContain('<内心>');
+    expect(rec.playerRaw).toBe(ECHO_IN);              // 原话留着（气泡里「✎ 已整理 · 看原话」）
+    const you = RealState.visibleTo('悠真').map(i => i.text).join('\n');
+    expect(you).toContain('昨天你去哪了');
+    expect(you).not.toContain('其实我很在意');
+    // 原话只给作者看：不进任何注入（别人的视角、自己的角色请求都不该出现它）
+    expect(RealMode._roleMessagesFor('悠真').map(m => String(m.content)).join('\n')).not.toContain(ECHO_IN);
+    expect(RealMode._roleMessagesFor('千纱').map(m => String(m.content)).join('\n')).not.toContain(ECHO_IN);
+  });
+
+  it('场记看的是整理后的一轮（作者的原话不出现在公共请求里），且看不到 <内心>', async () => {
+    setupBook();
+    const calls = stubAPI([ECHO_OUT, sceneReply({ next: '旁白' })]);
+    await RealMode._sendText(ECHO_IN);
+    expect(calls.map(c => c.opts.callLabel)).toEqual(['real-echo', 'real-scene']);
+    const pub = calls[1].msgs.map((m: any) => m.content).join('\n');
+    expect(pub).toContain('昨天你去哪了');
+    expect(pub).not.toContain('其实我很在意');
+    expect(pub).not.toContain(ECHO_IN);
+  });
+
+  it('转述自己判定为悄悄话：可感与壳直接落到记录上（场记没给也能隔离）', async () => {
+    setupBook();
+    stubAPI([
+      '<私下 只说给="悠真">\n<壳>（她凑到悠真耳边说了句什么）</壳>\n「昨天你去哪了？」',
+      sceneReply({ next: '旁白' }),
+    ]);
+    await RealMode._sendText('（凑到悠真耳边）昨天你去哪了？');
+    const rec = RealState.log().find(r => r.kind === 'player')!;
+    expect(rec.heard).toEqual(['悠真', '千纱']);      // 说话人自己一定知道
+    expect(rec.shell!.hear).toContain('耳边');
+    expect(RealState.visibleTo('美月').map(i => i.text).join('\n')).not.toContain('昨天你去哪了');
+  });
+
+  it('场记只补不覆盖：它没给壳时，转述写好的壳不会被抹掉（也不会把可感抹成"全体都听得到"）', async () => {
+    setupBook();
+    stubAPI([
+      '<私下 只说给="悠真">\n<壳>（她凑到悠真耳边说了句什么）</壳>\n「昨天你去哪了？」',
+      sceneReply({ heard: '悠真', next: '旁白' }),     // 有可感、没壳
+    ]);
+    await RealMode._sendText('（凑到悠真耳边）昨天你去哪了？');
+    const rec = RealState.log().find(r => r.kind === 'player')!;
+    expect(rec.heard).toEqual(['悠真', '千纱']);
+    expect(rec.shell!.hear).toContain('耳边');        // 转述给的壳还在
+    expect(RealState.visibleTo('美月').map(i => i.text).join('\n')).toContain('耳边');
+  });
+
+  it('整理失败（空回）→ 照原话发出，这一轮照常走；记录里不写 playerRaw', async () => {
+    setupBook();
+    const calls = stubAPI(['', sceneReply({ next: '旁白' })]);
+    await RealMode._sendText('我说了一句。');
+    const rec = RealState.log().find(r => r.kind === 'player')!;
+    expect(rec.raw).toBe('我说了一句。');
+    expect(rec.playerRaw).toBeUndefined();
+    expect(calls.map(c => c.opts.callLabel)).toEqual(['real-echo', 'real-scene']);
+  });
+
+  it('上帝模式与空发送都不转述（这一轮没有"作者的话"要整理）', async () => {
+    setupBook();
+    RealState.setGod(true);
+    const g = stubAPI([sceneReply({ next: '旁白' })]);
+    await RealMode._sendText('放学铃响了。');
+    expect(g.map(c => c.opts.callLabel)).toEqual(['real-scene']);
+    setupBook();
+    const e = stubAPI([sceneReply({ next: '旁白' })]);
+    await RealMode._sendText('');
+    expect(e.map(c => c.opts.callLabel)).toEqual(['real-scene']);
+  });
+
+  it('作者这一轮只有心里话 → 场记明说"只有心里活动"，不把心里话写进公共事件', async () => {
+    setupBook();
+    const calls = stubAPI(['<内心>其实我很在意她昨天去哪了。</内心>', sceneReply({ next: '旁白' })]);
+    await RealMode._sendText(ECHO_IN);
+    const pub = calls[1].msgs.map((m: any) => m.content).join('\n');
+    expect(pub).toContain('只有心里活动');
+    expect(pub).not.toContain('其实我很在意');
+  });
+
+  it('转述请求：只给自己的公开人设 + 在场者的名字（别人的设定不进），作者那句在最后（缓存前缀）', () => {
+    setupBook();
+    const msgs = buildEchoMessages({
+      name: '千纱', persona: '内向，怕生，说话很短。', prev: '【他说】「早。」',
+      scene: { time: '清晨', place: '教室', present: ['千纱', '悠真'] }, present: ['千纱', '悠真'], input: '早啊',
+    });
+    const all = msgs.map(m => m.content).join('\n');
+    expect(all).toContain('内向，怕生');
+    expect(all).toContain('悠真');
+    expect(all).not.toContain('爱开玩笑');            // 别的角色的设定不进转述请求（认得出名字就够）
+    expect(String(msgs[0].content)).toContain('原样回，一个字都别改');
+    expect(String(msgs[1].content).trim().endsWith('早啊')).toBe(true);
+  });
+
+  it('原话在气泡里可展开（默认收起）；cleanEcho 丢掉模型的前言与代码块', () => {
+    const html = (RealMode as any)._recordHtml({
+      id: 'p', at: 1, kind: 'player', speaker: '千纱', raw: '「早。」', present: [], playerRaw: '早',
+    });
+    expect(html).toContain('real-echo');
+    expect(html).toContain('已整理');
+    expect(html).toContain('>早<');
+    expect(cleanEcho('```\n好的，整理如下：\n「早。」\n```')).toBe('「早。」');
+    expect(cleanEcho('「早。」')).toBe('「早。」');
+  });
+
+  it('整理当中按「停止」→ 这一轮整体退回（原话回到输入框，不留半轮）', async () => {
+    setupBook();
+    const anyG = globalThis as any;
+    const ta = { value: '' };
+    anyG.document = { getElementById: (id: string) => (id === 'realInput' ? ta : null) };
+    const labels: string[] = [];
+    anyG.APIHandler = {
+      fetchCompletions: (_m: any, onChunk: any, onDone: any, _e: any, opts: any) => {
+        labels.push(opts && opts.callLabel);
+        if (opts && opts.callLabel === 'real-echo') RealMode.stop();   // 用户在整理时点了停止
+        onDone('', false, undefined);
+      },
+      abort: () => { /* noop */ },
+    };
+    try {
+      await RealMode._sendText('我说了一句。');
+    } finally {
+      delete anyG.document;
+      anyG.APIHandler = undefined;
+    }
+    expect(labels).toEqual(['real-echo']);            // 没有接着喊场记
+    expect(RealState.log().length).toBe(0);
+    expect(ta.value).toBe('我说了一句。');
   });
 });

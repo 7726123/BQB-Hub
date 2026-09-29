@@ -6,6 +6,7 @@
 //     私下说话时自己声明 <私下 只说给="…"> 并给一行 <壳>。
 // 解析只读"它按合同写出来的结构化块"，不是猜语义（用户明确否掉了本地正则判断）。
 import type { RealRecord, RealScene, RealShell, RealSliceItem } from './realstate';
+import { stripInner } from './realstate';
 
 export interface Msg { role: 'system' | 'user' | 'assistant'; content: string }
 
@@ -16,7 +17,7 @@ function personaOneLine(content: string, max = 60): string {
 }
 
 export const PUBLIC_SYSTEM =
-  '你是这场多人剧情的「场记」。你只看公共信息（场景、纪要、最近发生的事、作者的输入），负责四件事，' +
+  '你是这场多人剧情的「场记」。你只看公共信息（场景、纪要、最近发生的事、作者的输入），负责五件事，' +
   '**不要写任何角色的台词、动作或内心**：\n' +
   '1. 维护公共事实：时间、地点、在场名单（谁进场、谁离场）、大家都看得到的新动静。' +
   '**没有新事实就写「无」**——不要为了凑内容去描写光线、声音、天气这类没有变化的东西；' +
@@ -25,15 +26,21 @@ export const PUBLIC_SYSTEM =
   '**开场（在场还空着）由你定**：自己定时间、地点、先在场的人，从名单里挑，不要问作者要设定；\n' +
   '2. 维护纪要：把刚发生的事并进「剧情纪要」（≤300 字，只写客观发生了什么；' +
   '**悄悄话的内容一律不许写进纪要和公共事件**——只写「两人低声交谈了一会儿」这类外部现象）；\n' +
-  '3. 判定可感范围：作者这一条如果是悄悄话（只对某个人说），给出「可感」名单和「壳」' +
+  '3. 维护「共知」：**客观上公开、在场之外的人也该知道**的事（通知、公告、传闻、大家都知道的事实，' +
+  '比如「下周六开运动会」「明天停课」）。这一行会发给每一个角色，**不管他当时在不在场**——所以' +
+  '**悄悄话的内容、私下的心思、只有某个人知道的事绝对不能写进来**（那条红线比"写全"重要）。' +
+  '每轮写成**最新的完整清单**（一行一条，≤6 条，超过就把不重要的并掉；过期/不再成立的就删掉）；' +
+  '没有新变化时**照抄上一轮的那份**，不要改写也不要清空；\n' +
+  '4. 判定可感范围：作者这一条如果是悄悄话（只对某个人说），给出「可感」名单和「壳」' +
   '（其他人看到的样子，一句话，**不许泄漏内容**）；不是悄悄话就不写这两行；\n' +
-  '4. 选人：**优先让角色开口**——场合里有人就该有人说话，从「角色名单」里挑 0 或 1 个此刻最该接话的角色' +
+  '5. 选人：**优先让角色开口**——场合里有人就该有人说话，从「角色名单」里挑 0 或 1 个此刻最该接话的角色' +
   '（名单里有谁就只能选谁）；只有确实没人可说（纯粹的时间流逝、场景转换）才写「旁白」，**不要连着两轮都写旁白**。\n\n' +
   '只输出下面这一块，不要任何解释或其它文字：\n' +
   '<场记>\n时间：\n地点：\n在场：（顿号分隔）\n' +
   '公共事件：（0–2 条，**没有新事实就写「无」**；只写任何在场者都能看到/听到的**新**动静）\n' +
   '旁白：（**多数轮次留空**——只在场景/时间变了、或确实需要交代一句环境时才写，≤2 句；没有就不写这一行）\n' +
-  '纪要：（一句话，把刚发生的事并进纪要）\n接话：（在场角色名，或「旁白」）\n' +
+  '纪要：（一句话，把刚发生的事并进纪要）\n共知：（大家都知道的事：最新的完整清单，一行一条；没变化就照抄上一轮）\n' +
+  '接话：（在场角色名，或「旁白」）\n' +
   '可感：（可选，只有这件事的悄悄话才写：只有谁能听到，顿号分隔）\n' +
   '壳：（可选，写「可感」时一起写：其他人看到的样子，一句话，不泄漏内容）\n' +
   '</场记>';
@@ -41,7 +48,8 @@ export const PUBLIC_SYSTEM =
 export const ROLE_SYSTEM =
   '你只扮演一个人，别的人由别的轮次负责。你**只知道**下面给你的材料；材料里没有写的事，你就是不知道——' +
   '不要用"常识"或"剧情需要"替自己补，也不要提别人的内心。你可以误会、可以记错（这很正常、很真实），' +
-  '但不能凭空知道你没法知道的事。不要替别人说话、不要替别人做决定、不要描写别人的内心。';
+  '但不能凭空知道你没法知道的事。不要替别人说话、不要替别人做决定、不要描写别人的内心。' +
+  '标了「只有你和某些人知道」的事，**别当成人人都知道**；反过来，没标的事也不要自己推断"谁还不知道"。';
 
 /** 场记的思考纪律：作为**最后一条** system 消息钉在生成点前（实测 low 档也能写到一两千字思考） */
 export const PUBLIC_THINK_DISCIPLINE =
@@ -52,6 +60,8 @@ export const PUBLIC_THINK_DISCIPLINE =
 export interface PublicCtx {
   scene: RealScene;
   summary: string;
+  /** 大家都知道的事（公共调用上一轮维护的那一份，没变化就照抄） */
+  common?: string;
   recent: string;
   input: string;
   /** empty = 作者没发言（推进）；line = 作者以扮演者身份说的话；narration = 作者旁白推进；direct = 作者指定谁接话 */
@@ -79,6 +89,8 @@ export function buildPublicMessages(ctx: PublicCtx): Msg[] {
   lines.push(String(ctx.recent || '').trim() || '（还没有发生什么）');
   lines.push('## 剧情纪要');
   lines.push(String(ctx.summary || '').trim() || '（还没有）');
+  lines.push('## 大家都知道的事（你上一轮维护的这份；这一轮请给出最新的完整清单）');
+  lines.push(String(ctx.common || '').trim() || '（还是空的——有公开的通知/传闻/大家都知道的事实就写进来）');
   lines.push('## 当前场景');
   lines.push('时间：' + (sc.time || '（未设定）') + '｜地点：' + (sc.place || '（未设定）'));
   lines.push('在场：' + ((sc.present && sc.present.length) ? sc.present.join('、') : '（还没定——由你定开场：从上面的名单里挑此刻在场的人）'));
@@ -93,7 +105,14 @@ export function buildPublicMessages(ctx: PublicCtx): Msg[] {
   } else if (ctx.inputKind === 'direct') {
     lines.push('（作者指定接话人）：' + ctx.input);
   } else {
-    lines.push('（作者以扮演者的身份说了下面这句；若这是只说给某人的悄悄话，请给出可感与壳）：' + ctx.input);
+    // 只给"旁人能感知到的部分"：作者（或转述）写下的 <内心> 是那个角色自己的事，
+    // 场记知道了就可能顺手写进公共事件/旁白/纪要——那是最隐蔽的一次泄漏。
+    const shown = stripInner(String(ctx.input || ''));
+    if (shown) {
+      lines.push('（作者以扮演者的身份说了下面这句；若这是只说给某人的悄悄话，请给出可感与壳）：' + shown);
+    } else {
+      lines.push('（作者扮演的角色这一轮只有心里活动——那是他自己的事，你不需要知道，也不要写进公共事件、旁白或纪要）');
+    }
   }
   return [{ role: 'system', content: PUBLIC_SYSTEM + '\n\n' + PUBLIC_THINK_DISCIPLINE }, { role: 'user', content: lines.join('\n') }];
 }
@@ -109,9 +128,16 @@ export interface RoleCtx {
   extra: string;
   scene: RealScene;
   others: { name: string; persona: string }[];
+  /** 大家都知道的事（公开的通知/传闻）——人人一份，所以放在最末（易变位，不破坏上面的追加式前缀） */
+  common?: string;
+  /**
+   * 「部分人知道」的内情（只有名单里的角色知道、别人不知道的事）：作者在世界书里额外设定的，
+   * 不在场记录里推不出来。名单外的角色**根本拿不到**这一段（硬隔离，不是提示词要求）。
+   */
+  subset?: string;
 }
 
-/** 顺序按"缓存命中的共同前缀"排：固定契约（system）→ 共同经历 → 他的私有 → 易变的场景/在场 */
+/** 顺序按"缓存命中的共同前缀"排：固定契约（system）→ 共同经历 → 他的私有 → 易变的场景/在场/共知 */
 export function buildRoleMessages(ctx: RoleCtx): Msg[] {
   const sc = ctx.scene || { time: '', place: '', present: [] };
   const rules: string[] = [];
@@ -140,17 +166,39 @@ export function buildRoleMessages(ctx: RoleCtx): Msg[] {
     user.push('## 你记得的往事（你自己的印象，可能不准）');
     user.push(String(ctx.memory).trim());
   }
+  if (String(ctx.subset || '').trim()) {
+    // 只有名单里的人知道的内情：名单外的人拿不到（这一段根本不进他们的请求）
+    user.push('## 只有你和某些人知道的事（别人不知道；不要当成人人都知道的）');
+    user.push(String(ctx.subset).trim());
+  }
   user.push('## 当前场景（每轮可能在变）');
   user.push('时间：' + (sc.time || '（未设定）') + '｜地点：' + (sc.place || '（未设定）') + '｜在场：' + ((sc.present || []).join('、') || '（空）'));
   if ((ctx.others || []).length) {
     user.push('## 在场的人（你能看到的）');
     ctx.others.forEach(function (o) { user.push('- ' + o.name + (o.persona ? '：' + o.persona : '')); });
   }
+  if (String(ctx.common || '').trim()) {
+    // 公开通知/传闻：不管你在不在场都知道（这是唯一一条跨角色共享的信息通道）
+    user.push('## 大家都知道的事（公开的；不在场也知道）');
+    user.push(String(ctx.common).trim());
+  }
   return [{ role: 'system', content: ROLE_SYSTEM + '\n\n' + rules.join('\n') }, { role: 'user', content: user.join('\n') }];
 }
 
-/** 该角色的视角切片 → 注入文本（【谁】…；降级的壳标成「只看到/听到」） */
-export function formatSlice(items: RealSliceItem[]): string {
+/**
+ * 「部分人知道」的内情 → 注入文本。
+ * 每条都写明「知道的人」，模型才知道这件事在谁之间是共识、在谁面前要瞒着（内容本身不会给名单外的人）。
+ */
+export function formatSubset(items: { title: string; text: string; knowers: string[] }[]): string {
+  if (!items || !items.length) return '';
+  return items.map(function (it) {
+    const who = (it.knowers || []).join('、');
+    return '【' + it.title + '】' + (who ? '（知道的人：' + who + '）' : '') + '\n'
+      + String(it.text || '').replace(/\n/g, '\n    ');
+  }).join('\n');
+}
+
+/** 该角色的视角切片 → 注入文本（【谁】…；降级的壳标成「只看到/听到」） */export function formatSlice(items: RealSliceItem[]): string {
   if (!items || !items.length) return '';
   return items.map(function (it) {
     const who = it.degraded ? '只看到/听到' : (it.speaker || '旁白');
@@ -225,10 +273,10 @@ export function splitNames(s: string): string[] {
 
 export interface PublicReply {
   time?: string; place?: string; present?: string[]; events?: string; narration?: string;
-  summary?: string; next?: string; heard?: string[]; shell?: RealShell;
+  summary?: string; next?: string; heard?: string[]; shell?: RealShell; common?: string;
 }
 
-const PUBLIC_LABELS = ['时间', '地点', '在场', '公共事件', '旁白', '纪要', '接话', '可感', '壳'];
+const PUBLIC_LABELS = ['时间', '地点', '在场', '公共事件', '旁白', '纪要', '共知', '接话', '可感', '壳'];
 
 /**
  * 读场记那一块。**容错优先**（用户实测"场记经常不按合同回"）：模型不一定规矩地写 `<场记>…</场记>`，
@@ -260,6 +308,9 @@ export function parsePublicReply(raw: string): PublicReply | null {
   if (events && !/^[（(]?\s*无\s*[）)]?$/.test(events)) out.events = events;
   const narration = readField(block, ['旁白']); if (narration) out.narration = narration;
   const summary = readField(block, ['纪要']); if (summary) out.summary = summary;
+  const common = readField(block, ['共知', '大家都知道']);
+  // 模型爱写「（无）」/「无」表示"跟上一轮一样/还没有"：这种情况按"没变化"处理（调用方保留旧值）
+  if (common && !/^[（(]?\s*(无|暂无|同上|不变|照旧|无变化)\s*[）)]?$/.test(common)) out.common = common;
   const next = readField(block, ['接话', '下一步', '下一个']);
   if (next) out.next = next.replace(/^[「『"']|[」』"']$/g, '').trim();
   const heard = readField(block, ['可感', '可感知', '只有谁']);
@@ -316,4 +367,77 @@ export function parseRoleReply(raw: string, speaker: string): RoleReply {
     ? { hear: shellB.blocks[0].trim() } : undefined;
   s = s.replace(/<\s*私下[^>]*>/gi, '').trim();
   return { text: s, heard: heard, shell: shell };
+}
+
+// ---------- 作者那一句的「转述」（把随口写的一句整理成规范的一轮） ----------
+// 为什么需要它：作者扮演某个角色时是"直接输出"的，他随手写的一句里台词/动作/心里话是混在一起的，
+// 软件没法知道哪部分旁人该知道、哪部分只有他自己知道（用户明确否掉了本地正则判断）。
+// 所以先让模型**只做规范化**（不添剧情、不删意思），再落成记录：别人只拿到旁人能感知的那部分。
+export const ECHO_SYSTEM =
+  '你在帮一个「扮演者」把他随手写下的一句，整理成这一幕里这个角色**规范的言行**。' +
+  '你只做整理，不改剧情：**不许添加原文没有的信息**（不要凭空加天气、地点、动作、心里话、别人的反应），' +
+  '**不许删掉他的意思**，也不要替别的角色说话。' +
+  '他写得零碎、有错别字、句子不成句、分不清哪句是台词哪句是心里话——把它顺通、分清，' +
+  '但**保持原来的意思和语气**（他还是他：别突然变得能说会道，也别把他写成另一个人）。\n' +
+  '只输出整理后的那一段：**不要前言、不要解释、不要用代码块包起来**。' +
+  '如果原文已经是规范的（话用「」包好、心里话在 <内心> 里、动作是通顺的陈述句），**原样回，一个字都别改**。';
+
+export interface EchoCtx {
+  /** 作者正在扮演的角色 */
+  name: string;
+  /** 他的公开人设（世界书「角色」条目的内容） */
+  persona: string;
+  /** 这个角色之前说过的（最多两轮）——让整理后的语气是同一个人 */
+  prev: string;
+  scene: RealScene;
+  /** 在场者的名字（只要名字：转述只需要知道"谁在"，用来判断是不是悄悄话） */
+  present: string[];
+  /** 作者随手写的那一句 */
+  input: string;
+}
+
+export function buildEchoMessages(ctx: EchoCtx): Msg[] {
+  const sc = ctx.scene || { time: '', place: '', present: [] };
+  const present = (ctx.present && ctx.present.length) ? ctx.present : (sc.present || []);
+  const rules: string[] = [];
+  rules.push('## 整理规则');
+  rules.push('- 动作、神态**直接写陈述句**：不加括号、不加「我」这个主语、也不写自己的名字'
+    + '（写「把书合上，瞥了眼窗外」，不要写「（我把书合上）」）；');
+  rules.push('- 说出口的话用「」包住（含「嗯。」这类单字）；引号里该用「我」照常用；');
+  rules.push('- 他心里想的、没说出口的、只有他自己注意到的东西 → 放进 <内心>…</内心>（读者看得到，戏里别的人看不到）；');
+  rules.push('- 如果这一句是**只说给某个人听**的（旁人听不到）→ 第一行单独写 <私下 只说给="对方名字">，'
+    + '再给一行 <壳>其他人看到的样子</壳>（一句话，不要泄漏内容）；');
+  rules.push('- 如果原文写的是**客观发生的事**（不是这个角色能说、能做、能想的，比如"第二天她没有来学校"）→'
+    + '另起一行用「旁白：」照写（场记会收下）；');
+  rules.push('- 原文里像"（让雨宫出场）"这种**安排剧情**的话 → 转成这个角色此刻的动作或心声；实在转不了就原样保留。');
+  const user: string[] = [];
+  user.push('## 这个角色是谁（公开人设）');
+  user.push(String(ctx.persona || '').replace(/\s+/g, ' ').trim() || '（世界书里还没写这个人）');
+  if (String(ctx.prev || '').trim()) {
+    user.push('## 他之前说过的（保持同一个人的语气）');
+    user.push(String(ctx.prev).trim());
+  }
+  user.push('## 现在');
+  user.push('时间：' + (sc.time || '（未设定）') + '｜地点：' + (sc.place || '（未设定）'));
+  user.push('在场：' + ((present && present.length) ? present.join('、') : '（还没定）'));
+  user.push('## 他随手写的这一句（要整理的）');
+  user.push(String(ctx.input || ''));
+  return [{ role: 'system', content: ECHO_SYSTEM + '\n\n' + rules.join('\n') }, { role: 'user', content: user.join('\n') }];
+}
+
+/**
+ * 转述结果的清理（**只做机械清理，不判语义**）：去代码块围栏、
+ * 丢掉模型爱加的第一句前言（"好的，整理如下："——只在这一行以冒号结尾、且后面还有正文时丢）。
+ */
+export function cleanEcho(raw: string): string {
+  let s = String(raw == null ? '' : raw).trim();
+  s = s.replace(/^```[a-zA-Z]*\s*/, '').replace(/```\s*$/, '').trim();
+  const lines = s.split('\n');
+  if (lines.length > 1) {
+    const head = lines[0].trim();
+    if (head.length <= 30 && /[:：]$/.test(head) && !/[「」『』<>]/.test(head)) {
+      s = lines.slice(1).join('\n').trim();
+    }
+  }
+  return s;
 }

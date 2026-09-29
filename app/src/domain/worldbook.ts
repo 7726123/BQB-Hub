@@ -90,12 +90,13 @@ export const WorldBookManager = {
     const idx = wb.entries.findIndex(e => e.id === entryId);
     if (idx >= 0) { wb.entries[idx] = { ...wb.entries[idx], ...entryData, id: entryId }; this.saveAll(all); }
   },
-  // 类型精简迁移：只保留 世界观/角色/初始/初始记忆/其他/变量，其余类型统一改为「其他」。幂等。
+  // 类型精简迁移：只保留 世界观/角色/初始/初始记忆/部分人知道/其他/变量，其余统一改为「其他」。幂等。
   // 「变量」是 2026-09-26 重新启用的类型（一个条目 = 一个变量：名称=变量名、内容=给模型的讲解、
   // 注入开关=启用/停用），必须留在白名单里，否则下次启动就被改成「其他」而失去注入与收集。
-  // 「初始记忆」是 2026-09-28 新增的类型（绑定一个角色条目，bindId/bindName），同理必须留白名单。
+  // 「初始记忆」（1 对 1 绑定一个角色，bindId/bindName）与「部分人知道」（绑一组角色名，bindNames）
+  // 都是 2026-09-28 新增的类型，同理必须留白名单——否则下次启动会被改成「其他」，绑定就废了。
   migrateEntryTypes(): boolean {
-    const KEEP = ['世界观', '角色', '初始', '初始记忆', '其他', '变量'];
+    const KEEP = ['世界观', '角色', '初始', '初始记忆', '部分人知道', '其他', '变量'];
     const all = this.getAll();
     let changed = false;
     all.forEach(function (wb) {
@@ -153,8 +154,9 @@ export const WorldBookManager = {
     const active = this.getActive();
     if (!active || !active.entries) return [];
     return active.entries.filter(function (e) {
-      // 「初始记忆」= 角色的私有视角（只有绑定角色自己看得到，由真实模式按角色注入）→ 不进常规注入
-      return e.type !== '初始' && e.type !== '初始记忆' && e.inject !== false;
+      // 「初始记忆」「部分人知道」= 角色的私有视角（只有被绑定/被点名的角色看得到，由真实模式按角色注入）
+      // → 不进常规注入。混进来就等于把秘密发给所有人。
+      return e.type !== '初始' && e.type !== '初始记忆' && e.type !== '部分人知道' && e.inject !== false;
     });
   },
   // 书本封面（400×600 jpeg dataURL；社区上传/书架展示共用）
@@ -185,11 +187,12 @@ export interface WBInjectResult { kept: any[]; skipped: number; chars: number; b
 export function selectInjectableEntries(entries: any[], budgetChars: number): WBInjectResult {
   // 没有名字的条目不注入：模型看不到名字就没法引用它，只会在提示词里留一行「### [其他] undefined」
   // （2026-09-25 一致性检查：导入卡/手改数据里可能有空名条目，注入侧统一跳过）
-  // 「初始记忆」也不注入：它是角色私有视角，只有绑定角色看得到（真实模式按角色单独注入）——
+  // 「初始记忆」「部分人知道」也不注入：它们是角色私有视角，只有该角色看得到（真实模式按角色单独注入）——
   // 混进公共世界书注入等于把秘密发给所有人。
   const list = (entries || []).filter(function (e: any) {
     return e && e.inject !== false && e.type !== '变量' && e.type !== '前端' && e.type !== '初始'
       && e.type !== '初始记忆'
+      && e.type !== '部分人知道'
       && String(e.name || '').trim().length > 0;
   });
   const sizeOf = function (e: any) { return String(e.content || '').length + String(e.name || '').length + 12; };

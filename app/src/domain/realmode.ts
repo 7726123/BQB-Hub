@@ -4,19 +4,22 @@
 // 单角色不变量：私有材料只出现在同一个角色的那一次请求里（回归守卫见 app/tests/realmode.test.ts）。
 // 界面元素由 web/index.html 的 #tab-real 提供（id 固定，见 app/tests/realmode-view.test.ts）。
 import { RealState, visibleSplit } from './realstate';
-import type { RealRecord, RealScene } from './realstate';
+import type { RealRecord, RealScene, RealShell } from './realstate';
 import {
-  buildPublicMessages, buildRoleMessages, buildMemoryMessages, cleanMemory,
-  formatSlice, formatPublicRecent, parsePublicReply, parseRoleReply, extractBlocks,
+  buildPublicMessages, buildRoleMessages, buildMemoryMessages, buildEchoMessages, cleanEcho, cleanMemory,
+  formatSlice, formatSubset, formatPublicRecent, parsePublicReply, parseRoleReply, extractBlocks,
 } from './realprompt';
 import type { Msg } from './realprompt';
 import { parseBubbles } from '../lib/bubble';
+import { autoGrow, bindAutoGrow } from '../lib/inputgrow';
 import { WorldBookManager } from './worldbook';
 import { normalizeStoryWindow } from '../lib/contextbudget';
 import { SM } from '../infra/gate';
 
 /** 视角切片注入给角色的条数上限（更早的折进"自己的回忆"） */
 const MAX_SLICE = 60;
+/** 转述时参考的"他之前说过的"轮数（太少稳不住语气，太多没必要还费 token） */
+const ECHO_PREV = 2;
 /** 窗口留空/自动时的兜底（字）：真实模式的记录比正文短得多，2 万字≈几百轮可见记录 */
 const REAL_WINDOW_FALLBACK = 20000;
 /** 输入框上方下拉里"上帝模式"的取值（不替任何人说话，只推进剧情） */
@@ -91,7 +94,11 @@ export const RealMode = {
   _streamSpeaker: '',
   _inputKind: 'empty' as 'empty' | 'line' | 'narration' | 'direct',
   _playerInput: '',
+  /** 作者这一轮实际落进记录的那一句（转述成功 = 整理后的；没转述 = 原话）——给场记当输入 */
+  _playerCanon: '',
   _playerRecId: '',
+  /** 用户在生成期间按了「停止」：这一轮不要再往下走（整理被停掉后，别接着喊场记） */
+  _stopped: false,
   _next: '',
 
   // ---------- 基础 ----------
@@ -124,6 +131,9 @@ export const RealMode = {
   // ---------- 场景 / 扮演者 ----------
   scene(): RealScene { return RealState.scene(); },
   sceneInfo(): RealScene { return RealState.scene(); },
+  /** 「大家都知道的事」（公开通知/传闻）：场记每轮维护，场景弹窗里用户也能改 */
+  common(): string { return RealState.common(); },
+  setCommon(text: string): void { RealState.setCommon(String(text || '').replace(/\r\n?/g, '\n').trim()); },
   player(): string { return RealState.player(); },
   saveScene(patch: Partial<RealScene>): void { RealState.setScene(patch || {}); this.render(); },
   setPlayer(name: string): void { RealState.setPlayer(String(name || '')); this.render(); },
@@ -287,7 +297,14 @@ export const RealMode = {
     }
     const st = el('realStatus');
     if (st) st.textContent = this._status || '';
+    this._bindGrow();
     this.refreshSendLabel();
+  },
+
+  /** 输入框（#realInput）接上自动增高：和写作页/对话模式**同一套实现**（空值回落 CSS 高度） */
+  _bindGrow(): void {
+    const ta = el('realInput');
+    if (ta && !ta.__growBound) { ta.__growBound = true; bindAutoGrow(ta); }
   },
 
   _recordHtml(rec: RealRecord): string {
@@ -334,12 +351,25 @@ export const RealMode = {
     const innerHtml = inner.blocks.length
       ? '<div class="real-inner">' + inner.blocks.map(function (x: string) { return nl2br(esc(x)); }).join('<br>') + '</div>'
       : '';
+    // 转述过的：留一个可展开的原话（默认收起——屏幕上就是整理后的一轮，和其他角色的输出一模一样）
+    const echoHtml = rec.playerRaw
+      ? '<div class="real-echo"><span class="real-echo-tag" onclick="RealMode.toggleEcho(this)">✎ 已整理 · 看原话</span>' +
+        '<div class="real-echo-raw">' + nl2br(esc(rec.playerRaw)) + '</div></div>'
+      : '';
     if (mineBlocks.length || innerHtml) {
       out += '<div class="chat-row' + (isMe ? ' chat-row-me' : '') + '">' + av +
         '<div class="chat-main"><div class="chat-name">' + esc(speaker) + '</div>' +
-        '<div class="chat-bubble">' + renderBlocks(mineBlocks) + innerHtml + '</div></div></div>';
+        '<div class="chat-bubble">' + renderBlocks(mineBlocks) + innerHtml + echoHtml + '</div></div></div>';
     }
     return out;
+  },
+
+  /** 「✎ 已整理 · 看原话」的展开/收起（内联 onclick 传 this） */
+  toggleEcho(node: any): void {
+    try {
+      const box = node && node.parentNode;
+      if (box && box.classList) box.classList.toggle('open');
+    } catch (e) { /* ignore */ }
   },
 
   _avatar(name: string): string {
@@ -431,12 +461,53 @@ export const RealMode = {
     } catch (e) { return false; }
   },
 
+  // ---------- 转述（作者随手写的一句 → 规范的一轮） ----------
+  /** 这个角色最近说过的（给他本人看的公开记录，用来稳住语气）——本轮那条要排除（那就是等一下要整理的原话） */
+  _recentOwnLines(name: string, skipId?: string): string {
+    try {
+      return RealState.log().filter(function (r) {
+        return r && r.kind !== 'scene' && r.speaker === name && r.id !== skipId;
+      }).slice(-ECHO_PREV).map(function (r) {
+        return '【他说】' + String(r.raw || '').replace(/<\s*内心\s*>[\s\S]*?<\s*\/\s*内心\s*>/gi, '').replace(/\s+/g, ' ').trim();
+      }).filter(function (s) { return s.length > 3; }).join('\n');
+    } catch (e) { return ''; }
+  },
+
+  /**
+   * 把作者随手写的一句整理成规范的一轮（唯一一次"作者不写标记也能分清哪些是心里话"的机会）。
+   * **失败/没内容就返回 null**，调用方照原话发出——绝不因为整理失败而卡住这一轮。
+   */
+  async _echoCall(name: string, text: string): Promise<{ text: string; heard?: string[]; shell?: RealShell; changed: boolean } | null> {    const msgs = buildEchoMessages({
+      name: name,
+      persona: this._persona(name),
+      prev: this._recentOwnLines(name, this._playerRecId),
+      scene: this.scene(),
+      present: this._presentList(),
+      input: text,
+    });
+    this._status = '正在整理你这句话…';
+    this._streamSpeaker = '';
+    this._reasonChars = 0;
+    this._acc = '';
+    this._silent = true;      // 整理过程不上屏（屏幕上留着作者自己的原话）
+    this.render();
+    const raw = await this._call(msgs, 'real-echo');
+    this._silent = false;
+    this._acc = '';
+    if (raw == null) return null;
+    const rep = parseRoleReply(raw, name);       // 顺带认出 <私下>/<壳>（转述自己判悄悄话）
+    const out = cleanEcho(rep.text);
+    if (!out.trim()) return null;
+    return { text: out, heard: rep.heard, shell: rep.shell, changed: out.trim() !== String(text || '').trim() };
+  },
+
   // ---------- 公共调用（场记） ----------
   async _publicCall(text: string): Promise<boolean> {
     const log = RealState.log();
     const msgs = buildPublicMessages({
       scene: this.scene(),
       summary: RealState.summary(),
+      common: RealState.common(),
       // 作者刚写的那句已经在记录里了，这里不再重复一遍（它下面是"作者这一次的输入"）
       recent: formatPublicRecent(this._playerRecId ? log.filter((r) => r.id !== this._playerRecId) : log, 40),
       input: text,
@@ -479,16 +550,24 @@ export const RealMode = {
     if (pub.present && pub.present.length) patch.present = pub.present;
     if (Object.keys(patch).length) RealState.setScene(patch);
     if (pub.summary) RealState.setSummary(pub.summary);
+    // 共知：模型没写/写「无/同上」都按"没变化"处理（保留旧值——宁可少给，不要让大家的记忆被清空）
+    if (pub.common) RealState.setCommon(pub.common);
     const body = [pub.narration, pub.events ? '【公共事件】' + String(pub.events).split('\n').join('\n【公共事件】') : '']
       .filter(Boolean).join('\n').trim();
     if (body) {
       RealState.append({ kind: 'scene', speaker: '', raw: body, present: (RealState.scene().present || []).slice() });
     }
-    // 作者那句被判定成悄悄话 → 回填可感（作者本人一定知道）与壳
+    // 作者那句被判定成悄悄话 → 回填可感（作者本人一定知道）与壳。
+    // **只补不覆盖**：转述可能已经判过悄悄话并写好了壳，场记这里缺哪项就只补哪项——
+    // 拿 undefined 去 patch 会把 heard 抹成"在场全体都听得到"，那是往泄漏的方向走。
     if (this._playerRecId && (pub.heard || pub.shell)) {
-      const heard = pub.heard && pub.heard.length
-        ? Array.from(new Set(pub.heard.concat([this.player()]).filter(Boolean))) : undefined;
-      RealState.patch(this._playerRecId, { heard: heard, shell: pub.shell });
+      const cur = RealState.log().find((r) => r.id === this._playerRecId) as RealRecord | undefined;
+      const patch: Partial<RealRecord> = {};
+      if (pub.heard && pub.heard.length) {
+        patch.heard = Array.from(new Set(pub.heard.concat([this.player()]).filter(Boolean)));
+      }
+      if (pub.shell && !(cur && cur.shell)) patch.shell = pub.shell;
+      if (Object.keys(patch).length) RealState.patch(this._playerRecId, patch);
     }
     this._next = String(pub.next || '旁白');
     return true;
@@ -559,6 +638,8 @@ export const RealMode = {
       extra: extra,
       scene: Object.assign({}, this.scene(), { present: this._presentList() }),
       others: this._others(name),
+      common: RealState.common(),
+      subset: formatSubset(RealState.subsetKnowledge(name)),
     });
     const sys = this._presetSystem();
     if (sys) msgs[0].content += '\n\n' + sys;
@@ -612,6 +693,8 @@ export const RealMode = {
     this._sending = true;
     this._reasonChars = 0;
     this._playerRecId = '';
+    this._playerCanon = '';
+    this._stopped = false;
     this._next = '';
     this._playerInput = text;
     // 上帝模式（输入框上方的下拉）：写的就是客观推进，不替任何人说话
@@ -620,36 +703,63 @@ export const RealMode = {
     this._scrollOnce = true;
     try { (globalThis as any).UsageStats?.beginSession?.(); } catch (e) { /* ignore */ }
     const logLenBefore = RealState.log().length;
+    // 从这里起整段都在 try 里：中途任何意外（含渲染/输入框的 DOM 异常）都必须走 finally，
+    // 否则 _sending 会永远卡在 true——整个模式就再也发不出去了（一条记录都发不出去，只能重开页面）。
+    try {
     if (text) {
-      if (ta) ta.value = '';
+      if (ta) { ta.value = ''; autoGrow(ta); }   // 发出去就把框收回一行（程序改 value 不触发 input）
       if (this._inputKind === 'narration') {
         // 上帝模式的旁白是客观事实、不是"你说的话"：落成旁白记录（居中淡色），不要挂在扮演者身上
         RealState.append({ kind: 'scene', speaker: '', raw: text.replace(/^\s*旁白\s*[:：]\s*/, '') });
       } else {
+        // 先按原话落一条（作者能立刻看到自己发了什么），再让转述把它换成规范的一轮。
+        // 换来换去都在同一条记录上（patch），所以撤回/回滚的语义不变。
         this._playerRecId = RealState.append({ kind: 'player', speaker: this.player(), raw: text }) || '';
+        const echo = await this._echoCall(this.player(), text);
+        if (echo) {
+          const patch: Partial<RealRecord> = {};
+          if (echo.changed) { patch.raw = echo.text; patch.playerRaw = text; }
+          if (echo.heard) patch.heard = echo.heard;
+          if (echo.shell) patch.shell = echo.shell;
+          if (Object.keys(patch).length) RealState.patch(this._playerRecId, patch);
+          // 场记看的是"这一轮实际发生了什么"（整理后的一轮），不是作者的原话
+          this._playerCanon = echo.text;
+        } else {
+          // 整理没成（超时/空回/接口报错——报错已在 _call 里提示过）→ 照原话发出，别卡住这一轮
+          this._playerCanon = text;
+        }
+      }
+      // 整理这段等待里用户按了「停止」→ 这一轮整体退回（别整理完还接着喊场记），原话回输入框
+      if (this._stopped) {
+        try {
+          const snap0 = RealState.turnSnap();
+          if (snap0) { RealState.restore(snap0); RealState.clearTurnSnap(); }
+        } catch (e) { /* ignore */ }
+        const ta0 = el('realInput');
+        if (ta0 && text) { ta0.value = text; autoGrow(ta0); }
+        return;
       }
     }
     this.render();
-    try {
-      const ok = await this._publicCall(text);
-      if (!ok) {
-        // 场记失败：把这一轮撤回去、作者那句放回输入框（和对话模式一个待遇），
-        // 否则记录里会留一句"没人接"的话，用户再发一次就重复了。
-        try {
-          const snap = RealState.turnSnap();
-          if (snap && text) {
-            RealState.restore(snap);
-            RealState.clearTurnSnap();
-            const ta2 = el('realInput');
-            if (ta2) ta2.value = text;
-            toast('这一轮没走成，刚才那句已放回输入框');
-          }
-        } catch (e) { /* ignore */ }
-        return;
-      }
-      if (this._next && this._next !== '旁白') {
-        await this._roleCall(this._next);
-      }
+    const ok = await this._publicCall(this._playerCanon || text);
+    if (!ok) {
+      // 场记失败：把这一轮撤回去、作者那句放回输入框（和对话模式一个待遇），
+      // 否则记录里会留一句"没人接"的话，用户再发一次就重复了。
+      try {
+        const snap = RealState.turnSnap();
+        if (snap && text) {
+          RealState.restore(snap);
+          RealState.clearTurnSnap();
+          const ta2 = el('realInput');
+          if (ta2) { ta2.value = text; autoGrow(ta2); }
+          toast('这一轮没走成，刚才那句已放回输入框');
+        }
+      } catch (e) { /* ignore */ }
+      return;
+    }
+    if (this._next && this._next !== '旁白') {
+      await this._roleCall(this._next);
+    }
     } finally {
       this._sending = false;
       this._status = '';
@@ -657,6 +767,7 @@ export const RealMode = {
       this._silent = false;
       this._streamSpeaker = '';
       this._playerRecId = '';
+      this._playerCanon = '';
       this._reasonChars = 0;
       this.render();
       // 记账：这一轮实际写进记录的正文长度（以前一律传 0，用量统计里看不到产出）
@@ -670,6 +781,7 @@ export const RealMode = {
   },
 
   stop(): void {
+    this._stopped = true;      // 整理/生成被中断时，这一轮不再往下走（下一轮发送时会复位）
     try { (globalThis as any).APIHandler?.abort?.(); } catch (e) { /* ignore */ }
     this._status = '已停止';
     this._renderHead();
@@ -684,7 +796,7 @@ export const RealMode = {
     }
     try { RealState.restore(snap); RealState.clearTurnSnap(); } catch (e) { /* ignore */ }
     const ta = el('realInput');
-    if (ta && snap.playerInput) ta.value = String(snap.playerInput);
+    if (ta && snap.playerInput) { ta.value = String(snap.playerInput); autoGrow(ta); }
     this._scrollOnce = true;
     this.render();
     this.refreshSendLabel();

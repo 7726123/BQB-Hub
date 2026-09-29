@@ -902,6 +902,7 @@ label{font-size:13px;color:var(--text-secondary);display:block;margin-bottom:4px
 .chip-purple{background:#f3e8ff;color:#7e22ce}
 .chip-gray{background:var(--bg-tertiary);color:var(--text-muted)}
 .chip-green{background:#dcfce7;color:#15803d}
+.chip-teal{background:#ccfbf1;color:#0f766e}
 /* —— 分页 —— */
 .pg-pager{display:flex;align-items:center;justify-content:center;gap:6px;padding:10px 0}
 .pg-pager button{min-width:34px;height:34px;min-height:34px;padding:0 9px;border-radius:11px;border:1px solid var(--border);background:var(--bg-secondary);color:var(--text-secondary);font-size:14px;display:flex;align-items:center;justify-content:center;transition:all var(--transition)}
@@ -1105,6 +1106,11 @@ label{font-size:13px;color:var(--text-secondary);display:block;margin-bottom:4px
 /* 真实模式：<内心> 块（浅底 + 细斜体 + 左侧竖线：明显但安静，不抢台词）；壳 = 不可感者看到的降级小字 */
 .real-inner{margin:7px 0;padding:5px 10px;background:var(--primary-light);border-left:2px solid var(--text-muted);border-radius:0 8px 8px 0;font-size:calc(var(--font-size) - 1px);font-style:italic;color:var(--text-secondary);line-height:1.8;word-break:break-word}
 .real-shell{font-size:12px;color:var(--text-muted);line-height:1.7;margin:4px 2px}
+/* 真实模式：作者那句话被转述过 → 气泡里留一个默认收起的「看原话」（点一下才展开，不占地方） */
+.real-echo{margin-top:6px}
+.real-echo-tag{font-size:11px;color:var(--text-muted);border:1px solid var(--border);border-radius:8px;padding:1px 7px;cursor:pointer;display:inline-block;opacity:.75}
+.real-echo-raw{display:none;margin-top:5px;font-size:12px;color:var(--text-muted);background:var(--bg-secondary);border-left:2px solid var(--border);border-radius:0 8px 8px 0;padding:4px 8px;line-height:1.7;white-space:pre-wrap;word-break:break-word}
+.real-echo.open .real-echo-raw{display:block}
 /* 真实模式：输入框上方的「以谁的身份说话」下拉 + 「＋ 添加角色」（下拉 flex:1;min-width:0，窄屏不撑破那行） */
 #realSpeakerRow{display:flex;align-items:center;gap:8px;margin-bottom:4px}
 #realSpeakerSel{flex:1;min-width:0;font-size:12.5px;padding:4px 6px;border:1px solid var(--border);border-radius:8px;background:var(--bg-tertiary);color:var(--text)}

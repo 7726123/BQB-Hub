@@ -137,7 +137,7 @@ export const UsageStats = {
     const labels = Object.keys(r.byLabel || {});
     const hasNovel = labels.indexOf('generate') >= 0;
     const hasChat = labels.indexOf('chat') >= 0;
-    // 真实模式：场记（real-scene）/ 角色（real-role）/ 记忆压缩（real-mem）三个标签都算它
+    // 真实模式：场记（real-scene）/ 角色（real-role）/ 转述（real-echo）/ 记忆压缩（real-mem）都算它
     const hasReal = labels.some(function (l) { return l.indexOf('real-') === 0; });
     const n = (hasNovel ? 1 : 0) + (hasChat ? 1 : 0) + (hasReal ? 1 : 0);
     if (n > 1) return 'mixed';

@@ -83,9 +83,11 @@ modalWBEntry: `<div class="modal-overlay" id="modalWBEntry">
   <div class="modal"><div class="modal-header"><h3 id="modalWBEntryTitle">添加条目</h3><button class="icon-btn" onclick="UIManager.closeModal('modalWBEntry')">✕</button></div>
   <div class="modal-body">
     <input type="hidden" id="wbEntryEditId">
-    <div class="form-group"><label>类型</label><select id="wbEntryType" onchange="UIManager.toggleWBEntryFields()"><option>世界观</option><option>角色</option><option>初始</option><option>初始记忆</option><option>其他</option><option>变量</option></select></div>
+    <div class="form-group"><label>类型</label><select id="wbEntryType" onchange="UIManager.toggleWBEntryFields()"><option>世界观</option><option>角色</option><option>初始</option><option>初始记忆</option><option>部分人知道</option><option>其他</option><option>变量</option></select></div>
     <div class="form-group"><label>名称</label><input type="text" id="wbEntryName" placeholder="条目名称"></div>
     <div class="form-group" id="wbEntryBindRow" style="display:none;"><label>绑定角色</label><select id="wbEntryBindId"></select></div>
+    <div class="form-group" id="wbEntrySubsetRow" style="display:none;"><label>谁知道这件事</label><textarea id="wbEntryBindNames" rows="3" placeholder="一行一个角色名（也可以用逗号/顿号分隔）：只有这些角色知道，别人不知道"></textarea>
+      <div style="font-size:12px;color:var(--text-muted);line-height:1.6;margin-top:4px;">名字要写世界书「角色」条目里的名字。只有名单里的角色会拿到这条；场记和别的角色<b>一点都看不到</b>（硬隔离，不是提示词要求）。</div></div>
     <div class="form-group"><label>内容</label><textarea id="wbEntryContent" rows="6" placeholder="条目的详细内容..."></textarea></div>
     <div id="wbEntryVarHint" style="display:none;font-size:12px;color:var(--text-muted);line-height:1.75;background:var(--bg-tertiary);border:1px solid var(--border);border-radius:8px;padding:8px 10px;margin-top:6px;">
       <b>变量条目：一个条目 = 一个变量。</b>名称就是变量名（如「任务数量」）；内容写它的讲解——是什么、怎么变化、范围或失败条件（可用 <code>{{user}}</code> 指代主角，也可用 <code>{{getvar::其它变量}}</code>）。<br>
@@ -100,13 +102,15 @@ modalWBEntry: `<div class="modal-overlay" id="modalWBEntry">
   <div class="modal-footer"><button onclick="UIManager.closeModal('modalWBEntry')">取消</button><button class="primary" onclick="UIManager.saveWBEntryFromModal()">保存</button></div></div>
 </div>`,
 
-    // 真实模式：场景编辑（时间 / 地点 / 在场。场景栏的「⚙ 场景」打开，保存走 UIManager.saveRealScene）
+    // 真实模式：场景编辑（时间 / 地点 / 在场 / 大家都知道的事。场景栏的「⚙ 场景」打开，保存走 UIManager.saveRealScene）
     modalRealScene: `<div class="modal-overlay" id="modalRealScene">
   <div class="modal"><div class="modal-header"><h3>场景</h3><button class="icon-btn" onclick="UIManager.closeModal('modalRealScene')">✕</button></div>
   <div class="modal-body">
     <div class="form-group"><label>时间</label><input type="text" id="realSceneTime" placeholder="如：次日清晨"></div>
     <div class="form-group"><label>地点</label><input type="text" id="realScenePlace" placeholder="如：教室 / 走廊"></div>
     <div class="form-group"><label>在场</label><textarea id="realScenePresent" rows="4" placeholder="一行一个名字（也可以用逗号/顿号分隔）"></textarea></div>
+    <div class="form-group"><label>大家都知道的事（公开的，每个角色都知道）</label><textarea id="realSceneCommon" rows="4" placeholder="一行一条，如：下周六开运动会。场记每轮会自己维护这份清单，你可以在这里改它。"></textarea>
+    <div class="hint" style="font-size:12px;color:var(--text-muted);line-height:1.6;margin-top:4px;">只写"客观上大家都知道的"（通知、公告、传闻）；悄悄话和私下的心思不要写进这里——这一份是发给**每一个**角色的，不管他当时在不在场。</div></div>
   </div>
   <div class="modal-footer"><button onclick="UIManager.closeModal('modalRealScene')">取消</button><button class="primary" onclick="UIManager.saveRealScene()">保存</button></div></div>
 </div>`,

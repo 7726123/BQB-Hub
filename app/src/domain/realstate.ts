@@ -25,6 +25,11 @@ export interface RealRecord {
   speaker: string;
   /** 原文（含 <内心> 等标记；渲染与注入时解析） */
   raw: string;
+  /**
+   * 作者的原话（只在"这一条被转述过"时才存）：raw 是整理后的一轮，这里是作者当初随手写的原句。
+   * 只给界面看（气泡下面「已整理 · 看原话」）与撤回时放回输入框——**不进任何注入/切片**。
+   */
+  playerRaw?: string;
   /** 写入时的在场快照——"不在场就不可知"靠它落地（场景的在场名单之后变了也不影响历史） */
   present: string[];
   /** 台词层的可感集合；缺省 = 在场全体都听得到（悄悄话写这里） */
@@ -45,13 +50,19 @@ export interface RealBookState {
   castSeeded?: boolean;
   /** 公共纪要（公共调用每轮顺手维护；真实模式的长期上下文靠它 + 各角色的压缩回忆） */
   summary: string;
+  /**
+   * 「大家都知道的事」：公开的通知/传闻/常识（下周六有运动会、这所学校几点关门…）。
+   * 公共调用每轮顺手维护（写最新的完整清单），**发给每一个角色**——不管他当时在不在场。
+   * 这是唯一一条"跨角色"的信息通道，所以公共侧必须只写"客观上公开"的事（悄悄话、心思绝不进来）。
+   */
+  common: string;
   log: RealRecord[];
   memories: Record<string, RealMemory>;
   /** 本轮开始前的现场快照（撤回用）。放在状态里而不是挂在记录上：一轮可能什么记录都没产出 */
   turnSnap?: any;
 }
 export interface RealSliceItem { id: string; speaker: string; text: string; degraded: boolean }
-export interface RealSnapshot { scene: RealScene; player: string; summary: string; logLen: number; memories: Record<string, RealMemory> }
+export interface RealSnapshot { scene: RealScene; player: string; summary: string; common: string; logLen: number; memories: Record<string, RealMemory> }
 
 const INNER_OPEN = /<\s*内心\s*>/i;
 const INNER_BLOCK = /<\s*内心\s*>[\s\S]*?<\s*\/\s*内心\s*>/gi;
@@ -127,8 +138,39 @@ export function initialMemoryFor(name: string, entries: any[]): { text: string; 
   return { text: String(hit.content || ''), entryId: String(hit.id || '') };
 }
 
+/** 「谁知道」名单的文本 → 名字数组（换行/顿号/逗号/分号都当分隔；去重、去空）。编辑器和读取共用一份。 */
+export function parseKnowers(text: any): string[] {
+  const out: string[] = [];
+  String(text == null ? '' : text).split(/[\n\r、,，;；\/]+/).forEach(function (n) {
+    const v = String(n || '').trim();
+    if (v && out.indexOf(v) < 0) out.push(v);
+  });
+  return out;
+}
+
+/**
+ * 「部分人知道」条目 → 该角色知道的那几条"内情"（只有名单里的人知道、别人不知道的事）。
+ * 这是「物理隔离」的第四个通道：公开人设（人人可见）/ 初始记忆（只有一个人）/ 部分人知道（一个小组）/
+ * 共知（人人都知道）。**名单外的角色连这一条的内容都拿不到**——和 初始记忆 一样是硬隔离，不是提示词要求。
+ * 结构化存 bindNames（角色名数组）；bindName 兼容老/手写数据（单个名字或「甲、乙」）。
+ */
+export function subsetKnowledgeFor(name: string, entries: any[]): { title: string; text: string; knowers: string[] }[] {
+  const who = String(name || '').trim();
+  if (!who) return [];
+  const out: { title: string; text: string; knowers: string[] }[] = [];
+  (entries || []).forEach(function (e: any) {
+    if (!e || e.type !== '部分人知道' || e.inject === false) return;
+    const text = String(e.content || '').trim();
+    if (!text) return;
+    const knowers = Array.isArray(e.bindNames) ? parseKnowers((e.bindNames || []).join('\n')) : parseKnowers(e.bindName);
+    if (knowers.indexOf(who) < 0) return;
+    out.push({ title: String(e.name || '').trim() || '（未命名）', text: text, knowers: knowers });
+  });
+  return out;
+}
+
 function emptyState(): RealBookState {
-  return { version: STATE_VERSION, scene: { time: '', place: '', present: [] }, player: '', cast: [], god: false, summary: '', log: [], memories: {} };
+  return { version: STATE_VERSION, scene: { time: '', place: '', present: [] }, player: '', cast: [], god: false, summary: '', common: '', log: [], memories: {} };
 }
 
 function normalize(s: RealBookState): RealBookState {
@@ -144,6 +186,7 @@ function normalize(s: RealBookState): RealBookState {
   if (typeof s.god !== 'boolean') s.god = false;
   if (typeof s.castSeeded !== 'boolean') s.castSeeded = false;
   if (typeof s.summary !== 'string') s.summary = '';
+  if (typeof s.common !== 'string') s.common = '';
   if (!s.version) s.version = STATE_VERSION;
   return s;
 }
@@ -302,6 +345,10 @@ export const RealState = {
   summary(): string { return this.state().summary || ''; },
   setSummary(text: string): void { this._mutate(function (s) { s.summary = String(text || ''); }); },
 
+  /** 「大家都知道的事」：公共调用每轮维护，发给每一个角色（不管当时在不在场） */
+  common(): string { return this.state().common || ''; },
+  setCommon(text: string): void { this._mutate(function (s) { s.common = String(text || ''); }); },
+
   /** 补一条已经写下的记录（公共调用判定完"这句只说给谁"后回填 heard / shell 用） */
   patch(id: string, patch: Partial<RealRecord>): void {
     if (!id || !patch) return;
@@ -349,7 +396,7 @@ export const RealState = {
   snapshot(): RealSnapshot | null {
     const s = this.state();
     try {
-      return JSON.parse(JSON.stringify({ scene: s.scene, player: s.player, summary: s.summary || '', logLen: (s.log || []).length, memories: s.memories })) as RealSnapshot;
+      return JSON.parse(JSON.stringify({ scene: s.scene, player: s.player, summary: s.summary || '', common: s.common || '', logLen: (s.log || []).length, memories: s.memories })) as RealSnapshot;
     } catch (e) { return null; }
   },
   restore(snap: RealSnapshot | null): void {
@@ -358,6 +405,7 @@ export const RealState = {
       if (snap.scene) s.scene = normalize({ scene: snap.scene } as RealBookState).scene;
       if (typeof snap.player === 'string') s.player = snap.player;
       if (typeof snap.summary === 'string') s.summary = snap.summary;
+      if (typeof snap.common === 'string') s.common = snap.common;
       const n = Math.max(0, Number(snap.logLen) || 0);
       if (Array.isArray(s.log) && s.log.length > n) s.log = s.log.slice(0, n);
       if (snap.memories && typeof snap.memories === 'object') s.memories = snap.memories;
@@ -370,6 +418,7 @@ export const RealState = {
       s.log = [];
       s.scene = { time: '', place: '', present: [] };
       s.summary = '';
+      s.common = '';
       s.memories = {};
       s.god = false;
       s.turnSnap = null;
@@ -406,6 +455,14 @@ export const RealState = {
       const wb = WorldBookManager.getActive();
       return initialMemoryFor(name, (wb && (wb as any).entries) || []);
     } catch (e) { return null; }
+  },
+
+  /** 该角色知道、别人不知道的「内情」（世界书「部分人知道」条目：只有名单里的角色拿得到） */
+  subsetKnowledge(name: string): { title: string; text: string; knowers: string[] }[] {
+    try {
+      const wb = WorldBookManager.getActive();
+      return subsetKnowledgeFor(name, (wb && (wb as any).entries) || []);
+    } catch (e) { return []; }
   },
 
   memoryOf(name: string): RealMemory | null {

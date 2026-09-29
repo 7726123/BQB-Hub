@@ -83,8 +83,8 @@ describe('真实模式（real）：模式枚举与门控', () => {
 });
 
 describe('世界书：初始记忆类型与绑定角色', () => {
-  it('migrateEntryTypes 白名单含「初始记忆」（否则下次启动被改写成「其他」）', () => {
-    expect(worldbook).toContain("const KEEP = ['世界观', '角色', '初始', '初始记忆', '其他', '变量'];");
+  it('migrateEntryTypes 白名单含「初始记忆」「部分人知道」（否则下次启动被改写成「其他」）', () => {
+    expect(worldbook).toContain("const KEEP = ['世界观', '角色', '初始', '初始记忆', '部分人知道', '其他', '变量'];");
   });
 
   it('条目编辑器类型下拉含「初始记忆」', () => {
