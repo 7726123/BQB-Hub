@@ -125,6 +125,32 @@ describe('启动：状态读取与确认', () => {
     expect(getWebVersion()).toBe('');
   });
 
+  test('迟到的 getState 不会把安装刚写上的 pending 冲掉（状态是合并、不是整体替换）', async () => {
+    // 预取让安装更早完成：getState 的应答可能在那之后才回来，带来一份"还没有 pending"的旧快照。
+    // 整体替换会把刚写上的 pending 冲掉 → 紧接着的 applyPending 找不到待生效的包 → 收了启动画面却不切换。
+    let resolveState: (v: unknown) => void = () => { /* 先占位 */ };
+    (globalThis as unknown as Record<string, unknown>).Capacitor = {
+      getPlatform: () => 'android',
+      Plugins: {
+        HotBundle: {
+          getState: () => { calls.getState++; return new Promise((r) => { resolveState = r as (v: unknown) => void; }); },
+          install: (o: unknown) => { calls.install.push(o as never); return Promise.resolve({ ok: true, version: '1.5.97w2' }); },
+        },
+      },
+    };
+    HotBundle.init();                                            // getState 悬着
+    (globalThis as unknown as Record<string, unknown>).fetch = () =>
+      Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ payload: 'cGF5bG9hZA==', sig: 'c2ln', v: '1.5.97w2' }) });
+    HotBundle.check(true);
+    await flush();
+    await flush();
+    expect(calls.install.length).toBe(1);
+    expect(HotBundle._state!.pending).toBe('1.5.97w2');
+    resolveState({ active: '1.5.97w1', pending: '', code: 157001, blocked: '', nativeCode: 157, serving: '/x/hot/1.5.97w1' });
+    await flush();
+    expect(HotBundle._state!.pending).toBe('1.5.97w2');          // 没被冲掉
+  });
+
   test('非 Android / 无插件时完全不动（桌面与测试环境）', async () => {
     delete (globalThis as unknown as Record<string, unknown>).Capacitor;
     HotBundle.init();
@@ -319,10 +345,45 @@ describe('已装未生效 / 已在运行：不再触发安装（避免"安装失
       Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(body) });
   }
 
-  test('待生效的那一版 = 服务端给的这一版 → 不调安装，提示重启后生效', async () => {
-    stateReply = { active: '1.5.97w1', pending: '1.5.97w2', code: 157001, blocked: '', nativeCode: 157 };
+  test('启动确认成功 = 这一版已经在跑：不留"待生效"，手动检查报"就是最新"（不再弹"重启立即生效"）', async () => {
+    // 关键回归：以前 confirm 成功后 pending 不清 → 一整个会话都以为"有个包没生效"，
+    // 手动检查会弹"新版本已就绪，现在重启界面立即生效？"、切后台/回前台还会白重载一次。
+    stateReply = {
+      active: '1.5.97w1', pending: '1.5.97w2', code: 157001, blocked: '', nativeCode: 157,
+      serving: '/x/hot/1.5.97w2',
+    };
     HotBundle.init();
     await flush();
+    expect(HotBundle._state!.pending).toBe('');
+    expect(HotBundle._state!.active).toBe('1.5.97w2');
+    expect(getWebVersion()).toBe('1.5.97w2');
+    stubFetch(manifest);
+    const seen: unknown[] = [];
+    HotBundle.check(true, (r) => seen.push(r));
+    await flush();
+    expect(calls.install.length).toBe(0);
+    expect(seen).toEqual([{ installed: false }]);
+    expect(toasts).toEqual([]);                                  // 不再出现"现在重启立即生效？"
+  });
+
+  test('确认被原生拒绝（页面其实来自别的目录）→ pending 才是真的"已装好待生效"：提示重启后生效', async () => {
+    (globalThis as unknown as Record<string, unknown>).Capacitor = {
+      getPlatform: () => 'android',
+      Plugins: {
+        HotBundle: {
+          getState: () => { calls.getState++; return Promise.resolve(stateReply); },
+          install: (o: unknown) => { calls.install.push(o as never); return Promise.resolve(installReply); },
+          confirm: (o: { version: string }) => { calls.confirm.push(o.version); return Promise.resolve({ ok: false }); },
+        },
+      },
+    };
+    stateReply = {
+      active: '1.5.97w1', pending: '1.5.97w2', code: 157001, blocked: '', nativeCode: 157,
+      serving: '/x/hot/1.5.97w1',
+    };
+    HotBundle.init();
+    await flush();
+    expect(HotBundle._state!.pending).toBe('1.5.97w2');          // 留着：等切后台/回前台或下次启动
     stubFetch(manifest);
     const seen: unknown[] = [];
     HotBundle.check(true, (r) => seen.push(r));
@@ -386,6 +447,17 @@ describe('就地生效（applyPendingNow）', () => {
   });
 
   test('当前跑内置资源（拿不到热包目录）：不动手，提示下次打开生效', async () => {
+    // 页面来自内置资源 → 原生核对实际目录后会拒绝确认（这里如实模拟），pending 因此留着
+    (globalThis as unknown as Record<string, unknown>).Capacitor = {
+      getPlatform: () => 'android',
+      Plugins: {
+        HotBundle: {
+          getState: () => Promise.resolve(stateReply),
+          install: () => Promise.resolve({}),
+          confirm: (o: { version: string }) => { calls.confirm.push(o.version); return Promise.resolve({ ok: false }); },
+        },
+      },
+    };
     stateReply = {
       active: '', pending: '1.5.97w2', code: 0, blocked: '', nativeCode: 157, serving: 'public', isAsset: true,
     };
@@ -449,6 +521,33 @@ describe('就地生效（applyPendingNow）', () => {
     expect(sets).toEqual([]);                                  // 内置资源 → WebView 路径也切不了
     expect(toasts.join('\n')).toContain('下次打开 App');
   });
+
+  test('原生说"没有待生效的包"（其实已经生效）→ 不再退到 WebView 白重载一次', async () => {
+    const sets: unknown[] = [];
+    (globalThis as unknown as Record<string, unknown>).Capacitor = {
+      getPlatform: () => 'android',
+      Plugins: {
+        HotBundle: {
+          getState: () => Promise.resolve({
+            active: '1.5.97w2', pending: '', code: 157002, blocked: '', nativeCode: 158, serving: '/x/hot/1.5.97w2',
+          }),
+          install: () => Promise.resolve({}),
+          applyPending: () => Promise.reject(new Error('没有待生效的网页包')),
+        },
+        WebView: { setServerBasePath: (o: unknown) => { sets.push(o); return Promise.resolve(); } },
+      },
+    };
+    stateReply = { active: '1.5.97w1', pending: '', code: 157001, blocked: '', nativeCode: 158, serving: '/x/hot/1.5.97w1' };
+    HotBundle.init();
+    await flush();
+    HotBundle._state!.pending = '1.5.97w2';                    // 白盒：模拟本地还停在"待生效"的过期状态
+    expect(HotBundle.applyPendingNow()).toBe(true);            // 先走原生
+    await flush();
+    await flush();
+    expect(sets).toEqual([]);                                  // 关键：没有白重载
+    expect(notes.join(' ')).toContain('跳过重复切换');
+    expect(HotBundle._state!.pending).toBe('');                // 本地状态顺手对齐
+  });
 });
 
 // 启动画面还盖着时的自动检查：安装 → 就地切换 → 页面重载（不回调），以及 8 秒预算
@@ -500,6 +599,60 @@ describe('启动画面期间的更新（boot splash）', () => {
     expect(native).toBe(1);
     expect(seen).toEqual([]);          // 页面要重载了：不回调，调用方也就不会去收启动画面
     expect(splash.hide).toBe(0);       // （新包自己的启动画面接上，中间不闪旧界面）
+  });
+
+  test('启动时发现"装了没切过来"（上次没走完）：当场切，不再等下次打开', async () => {
+    let native = 0;
+    (globalThis as unknown as Record<string, unknown>).Capacitor = {
+      getPlatform: () => 'android',
+      Plugins: {
+        HotBundle: {
+          getState: () => Promise.resolve(stateReply),
+          install: () => Promise.resolve({ ok: true, version: '1.5.97w2' }),
+          confirm: () => Promise.resolve({ ok: false }),          // 页面没在跑它 → pending 留着
+          applyPending: () => { native++; return Promise.resolve({ ok: true }); },
+        },
+      },
+    };
+    stateReply = { active: '1.5.97w1', pending: '1.5.97w2', code: 157002, blocked: '', nativeCode: 158, serving: '/x/hot/1.5.97w1' };
+    HotBundle.init();
+    await flush();
+    expect(HotBundle._state!.pending).toBe('1.5.97w2');
+    stubFetch(manifest);                                          // 服务端给的这一版 = 待生效的那一版
+    const seen: unknown[] = [];
+    HotBundle.check(false, (r) => seen.push(r));
+    await flush();
+    await flush();
+    expect(calls.install.length).toBe(0);                         // 不重复下载
+    expect(native).toBe(1);                                       // 启动画面还盖着：当场切
+    expect(seen).toEqual([]);                                     // 页面即将重载：不回调
+    expect(splash.hide).toBe(0);
+    expect(splash.text).toContain('正在准备新版本…');
+  });
+
+  test('启动时已经在跑"待确认"的那一版（确认还在飞行中）：不重复切一次', async () => {
+    let native = 0;
+    (globalThis as unknown as Record<string, unknown>).Capacitor = {
+      getPlatform: () => 'android',
+      Plugins: {
+        HotBundle: {
+          getState: () => Promise.resolve(stateReply),
+          install: () => Promise.resolve({ ok: true, version: '1.5.97w2' }),
+          confirm: () => new Promise(() => { /* 悬着：预取让 check 可能跑在 confirm 前面 */ }),
+          applyPending: () => { native++; return Promise.resolve({ ok: true }); },
+        },
+      },
+    };
+    stateReply = { active: '1.5.97w1', pending: '1.5.97w2', code: 157002, blocked: '', nativeCode: 158, serving: '/x/hot/1.5.97w2' };
+    HotBundle.init();
+    await flush();
+    stubFetch(manifest);
+    const seen: unknown[] = [];
+    HotBundle.check(false, (r) => seen.push(r));
+    await flush();
+    await flush();
+    expect(native).toBe(0);                                       // 实际加载的就是它：不白切
+    expect(seen).toEqual([{ installed: false }]);
   });
 
   test('安装超过预算就不再等：回调一次、画面由调用方收起（原生那边继续装）', async () => {
@@ -585,12 +738,25 @@ describe('错过启动窗口的包：抓机会自动生效（不必退出再进�
     expect(notes.join(' ')).toContain('自动切换（回前台）');
   });
 
-  test('切过一版但重载后仍未生效 → 本会话不再自动切（防"每次回前台都重载"）', async () => {
+  test('切换被拒（原生确认失败）+ 本会话已经切过一次 → 本会话不再自动切（防"每次回前台都重载"）', async () => {
     stubHot();
+    // 页面其实没在跑这一版（confirm 由下面的桩明确拒绝），sessionStorage 里记着"这一版切过一次"
+    (globalThis as unknown as Record<string, unknown>).Capacitor = {
+      getPlatform: () => 'android',
+      Plugins: {
+        HotBundle: {
+          getState: () => Promise.resolve(stateReply),
+          install: () => Promise.resolve({ ok: true, version: '1.5.97w2' }),
+          confirm: () => Promise.resolve({ ok: false }),
+        },
+        WebView: { setServerBasePath: (o: { path: string }) => { sets.push(o); return Promise.resolve(); } },
+      },
+    };
     const setN: Record<string, string> = { hotAppliedPending: '1.5.97w2' };
     (globalThis as unknown as Record<string, unknown>).sessionStorage = {
       getItem: (k: string) => (k in setN ? setN[k] : null),
       setItem: (k: string, v: string) => { setN[k] = v; },
+      removeItem: (k: string) => { delete setN[k]; },
     };
     try {
       stateReply = { ...hotState(), pending: '1.5.97w2' };
@@ -600,6 +766,42 @@ describe('错过启动窗口的包：抓机会自动生效（不必退出再进�
       expect(HotBundle.commitPending('回前台')).toBe(false);      // 不再切
       expect(sets).toEqual([]);
       expect(notes.join(' ')).toContain('切换后仍未生效');
+    } finally {
+      delete (globalThis as unknown as { sessionStorage?: unknown }).sessionStorage;
+      HotBundle._applyUnavailable = false;
+    }
+  });
+
+  test('切换其实成功了（confirm 通过）→ 即便 sessionStorage 还留着上一轮的记账，也不锁死本会话', async () => {
+    // 旧写法只看"pending 还在"就断定没生效——而成功切换后重载的那一页 pending 本来就还在（尚未确认），
+    // 于是成功也被判成失败，本会话所有自动切换全废（用户只能重启或手动点「立即生效」）。
+    stubHot();
+    (globalThis as unknown as Record<string, unknown>).Capacitor = {
+      getPlatform: () => 'android',
+      Plugins: {
+        HotBundle: {
+          getState: () => Promise.resolve(stateReply),
+          install: () => Promise.resolve({ ok: true, version: '1.5.97w2' }),
+          confirm: () => Promise.resolve({ ok: true }),
+        },
+        WebView: { setServerBasePath: (o: { path: string }) => { sets.push(o); return Promise.resolve(); } },
+      },
+    };
+    const setN: Record<string, string> = { hotAppliedPending: '1.5.97w2' };
+    (globalThis as unknown as Record<string, unknown>).sessionStorage = {
+      getItem: (k: string) => (k in setN ? setN[k] : null),
+      setItem: (k: string, v: string) => { setN[k] = v; },
+      removeItem: (k: string) => { delete setN[k]; },
+    };
+    try {
+      stateReply = { ...hotState(), pending: '1.5.97w2', serving: '/data/user/0/com.novelwriter.app/files/hot/1.5.97w2' };
+      HotBundle._applyUnavailable = false;
+      HotBundle.init();
+      await flush();
+      expect(notes.join(' ')).not.toContain('切换后仍未生效');
+      expect(HotBundle._applyUnavailable).toBe(false);
+      expect(HotBundle._state!.pending).toBe('');                 // 已经在跑它了：不再当"待生效"
+      expect(setN.hotAppliedPending).toBeUndefined();             // 记账也清掉，别留给下一次会话
     } finally {
       delete (globalThis as unknown as { sessionStorage?: unknown }).sessionStorage;
       HotBundle._applyUnavailable = false;

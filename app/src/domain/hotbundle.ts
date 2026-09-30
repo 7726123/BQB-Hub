@@ -93,6 +93,19 @@ function _fetchManifest(server: string): Promise<HotBundleManifest> {
 /** 启动期间的安装等待预算：超时就不再等（原生那边继续装，装好后切后台/回前台/下次启动都能生效，见 _bindApplyHooks）——启动画面绝不能变成"卡住"。 */
 const BOOT_INSTALL_BUDGET_MS = 8000;
 
+/**
+ * 「实际加载的目录」属于哪一版（原生给的是 .../hot/<版本> 这样的文件系统路径）。
+ * 用来区分两种 pending：**已经跑着它、只是还没确认** vs **装了但没切过来**——这两种情况的处理完全不同，
+ * 旧代码只看「pending 是不是等于某一版」，把前者也当成"没生效"，于是手动检查会弹"现在重启立即生效？"、
+ * 切后台/回前台还会白重载一次（用户看到的就是"热更新没完成，得重启或手动来一次"）。
+ */
+function _servingVersion(st: HotBundleState | null): string {
+  const s = String((st && st.serving) || '').replace(/\/+$/, '');
+  if (!s) return '';
+  const i = s.lastIndexOf('/');
+  return i >= 0 ? s.slice(i + 1) : s;
+}
+
 /** 就地切换（老路径，Capacitor 内置的 WebView 插件）：只在当前已经跑着热包时可用。返回是否发出了切换。 */
 function _applyViaWebView(st: HotBundleState): boolean {
   const serving = String(st.serving || '');
@@ -135,6 +148,23 @@ function _nativeApply(p: HotBundlePlugin, st: HotBundleState): Promise<boolean> 
   }
 }
 
+/**
+ * 原生切换被拒之后的收尾：**先核实原生那边还有没有待生效的包**，再决定要不要退回 WebView 老路径。
+ * 为什么要核实：pending 可能早就被 confirm 清掉了（这一版其实已经生效），这时硬退到老路径只会让页面
+ * 白重载一次——用户看到的是"点了检查更新，应用闪一下"，反而以为更新出了问题。没有待生效的就顺手对齐本地状态。
+ */
+function _fallbackApply(p: HotBundlePlugin, st: HotBundleState): Promise<boolean> {
+  const ask = p.getState;
+  if (typeof ask !== 'function') return Promise.resolve(_applyViaWebView(st));
+  return Promise.resolve(ask()).then(function (cur) {
+    if (cur && cur.pending) return _applyViaWebView(st);          // 确实还有待生效的包：老路径再试一次
+    const c = HotBundle._state;
+    if (c) { c.pending = ''; c.active = (cur && cur.active) || c.active; }
+    ClientLog.note('热更新', '原生已无待生效的包（多半已经生效），跳过重复切换');
+    return false;
+  }, function () { return _applyViaWebView(st); });
+}
+
 export const HotBundle = {
   _lastResult: null as null | HotBundleResult,
   /** 启动期间的安装等待预算（毫秒）。测试改小它来跑超时分支。 */
@@ -150,17 +180,14 @@ export const HotBundle = {
     try {
       Promise.resolve(p.getState()).then(function (st) {
         if (!st) return;
+        // 合并而不是整体替换：check 可能已经先落了占位状态、并把"安装完成"写进 pending；
+        // 整体替换会把刚写上的 pending 冲掉（紧接着的 applyPending 就找不到待生效的包 → 收了启动画面却不切换，
+        // 用户看到的就是"很快就进 App 了，但没换成新版"）。
+        const prev = HotBundle._state;
+        if (prev && prev !== st && prev.pending && !st.pending) st.pending = prev.pending;
         HotBundle._state = st;
         // 上一轮已经切过这一版、重载后它还是"待生效" → 说明切换没被采纳（Capacitor 没用这个目录）。
         // 本会话别再自动切，否则每次回前台都会重载一次。冷启动的看门狗/两次未确认回退会兜底。
-        if (st.pending) {
-          try {
-            if (sessionStorage.getItem('hotAppliedPending') === st.pending) {
-              HotBundle._applyUnavailable = true;
-              ClientLog.note('热更新', '网页包 ' + st.pending + ' 切换后仍未生效，本会话不再自动切换');
-            }
-          } catch (e) { /* 忽略 */ }
-        }
         if (st.rolledBack) {
           setWebVersion('');
           ClientLog.note('热更新', '网页包 ' + st.rolledBack + ' 启动未确认，已回退到内置版本');
@@ -171,9 +198,30 @@ export const HotBundle = {
           // 但版本号只在原生确认成功后才算数：原生会核对"实际加载的目录"，若 Capacitor 没采纳
           // serverBasePath（页面其实来自内置资源），confirm 会返回 ok:false —— 此时绝不能把
           // pending 记成本机版本，否则会出现"显示热包版本、实际跑内置资源"的假状态。
+          const ver = String(st.pending);
+          // 上一轮已经切过这一版？**只有原生核对后拒绝确认**才说明切换真的没被采纳，这时才禁用
+          // 本会话的自动切换（防"每次回前台都重载"）。不能只看"pending 还在"——成功切换后重载的
+          // 那一页，pending 本来就还在（它是"尚未确认"的标记）；旧写法据此判成失败，于是本会话
+          // 所有自动切换全部失效，用户只能重启或手动「立即生效」。
+          let tried = false;
+          try { tried = sessionStorage.getItem('hotAppliedPending') === ver; } catch (e) { tried = false; }
           try {
-            Promise.resolve(p.confirm!({ version: st.pending })).then(function (r) {
-              setWebVersion(r && r.ok ? st.pending : (st.active || ''));
+            Promise.resolve(p.confirm!({ version: ver })).then(function (r) {
+              if (r && r.ok) {
+                // 已经把这一版跑起来了：清掉"待生效"、记成正在运行的那一版。
+                // 不清的话本会话会一直以为有个包没生效——手动检查弹"新版本已就绪，现在重启立即生效？"，
+                // 切后台/回前台还会白重载一次（用户看到的就是"更新没完成，得重启或手动来一次"）。
+                const cur = HotBundle._state;
+                if (cur) { cur.pending = ''; cur.active = ver; }
+                try { sessionStorage.removeItem('hotAppliedPending'); } catch (e) { /* 忽略 */ }
+                setWebVersion(ver);
+                return;
+              }
+              if (tried) {
+                HotBundle._applyUnavailable = true;
+                ClientLog.note('热更新', '网页包 ' + ver + ' 切换后仍未生效，本会话不再自动切换');
+              }
+              setWebVersion(st.active || '');
             }, function () { setWebVersion(st.active || ''); });
           } catch (e) { setWebVersion(st.active || ''); }
         } else {
@@ -272,21 +320,41 @@ export const HotBundle = {
       .then(function (j) {
         if (!j || !j.payload || !j.sig) { finish({ installed: false }); return; }
         const v = String(j.v || '');
+        // 启动等待的编排（进度条 + 「稍后」）抽出来给两条路径共用：装新包 / 直接切换已装好的包
+        let gaveUp = false;
+        const enterBootWait = function (): void {
+          if (!boot) return;
+          BootSplash.busy(true);
+          // 「稍后」= 不等了，直接进 App；包在原生那边继续装，装好下次打开生效
+          BootSplash.onSkip(function () { gaveUp = true; });
+        };
         if (v && v === st.pending) {
-          finish({ installed: false, ready: true, version: v });   // 装好了、等重启
+          // 服务端给的这一版就是"已装好、待生效"的那一版。两种情形必须分开：
+          //   ① 已经跑着它（pending 只是还没确认）→ 什么都不用做，启动确认那一步会把它落成 active；
+          //   ② 装了但没切过来（上一次没走完/被中途打断）→ **启动画面还盖着正是切换的最好时机**：
+          //      直接切（切完页面重载，新包自己的启动画面接上），而不是"等下次启动"——
+          //      那正是"打开 App 很快就进去了、但没换成新版、要重启或手动来一次"的来源。
+          if (_servingVersion(st) === v) { finish({ installed: false }); return; }
+          let tried = false;
+          try { tried = sessionStorage.getItem('hotAppliedPending') === v; } catch (e) { tried = false; }
+          if (boot && !tried) {
+            try { sessionStorage.setItem('hotAppliedPending', v); } catch (e) { /* 忽略 */ }
+            enterBootWait();
+            BootSplash.text('正在准备新版本…');
+            return HotBundle.applyPending().then(function (switched) {
+              if (switched) { return; }        // 页面即将重载：不收启动画面、不回调（新包的画面接上）
+              finish({ installed: false, ready: true, version: v });
+            });
+          }
+          finish({ installed: false, ready: true, version: v });     // 切不了：留给切后台/回前台或下次启动
           return;
         }
         if (v && v === st.active) {
           finish({ installed: false });                            // 正在跑的就是最新
           return;
         }
-        let gaveUp = false;
-        if (boot) {
-          BootSplash.text('正在同步最新版本…');
-          BootSplash.busy(true);
-          // 「稍后」= 不等了，直接进 App；包在原生那边继续装，装好下次打开生效
-          BootSplash.onSkip(function () { gaveUp = true; });
-        }
+        enterBootWait();
+        BootSplash.text('正在同步最新版本…');
         // 安装本身（含"装好了记账"）与预算解耦：超时/稍后只是不再等，包装好后自己找机会生效
         const instP = Promise.resolve(p.install!({ serverBase: server, payload: j.payload, sig: j.sig }))
           .then(function (res) {
@@ -349,7 +417,7 @@ export const HotBundle = {
     const p = _plugin();
     if (!p || !st || !st.pending) return Promise.resolve(false);
     const nat = _nativeApply(p, st);
-    if (nat) return nat.then(function (ok) { return ok ? true : _applyViaWebView(st); });
+    if (nat) return nat.then(function (ok) { return ok ? true : _fallbackApply(p, st); });
     return Promise.resolve(_applyViaWebView(st));
   },
 
@@ -364,7 +432,7 @@ export const HotBundle = {
     if (!p || !st || !st.pending) return false;
     const nat = _nativeApply(p, st);
     if (nat) {
-      void nat.then(function (ok) { if (!ok) { _applyViaWebView(st); } });
+      void nat.then(function (ok) { if (!ok) { void _fallbackApply(p, st); } });
       return true;
     }
     return _applyViaWebView(st);
