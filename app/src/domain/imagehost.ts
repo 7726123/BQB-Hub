@@ -20,6 +20,22 @@ export const IMAGE_HOST_KEY = 'imageHostConfig';
 export const AVATAR_SIZE = 768;   // 头像生成边长（1:1）
 export const DRAFT_SIZE = 512;    // 草稿试画边长（快，用于挑构图）
 export const DRAFT_STEPS = 20;    // 草稿步数（2026-10-05 实测：8 步在 512² 上必然发糊；20 步手/细节才可辨，16 步手会粘连）
+export const FAST_SIZE = 512;     // 更快档：512 / 12 步
+export const FAST_STEPS = 12;
+export const HIGH_SIZE = 1024;    // 更精细档：1024 / 36 步
+export const HIGH_STEPS = 36;
+
+// 质量档位：工具参数 quality → 尺寸/步数（单一事实来源；steps 缺省表示交给工作流自己的步数）
+//   fast   512/12  用户说"快一点"          约 5~8 秒
+//   draft  512/20  一次出 2~3 张挑构图     约 8~10 秒
+//   normal 768/工作流 28 步（默认头像）    约 14 秒
+//   high   1024/36 用户说"更精细/更大"     约 30 秒
+export const QUALITY_TIERS: Record<string, { size: number; steps?: number; label: string }> = {
+  fast: { size: FAST_SIZE, steps: FAST_STEPS, label: '快' },
+  draft: { size: DRAFT_SIZE, steps: DRAFT_STEPS, label: '草稿' },
+  normal: { size: AVATAR_SIZE, steps: undefined, label: '标准' },
+  high: { size: HIGH_SIZE, steps: HIGH_STEPS, label: '精细' }
+};
 export const AVATAR_STORE_SIZE = 512; // 入库头像长边（与手动选头像的 _compressImage(file,512) 一致）
 
 function _normBase(s: any): string {

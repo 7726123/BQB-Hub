@@ -5,7 +5,7 @@ import { CharacterManager } from './character';
 import { SettingSyncManager } from './settingsync';
 import { selectedRawText, rawOffsetOf, nodeAtRawOffset, roundIndexOf, collectRoundDeletes } from '../lib/msgslice';
 import { renderMdStrong } from '../lib/mdtext';
-import { ImageHost, AVATAR_SIZE, DRAFT_SIZE, DRAFT_STEPS, AVATAR_STORE_SIZE } from './imagehost';
+import { ImageHost, QUALITY_TIERS, AVATAR_STORE_SIZE } from './imagehost';
 import { resizeDataUrlLongSide } from '../lib/imagedata';
 
 // 安全提示：本模块在 app.js 之前加载，加载期（init/_load）触发的兜底提示不能依赖
@@ -1040,7 +1040,8 @@ const CardWriterChat: CardWriterChatShape = {
     if (this._drawToolsOn) {
       return '【生图（本机画图主机）】你可以用 draw_image 在用户电脑的 ComfyUI 上画图（约 10 秒一张），用 set_avatar 把某张图设为角色头像：\n'
         + '- 先问用户要不要画（把你要画的内容摘要说清楚），用户同意后再调用；不要自作主张连续出图。\n'
-        + '- prompt 用英文，按工具说明里的「画风与提示词要求」写；头像一律 1:1（软件固定 768×768，别传尺寸）；用户要"几个候选"时连续调用 2~3 次 draft:true。\n'
+        + '- prompt 用英文，按工具说明里的「画风与提示词要求」写；头像一律 1:1（软件按档位固定尺寸，别传尺寸）；用户要"几个候选"时连续调用 2~3 次 quality:"draft"。\n'
+        + '- 档位：default=标准头像（768，约 14 秒）；用户说"快一点/先看看"用 quality:"fast"（512，约 5~8 秒）；说"更精细/更大"用 quality:"high"（1024，约 30 秒）。\n'
         + '- 出图后把图给用户看，再问要不要设为某角色的头像；**必须等用户明确同意**（"用这张 / 设为头像 / 就它了"）才调用 set_avatar，并把用户的原话填进 user_said。\n'
         + '- 画图失败（主机离线 / ComfyUI 没开）就把原因如实告诉用户，不要重试超过一次，也不要说"正在画"。';
     }
@@ -1064,14 +1065,18 @@ const CardWriterChat: CardWriterChatShape = {
           + (model ? ('当前画图模型：' + model + '。') : '')
           + (hint ? ('画风与提示词要求：' + hint + ' ') : '')
           + '**调用时机：先问用户要不要画、得到同意后再调用**，不要自作主张连续出图。'
-          + '头像一律 1:1（软件固定按 768×768 出图，你不需要传尺寸）；想给用户挑构图时用 draft:true 连续出 2~3 张（512×512，更快）。'
+          + '用户说"快一点/先随便看看"用 quality:"fast"；要一次出 2~3 张让用户挑构图用 quality:"draft"（可连续调用几次）；说"更精细/更大/要印出来"用 quality:"high"；不填就是标准头像档（768×768，1:1，约 14 秒）。'
           + '出图后请用户看图，并询问要不要设为某个角色的头像；**设为头像必须再等用户明确同意，然后调用 set_avatar**。',
         parameters: {
           type: 'object',
           properties: {
             prompt: { type: 'string', description: '英文正向提示词（按上面的画风/提示词要求写）' },
             seed: { type: 'integer', description: '可选：沿用上一张的 seed，可让同一角色更接近' },
-            draft: { type: 'boolean', description: 'true = 草稿模式（512×512，更快，用于挑构图）' }
+            quality: {
+              type: 'string',
+              enum: ['fast', 'draft', 'normal', 'high'],
+              description: '画质档位：fast=最快（512×512/12 步，约 5~8 秒）；draft=草稿（512×512/20 步，用于挑构图）；normal=标准头像（768×768/28 步，默认）；high=更精细（1024×1024/36 步，约 30 秒）'
+            }
           },
           required: ['prompt']
         }
@@ -1135,15 +1140,17 @@ const CardWriterChat: CardWriterChatShape = {
     if (!st.ok) {
       return { ok: false, message: '失败：画图主机离线（' + (st.error || '') + '）。请告诉用户检查电脑上的 ComfyUI 和画图主机是否在运行，不要重试。' };
     }
-    const isDraft = !!(a && a.draft);
-    const size = isDraft ? DRAFT_SIZE : AVATAR_SIZE;
+    // 质量档位 → 尺寸/步数（见 imagehost.ts 的 QUALITY_TIERS）；旧参数 draft:true 仍然兼容
+    const tierKey = String((a && (a.quality || (a.draft ? 'draft' : 'normal'))) || 'normal').toLowerCase();
+    const tier = QUALITY_TIERS[tierKey] || QUALITY_TIERS.normal;
+    const size = tier.size;
     const seed = (a && a.seed !== undefined && a.seed !== null && String(a.seed) !== '') ? Math.floor(Number(a.seed)) : undefined;
     this._drawCancelled = false;
     this._drawAbort = (typeof AbortController !== 'undefined') ? new AbortController() : null;
     const signal = this._drawAbort ? this._drawAbort.signal : undefined;
     const t0 = Date.now();
     try {
-      const d = await ImageHost.draw({ prompt: prompt, width: size, height: size, seed: seed, steps: isDraft ? DRAFT_STEPS : undefined }, signal);
+      const d = await ImageHost.draw({ prompt: prompt, width: size, height: size, seed: seed, steps: tier.steps }, signal);
       if (!d.ok) {
         return { ok: false, message: '失败：' + (d.error || '提交失败') + '（检查画图主机上的 ComfyUI 是否在运行）' };
       }
@@ -1184,7 +1191,8 @@ const CardWriterChat: CardWriterChatShape = {
       this.renderMessages(true);
       return {
         ok: true,
-        message: '图片已生成并显示给用户（图片 id：' + id + '，' + size + '×' + size + '，seed '
+        message: '图片已生成并显示给用户（图片 id：' + id + '，' + tier.label + '档 ' + size + '×' + size
+          + (tier.steps ? ('/' + tier.steps + ' 步') : '') + '，seed '
           + ((w.meta && w.meta.seed) == null ? '?' : w.meta.seed) + '，耗时 ' + seconds + ' 秒）。'
           + '请用中文简短说明这张图，并问用户要不要把它设为某个角色的头像（得到明确同意后再调用 set_avatar）。'
       };

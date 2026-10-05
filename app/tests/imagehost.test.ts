@@ -28,6 +28,7 @@ let ImageHost: any;
 let scaleSize: any;
 let bytesToDataUrl: any;
 let AVATAR_SIZE = 0, DRAFT_SIZE = 0, DRAFT_STEPS = 0, AVATAR_STORE_SIZE = 0;
+let FAST_SIZE = 0, FAST_STEPS = 0, HIGH_SIZE = 0, HIGH_STEPS = 0, QUALITY_TIERS: any = null;
 
 const store = new Map<string, any>();
 
@@ -48,6 +49,7 @@ beforeAll(async () => {
   scaleSize = dataMod.scaleSize; bytesToDataUrl = dataMod.bytesToDataUrl;
   const mod = await import('../src/domain/imagehost');
   ImageHost = mod.ImageHost; AVATAR_SIZE = mod.AVATAR_SIZE; DRAFT_SIZE = mod.DRAFT_SIZE; DRAFT_STEPS = mod.DRAFT_STEPS; AVATAR_STORE_SIZE = mod.AVATAR_STORE_SIZE;
+  FAST_SIZE = mod.FAST_SIZE; FAST_STEPS = mod.FAST_STEPS; HIGH_SIZE = mod.HIGH_SIZE; HIGH_STEPS = mod.HIGH_STEPS; QUALITY_TIERS = mod.QUALITY_TIERS;
 });
 
 beforeEach(() => {
@@ -85,9 +87,11 @@ describe('ImageHost 配置', () => {
     expect(ImageHost.config()).toEqual(saved);
     expect(ImageHost.ready()).toBe(true);
   });
-  it('尺寸/步数常量就是约定值（头像 768 / 草稿 512+20 步 / 入库 512）', () => {
-    expect([AVATAR_SIZE, DRAFT_SIZE, AVATAR_STORE_SIZE]).toEqual([768, 512, 512]);
+  it('尺寸/步数与档位表（头像 768 / 草稿 512+20 / 快 512+12 / 精细 1024+36）', () => {
+    expect([AVATAR_SIZE, DRAFT_SIZE, AVATAR_STORE_SIZE, FAST_SIZE, FAST_STEPS, HIGH_SIZE, HIGH_STEPS]).toEqual([768, 512, 512, 512, 12, 1024, 36]);
     expect(DRAFT_STEPS).toBe(20);
+    expect(QUALITY_TIERS.normal.steps).toBeUndefined();       // 标准档交回工作流
+    expect(Object.keys(QUALITY_TIERS)).toEqual(['fast', 'draft', 'normal', 'high']);
   });
 });
 

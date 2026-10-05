@@ -24,6 +24,12 @@ vi.mock('../src/domain/imagehost', () => ({
   DRAFT_SIZE: 512,
   DRAFT_STEPS: 20,
   AVATAR_STORE_SIZE: 512,
+  QUALITY_TIERS: {
+    fast: { size: 512, steps: 12, label: '快' },
+    draft: { size: 512, steps: 20, label: '草稿' },
+    normal: { size: 768, steps: undefined, label: '标准' },
+    high: { size: 1024, steps: 36, label: '精细' }
+  },
   ImageHost: {
     ready: () => ih.ready,
     config: () => ({ enabled: ih.ready, base: 'http://h:1', token: 't' }),
@@ -155,10 +161,27 @@ describe('draw_image', () => {
     expect(C._genImages.get('img1').seed).toBe(42);
   });
 
-  it('draft:true 走 512×512 / 20 步（8 步在 512² 上会糊，2026-10-05 实测）', async () => {
-    await C._handleTools([{ id: 'c1', name: 'draw_image', arguments: { prompt: 'x', draft: true } }], '');
-    expect(ih.drawCalls[0].width).toBe(512);
-    expect(ih.drawCalls[0].steps).toBe(20);
+  it('档位映射：fast=512/12、draft=512/20、high=1024/36、默认=768 且步数交给工作流', async () => {
+    const cases: any[] = [
+      [{ prompt: 'x', quality: 'fast' }, 512, 12],
+      [{ prompt: 'x', quality: 'draft' }, 512, 20],
+      [{ prompt: 'x', draft: true }, 512, 20],        // 旧参数 draft:true 仍然兼容
+      [{ prompt: 'x', quality: 'high' }, 1024, 36]
+    ];
+    for (const c of cases) {
+      ih.drawCalls = [];
+      await C._handleTools([{ id: 'c1', name: 'draw_image', arguments: c[0] }], '');
+      expect(ih.drawCalls[0].width).toBe(c[1]);
+      expect(ih.drawCalls[0].height).toBe(c[1]);
+      expect(ih.drawCalls[0].steps).toBe(c[2]);
+    }
+    ih.drawCalls = [];
+    await C._handleTools([{ id: 'c2', name: 'draw_image', arguments: { prompt: 'x' } }], '');
+    expect(ih.drawCalls[0].width).toBe(768);
+    expect(ih.drawCalls[0].steps).toBeUndefined();     // 标准档交回工作流（28 步）
+    ih.drawCalls = [];
+    await C._handleTools([{ id: 'c3', name: 'draw_image', arguments: { prompt: 'x', quality: '不存在的档' } }], '');
+    expect(ih.drawCalls[0].width).toBe(768);           // 认不出的档位回落到标准
   });
 
   it('未配置 → 失败文案引导去设置；离线 → 提示不要重试', async () => {
