@@ -336,7 +336,7 @@ describe('B. 写卡 agent 循环契约', () => {
     expect(Cw()._toolRounds).toBe(2); // 模型连着调了两轮工具（第 2 轮在 _handleTools 里被拒，见批量用例）
   });
 
-  it('假「已写入」兜底：一次写工具都没调却说已写入 → 气泡里点破（世界书没有变化）', async () => {
+  it('说「已写入」但一次工具都没调：不做任何事后核对，文字原样保留（2026-10-06 删掉那套核对）', async () => {
     calls = [];
     (APIHandler as unknown as { fetchCompletions: unknown }).fetchCompletions = (
       messages: unknown[], onChunk: (c: string) => void, onDone: (...a: unknown[]) => void, _err: (...a: unknown[]) => void, overrides: Record<string, unknown>
@@ -350,15 +350,16 @@ describe('B. 写卡 agent 循环契约', () => {
     (document.getElementById('cardwriterInput') as unknown as { value: string }).value = '写入吧';
     Cw().sendMessage();
     await vi.waitFor(() => expect(Cw()._isSending).toBe(false));
-    // 收尾核对在循环返回后的几个微任务里跑 → 用重试等待它落笔（不要抢在它前面读）
-    await vi.waitFor(() => expect(String(((Cw().messages as { content?: string }[]).slice(-1)[0]).content)).toContain('系统核对'));
+    await new Promise((r) => setTimeout(r, 30));   // 留出微任务，确认"没有任何东西被追加"
     expect(Cw()._writeOk).toBe(false);
     const ai = (Cw().messages as { content?: string }[]).slice(-1)[0];
-    expect(String(ai.content)).toContain('已写入：林晚');      // 模型原话保留（用户能看到它说了什么）
-    expect(String(ai.content)).toContain('世界书没有变化');
+    expect(String(ai.content)).toBe('已写入：林晚（新增）、世界背景（新增）。');   // 一个字都没被改
+    expect(String(ai.content)).not.toContain('系统核对');
+    expect(String(ai.content)).not.toContain('世界书没有变化');
+    expect((ai as { toolSummary?: unknown }).toolSummary).toBeUndefined();        // 没调工具 → 没有实录条
   });
 
-  it('只读工具（read_current_book_json）成功不算写过：说「已写入」仍会被点破', async () => {
+  it('只读工具成功不算写过：实录条据实写"本轮没有写入任何内容（只有查询）"', async () => {
     calls = [];
     (APIHandler as unknown as { fetchCompletions: unknown }).fetchCompletions = (
       messages: unknown[], onChunk: (c: string) => void, onDone: (...a: unknown[]) => void, _err: (...a: unknown[]) => void, overrides: Record<string, unknown>
@@ -377,11 +378,15 @@ describe('B. 写卡 agent 循环契约', () => {
     (document.getElementById('cardwriterInput') as unknown as { value: string }).value = '看一下当前卡再写入';
     Cw().sendMessage();
     await vi.waitFor(() => expect(Cw()._isSending).toBe(false));
-    await vi.waitFor(() => expect(String(((Cw().messages as { content?: string }[]).slice(-1)[0]).content)).toContain('系统核对'));
+    await new Promise((r) => setTimeout(r, 30));
     expect(Cw()._toolsOk).toBe(true);   // 只读工具成功
     expect(Cw()._writeOk).toBe(false);  // 但没有任何写工具成功
     const ai = (Cw().messages as { content?: string }[]).slice(-1)[0];
-    expect(String(ai.content)).toContain('系统核对');
+    expect(String(ai.content)).toContain('已经读取并写入完成。');   // 模型原话原样保留
+    expect(String(ai.content)).not.toContain('系统核对');
+    // 「本轮没有写入任何内容（只有查询）」的实录条由 _handleTools 真实产出 → 在 cardwriter-batch.test.ts 断言
+    // （本文件里 _handleTools 是打桩的，见 setupCard）
+    expect((ai as { toolSummary?: unknown }).toolSummary).toBeUndefined();
   });
 
   it('深度思考：流式实时显示 → 正文首字折叠归档进消息，渲染折叠思维链块', async () => {

@@ -247,7 +247,7 @@ describe('批量结果回传模型：结构化 JSON 与 failed 明细', () => {
     expect(c2._toolsOk).toBe(false); // 一条都没成功 → 不能说「已写入」
   });
 
-  it('_writeOk：只读工具成功不算「写过」（否则假「已写入」兜底会漏判）', async () => {
+  it('_writeOk：只读工具成功不算「写过」（收尾文案与实录都靠它区分"写了"与"只查了"）', async () => {
     const c = prime();
     c._draft = { characters: [], entries: [entry('甲')], deleted: [] };
     WB_BOOKS = [{ id: 'wb1', name: '测试书', entries: [entry('甲')] }];
@@ -261,17 +261,67 @@ describe('批量结果回传模型：结构化 JSON 与 failed 明细', () => {
     expect(c._writeOk).toBe(true);
   });
 
-  it('_claimsWrite：认完成性表述，不误判否定式/疑问式/纯讨论', async () => {
-    const c = Cw();
-    expect(c._claimsWrite('已写入：林晚（更新）、国家（新增）')).toBe(true);
-    expect(c._claimsWrite('好的，已经把世界观更新完毕。')).toBe(true);
-    expect(c._claimsWrite('本轮没有写入任何内容，只是讨论。')).toBe(false);
-    expect(c._claimsWrite('还没有保存，等你确认。')).toBe(false);
-    expect(c._claimsWrite('这样就算已经更新了吧？')).toBe(false);
-    expect(c._claimsWrite('要不要我把这些写入世界书？')).toBe(false);
-    expect(c._claimsWrite('我建议把这段改成第一人称，你觉得呢')).toBe(false);
-    expect(c._claimsWrite('')).toBe(false);
-    expect(c._claimsWrite(null)).toBe(false);
+  it('工具执行实录：挂在消息上、进历史、气泡按实录渲染（2026-10-06 取代原来的"假已写入兜底"）', async () => {
+    const c = prime();
+    c._draft = { characters: [], entries: [entry('甲')], deleted: [] };
+    WB_BOOKS = [{ id: 'wb1', name: '测试书', entries: [entry('甲')] }];
+    c.messages = [{ role: 'user', content: '写入吧' }, { role: 'assistant', content: '好了。' }];
+    await c._handleTools([
+      { id: 'c1', name: 'upsert_entry', arguments: { type: '其他', name: '新条目', content: 'x' } },
+      { id: 'c2', name: 'read_current_book_json', arguments: {} }
+    ], '');
+    const ai: any = c.messages[c.messages.length - 1];
+    expect(ai.toolSummary).toHaveLength(1);
+    expect(ai.toolSummary[0].wrote[0]).toContain('新条目');
+    expect(ai.toolSummary[0].read).toBe(1);
+    const line = c._toolSummaryText(ai);
+    expect(line).toContain('已写入 1 项');
+    expect(line).toContain('另有 1 项只读查询成功');
+    expect(line).toContain('软件记录');                    // 明确告诉模型：这是事实，不是它自己的话
+    const hist: any[] = c._recentHistory();
+    expect(String(hist[hist.length - 1].content)).toContain('【本轮工具执行实录');
+    expect(String(hist[hist.length - 1].content)).toContain('好了。');   // 原话保留，实录附在后
+    const html = c._wroteHtml(ai);
+    expect(html).toContain('cw-wrote');
+    expect(html).toContain('本轮已写入 1 项');
+  });
+
+  it('只读调用的实录条：据实写"本轮没有写入任何内容（只有查询）"', async () => {
+    const c = prime();
+    c._draft = { characters: [], entries: [entry('甲')], deleted: [] };
+    WB_BOOKS = [{ id: 'wb1', name: '测试书', entries: [entry('甲')] }];
+    c.messages = [{ role: 'assistant', content: '' }];
+    await c._handleTools([{ id: 'c1', name: 'read_current_book_json', arguments: {} }], '');
+    const ai: any = c.messages[c.messages.length - 1];
+    expect(ai.toolSummary[0].wrote.length).toBe(0);
+    expect(ai.toolSummary[0].read).toBe(1);
+    expect(c._toolSummaryText(ai)).toContain('没有任何写入操作');
+    const html = c._wroteHtml(ai);
+    expect(html).toContain('本轮没有写入任何内容');
+    expect(html).toContain('只有查询');
+  });
+
+  it('验收只拦下一条时：同批真写进去的照旧算写过，被拦的那条如实记失败（不再整批归零）', async () => {
+    const c = prime();
+    c._draft = { characters: [], entries: [entry('甲')], deleted: [] };
+    WB_BOOKS = [{ id: 'wb1', name: '测试书', entries: [entry('甲')] }];
+    c.messages = [{ role: 'assistant', content: '' }];
+    // 注意：Cw() 是单例，打桩必须还原，否则污染后面的用例（踩过一次）
+    const origWrite = (c as any)._doWriteToWorldbook;
+    (c as any)._doWriteToWorldbook = () => '部分内容验收未通过：新条目B（缺内容）';
+    try {
+      await c._handleTools([
+        { id: 'c1', name: 'upsert_entry', arguments: { type: '其他', name: '新条目A', content: 'x' } },
+        { id: 'c2', name: 'upsert_entry', arguments: { type: '其他', name: '新条目B', content: 'y' } }
+      ], '');
+      expect(c._writeOk).toBe(true);                      // 以前这里被整批归零 → 收尾文案会说错话
+      const ai: any = c.messages[c.messages.length - 1];
+      expect(ai.toolSummary[0].wrote.length).toBe(1);     // A 记成已写入
+      expect(ai.toolSummary[0].failed.length).toBe(1);    // B 如实记失败
+      expect(String(ai.toolSummary[0].failed[0])).toContain('世界书未更新');
+    } finally {
+      (c as any)._doWriteToWorldbook = origWrite;
+    }
   });
 
   it('设计轮最多一轮提交：第 2 轮及以后的工具调用不执行，且明确回传 ok=false（不静默吞掉）', async () => {

@@ -365,7 +365,61 @@ const CardWriterChat: CardWriterChatShape = {
       if ((msgs[i] || {}).role === 'user') roundCount++;
       if (roundCount >= MAX_ROUNDS) { roundStart = i; break; }
     }
-    return msgs.slice(roundStart);
+    const sliced = msgs.slice(roundStart);
+    // 「工具执行实录」只注入最近 3 条 assistant（够模型判断上一轮到底写没写；再多只是白烧 prefill）。
+    // 这是给模型的**事实**：跨轮它看不到 tool 消息，只靠自己的措辞回忆就会把"我说过已写入"当成写过。
+    const withSummary: Record<number, string> = {};
+    let budget = 3;
+    for (let i = sliced.length - 1; i >= 0 && budget > 0; i--) {
+      const line = this._toolSummaryText(sliced[i]);
+      if (line) { withSummary[i] = line; budget--; }
+    }
+    if (!budget || !Object.keys(withSummary).length) return sliced;
+    return sliced.map(function (m: any, i: number) {
+      if (withSummary[i] == null) return m;
+      return Object.assign({}, m, { content: String((m && m.content) || '') + '\n\n' + withSummary[i] });
+    });
+  },
+
+  // 消息上记的「工具执行实录」→ 给模型看的一行（没有就返回 ''）
+  _toolSummaryText(m: any) {
+    const list = (m && m.toolSummary) || [];
+    if (!list.length) return '';
+    const wrote: string[] = [], failed: string[] = [];
+    let read = 0;
+    list.forEach(function (s: any) {
+      (s && s.wrote ? s.wrote : []).forEach(function (w: any) { wrote.push(String(w)); });
+      (s && s.failed ? s.failed : []).forEach(function (f: any) { failed.push(String(f)); });
+      read += Number((s && s.read) || 0);
+    });
+    return '【本轮工具执行实录（软件记录，不是你的话）】'
+      + (wrote.length ? ('已写入 ' + wrote.length + ' 项：' + wrote.join('；')) : '没有任何写入操作')
+      + (failed.length ? ('；失败 ' + failed.length + ' 项：' + failed.join('；')) : '')
+      + (read ? ('；另有 ' + read + ' 项只读查询成功') : '')
+      + '。';
+  },
+
+  // 气泡里的「本轮已写入 …」小条：软件按真实执行结果渲染（模型嘴上说什么都不影响这里）
+  _wroteHtml(m: any) {
+    const list = (m && m.toolSummary) || [];
+    if (!list.length) return '';
+    const wrote: string[] = [], failed: string[] = [];
+    let read = 0;
+    list.forEach(function (s: any) {
+      (s && s.wrote ? s.wrote : []).forEach(function (w: any) { wrote.push(String(w)); });
+      (s && s.failed ? s.failed : []).forEach(function (f: any) { failed.push(String(f)); });
+      read += Number((s && s.read) || 0);
+    });
+    let inner = '';
+    if (wrote.length) {
+      inner += '<div class="cw-wrote-line ok">✅ 本轮已写入 ' + wrote.length + ' 项：' + htmlEscape(wrote.join('；')) + '</div>';
+    } else {
+      inner += '<div class="cw-wrote-line dim">本轮没有写入任何内容' + (read ? '（只有查询）' : '') + '</div>';
+    }
+    if (failed.length) {
+      inner += '<div class="cw-wrote-line bad">⚠️ 失败 ' + failed.length + ' 项：' + htmlEscape(failed.join('；')) + '</div>';
+    }
+    return '<div class="cw-wrote">' + inner + '</div>';
   },
 
   // 滚动到最新消息（进入面板/切换书后调用；延迟到视图渲染完成）
@@ -506,7 +560,6 @@ const CardWriterChat: CardWriterChatShape = {
     this._toolsOk = false; // 本轮是否有**成功**的工具调用（收尾文案据此区分"已写入"与"没提交成功"）
     this._writeOk = false; // 本轮是否有成功的**写**工具调用（只读工具不算）
     this._toolRounds = 0; // 本条消息已发生的工具轮数
-    this._fixCount = 0; // 完成声明一致性纠正次数（最多 1 次，防死循环）
     this._repeatKey = null; // 重复调用守卫：上一轮工具调用链（相同工具+相同参数连续重复计数）
     this._repeatCount = 0;
     // 状态提示：一律「正在思考…」。以前按"这句话像不像确认语"预先显示「正在写入…」，
@@ -837,20 +890,10 @@ const CardWriterChat: CardWriterChatShape = {
       // 条（spinner + 文案），空内容不渲染气泡，见 renderMessages。
       };
       await runTurn(requestMessages, 0);
-      // 假「已写入」兜底（2026-09-26 用户报的正是这个：AI 说已写入，世界书其实没变）：
-      // 整条消息跑完后，模型嘴里说「已写入/已保存」但一次成功的写工具调用都没有 → 在气泡里点破。
-      // 工具常开后这只是保险丝（判漏写入意图、模型空口声称、写工具全失败三种情况都由它兜住）。
-      {
-        const _final = this.messages[assistantIdx];
-        if (_final && !this._writeOk && this._claimsWrite(_final.content)) {
-          _final.content = String(_final.content || '').trim()
-            + '\n\n（系统核对：这条消息里没有任何成功的写入操作——世界书没有变化，上面「已写入」的说法不成立。'
-            + '再发一句「写入吧」我重试；如果反复这样，把要说的话说得更直接一点，或检查设置里的 API 是否支持工具调用。）';
-          this._save();
-          this.renderMessages();
-          if (!_cwHidden()) App.toast('AI 声称已写入，但实际没有提交任何变更——世界书未改变');
-        }
-      }
+      // 注：2026-10-06 起**不做任何"声称已写入"的事后核对**（用户要求）。以前整条消息跑完后会用正则
+      // 在文本里找"已写入/已保存"，对不上就追加「系统核对…」并弹 toast——它误报过（验收拦下一条就把
+      // 整批当成没写、普通叙述被当成声明）。现在的事实由软件自己记录并在气泡里渲染（见 _wroteHtml /
+      // _handleTools 里的 toolSummary）：模型说错话不再被"纠正"，但用户看到的清单永远是真实执行结果。
     } catch (e) {
       // 兜底：任何未捕获异常都必须释放发送锁，否则后续再也无法发送
       this._isSending = false;
@@ -998,7 +1041,7 @@ const CardWriterChat: CardWriterChatShape = {
   // 2026-09-25 用户要求：设计阶段（讨论/构思）只输出设计，不要多轮循环、不要直接写入。
   // 2026-09-26 用户修正：**不能用这个判定来决定"给不给工具"**——判漏（用户其实是要写入）时
   // 模型手里没有工具，却照提示词说「已写入」，世界书一个字都没变（前端判定只能当软口径的输入，
-  // 不能当开关；见 _DESIGN_TOOL_ROUNDS 与 _claimsWrite 的兜底）。
+  // 不能当开关；见 _DESIGN_TOOL_ROUNDS 与 _handleTools 里的 toolSummary 实录）。
   // 判据两层：① 征询/讨论语气优先 → 一律不算操作；② 剩下的话里要有明确动作词。
   // 边界：错判成设计轮 = 这轮不写、下一句「写入吧」就补上；错判成操作轮 = 可能擅自改用户的书，
   // 所以动作词只收明确的（不含"你来定/你决定/自由发挥/你看着办"这类构思授权词）。
@@ -1513,7 +1556,7 @@ const CardWriterChat: CardWriterChatShape = {
       return blocked;
     }
     this._toolsHandled = true; // 已通过工具提交变更
-    let writeOk = false; // 本轮是否有写工具真的成功（只读工具不算）
+    let writeOk = false; // 本轮是否有写工具真的成功（只读工具不算）——末尾按"最终结果"统一判定
     // 工具结果结构化 JSON 回传（成熟 agent 协议）：模型精确判断成功/失败，失败时自动修正
     const results: string[] = [];
     for (const t of tools) {
@@ -1531,12 +1574,10 @@ const CardWriterChat: CardWriterChatShape = {
         this._statusText = (t.name === 'draw_image') ? '正在出图…' : '正在写入头像…';
         this.renderMessages(true);
         const ir = await this._executeImageTool(t);
-        if (ir.ok && _WRITE_TOOLS.indexOf(String(t.name)) >= 0) writeOk = true;
         results.push(JSON.stringify({ ok: !!ir.ok, message: ir.message }));
         continue;
       }
       const r = this._executeToolResult(t);
-      if (r.ok && _WRITE_TOOLS.indexOf(String(t.name)) >= 0) writeOk = true;
       results.push((r.failed && r.failed.length)
         ? JSON.stringify({ ok: r.ok, message: r.message, failed: r.failed })
         : JSON.stringify({ ok: r.ok, message: r.message }));
@@ -1549,43 +1590,45 @@ const CardWriterChat: CardWriterChatShape = {
       const _i = results.length - 1;
       try {
         const _o = JSON.parse(results[_i]);
-        // 被验收拦下 → 世界书没更新，这条调用不算成功（否则 _writeOk 会把"没写进去"当成写过）
-        if (_o.ok && _WRITE_TOOLS.indexOf(String(tools[_i].name)) >= 0) writeOk = false;
+        // 被验收拦下 → 这条调用不算成功（世界书没更新）。**只改这一条**：以前这里会把整批 writeOk
+        // 归零，于是"同批前面真的写进去了"也被当成没写（用户 2026-10-06 看到的误报就是这个）。
         _o.ok = false;
         _o.message = String(_o.message) + '｜世界书未更新：' + _wr;
         results[_i] = JSON.stringify(_o);
       } catch (e) { /* 结果非 JSON（不应发生）→ 保持原样 */ }
     }
-    // 记录执行结果 ok 状态（完成声明校验用：模型声称成功但实际失败 → 纠正）
-    // _toolsOk：任意一条调用（含只读）真的成功过；_writeOk：写工具真的成功过（收尾文案与
-    // 假「已写入」兜底都用 _writeOk——只读工具成功不代表世界书变过）
-    if (!this._toolsOk && results.some(function (r: any) { try { return !!JSON.parse(r).ok; } catch (e) { return false; } })) this._toolsOk = true;
+    // 执行状态统一按**最终结果**判定（含验收拦截后的改写）：
+    // _toolsOk：任意一条调用（含只读）真的成功过；_writeOk：写工具真的成功过
+    //（收尾文案用它区分"已写入"与"没提交成功"——只读工具成功不代表世界书变过）
+    const _parsed = results.map(function (r: any) { try { return JSON.parse(r); } catch (e) { return { ok: false, message: String(r) }; } });
+    if (!this._toolsOk && _parsed.some(function (o: any) { return !!o.ok; })) this._toolsOk = true;
+    writeOk = _parsed.some(function (o: any, i: number) { return !!o.ok && _WRITE_TOOLS.indexOf(String((tools[i] || {}).name)) >= 0; });
     if (writeOk) this._writeOk = true;
-    this._lastToolResults = results.map((r: any) => { try { return JSON.parse(r); } catch (e) { return { ok: false, message: r }; } });
+    this._lastToolResults = _parsed;
+    // 本轮「工具执行实录」：软件自己的事实记录（不信模型措辞）。挂在当前 assistant 气泡上——
+    // ① 下一轮请求随历史带上（模型据此判断上一轮到底写没写，不用凭自己的话回忆）；
+    // ② 气泡里渲染成「本轮已写入 …」小条（用户看到的是真实执行结果）。
+    {
+      const _wrote: string[] = [], _failed: string[] = [];
+      let _read = 0;
+      tools.forEach(function (t: any, i: number) {
+        const o: any = _parsed[i] || {};
+        const isWrite = _WRITE_TOOLS.indexOf(String(t.name)) >= 0;
+        if (isWrite && o.ok) _wrote.push(String(o.message || t.name));
+        else if (!o.ok) _failed.push(String(t.name) + '：' + String(o.message || '失败').slice(0, 80));
+        else _read++;
+      });
+      const lastMsg: any = this.messages[this.messages.length - 1];
+      if (lastMsg && lastMsg.role === 'assistant') {
+        lastMsg.toolSummary = (lastMsg.toolSummary || []).concat([{ wrote: _wrote, failed: _failed, read: _read }]);
+        this._save();
+      }
+    }
     this._saveDraft();
     this.renderDraft();
     return results;
   },
 
-  // 模型有没有在这段文字里声称"已经写入/已保存"（假「已写入」兜底用）。
-  // 只认完成性表述：已/已经/都 +（最多几个字，容「已经把世界观更新完毕」这种插入语）+ 写类动词。
-  // 否定式（还没保存 / 没有写入 / 不必更新）与疑问式（已经更新了吧？）不算。
-  _claimsWrite(text: any) {
-    const t = String(text || '');
-    if (!t) return false;
-    const re = /(?:已经|已|都)[^。！？；\n]{0,6}?(写入|写进|写下来|落库|保存|存档|存进|提交|应用|更新|修改|删除|移除|创建|新增|添加|录入|入库|改成|改为|改好|建好|写好|搞定)/g;
-    let m: RegExpExecArray | null;
-    while ((m = re.exec(t))) {
-      const beforeHead = t.slice(Math.max(0, m.index - 4), m.index);            // 「未/还没」写在头部前面
-      const verbAt = m.index + m[0].length - m[1].length;                        // 动词起点
-      const beforeVerb = t.slice(Math.max(0, verbAt - 3), verbAt);               // 「还没写入」这种紧贴动词的否定
-      if (/[未没不]/.test(beforeHead) || /[未没不]/.test(beforeVerb)) continue;
-      const after = t.slice(m.index + m[0].length, m.index + m[0].length + 4);
-      if (/[？?吗吧]/.test(after)) continue; // 「已经更新了吧？」= 在问，不是在报
-      return true;
-    }
-    return false;
-  },
 
   // 生成的图片缩略图（消息里只存 imageIds；图片数据只在本会话内存里，重载后显示占位）。
   _imagesHtml(m: any) {
@@ -1619,6 +1662,7 @@ const CardWriterChat: CardWriterChatShape = {
       if (isStreaming && i === this.messages.length - 1 && m.role === 'assistant') cls += ' streaming';
       let content = m.content || '';
       const imgHtml = this._imagesHtml(m); // 生成的图片（缩略图贴气泡里；有图就不算"空内容"）
+      const wroteHtml = this._wroteHtml(m); // 本轮工具执行实录（软件渲染的真实结果，见 _handleTools）
       // 深度思考块：reasoningLive = 正在思考（实时展开）；reasoning = 已结束（折叠可展开）
       // 思考强度为 off 时一律不渲染思考块（历史消息中的旧思考也已隐藏）
       const _cwThinkOn = App.thinkingLevel() !== 'off';
@@ -1627,7 +1671,7 @@ const CardWriterChat: CardWriterChatShape = {
       // 流式等待期：不渲染气泡，渲染独立状态条（spinner + 文案）。
       // 空气泡根治：空内容永远不会成为气泡；工具轮/思考轮只走状态条。
       // 正在深度思考时不走状态条——思考块本身就是反馈，避免两者叠加闪动
-      if (!content && !imgHtml && !liveThink && m.role === 'assistant' && this._isSending && i === this.messages.length - 1) {
+      if (!content && !imgHtml && !wroteHtml && !liveThink && m.role === 'assistant' && this._isSending && i === this.messages.length - 1) {
         const st = htmlEscape(this._statusText || '正在分析…');
         html += '<div class="cw-status"><span class="cw-spinner"></span><span class="cw-status-text">' + st + '</span></div>';
         continue;
@@ -1676,7 +1720,7 @@ const CardWriterChat: CardWriterChatShape = {
         ' onpointerdown="CardWriterChat.msgPressStart(event,' + i + ')"' +
         ' onpointerup="CardWriterChat.msgPressEnd(' + i + ')"' +
         ' onpointermove="CardWriterChat.msgPressMove(event,' + i + ')"' + '>' +
-        thinkHtml + '<div class="cw-msg-text" data-i="' + i + '">' + content + '</div>' + imgHtml + '</div>' + resumeHtml;
+        thinkHtml + '<div class="cw-msg-text" data-i="' + i + '">' + content + '</div>' + imgHtml + wroteHtml + '</div>' + resumeHtml;
       if (multiOn) {
         html += '<div class="cw-row' + (m.role === 'user' ? ' user' : '') + (multiChecked ? ' sel' : '') + '">' +
           '<span class="cw-check"></span>' + bubble + '</div>';

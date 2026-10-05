@@ -448,6 +448,10 @@ label{font-size:13px;color:var(--text-secondary);display:block;margin-bottom:4px
 .cw-imgs .cw-img-no{position:absolute;left:6px;bottom:6px;font-size:11px;font-weight:600;padding:1px 6px;border-radius:999px;background:rgba(0,0,0,.62);color:#fff;pointer-events:none;line-height:1.5}
 .cw-imgs .cw-img-expired{width:132px;height:132px;border-radius:10px;border:1px dashed var(--border);display:flex;align-items:center;justify-content:center;font-size:11px;color:var(--text-muted);text-align:center;padding:6px;box-sizing:border-box}
 .cw-img-meta{font-size:11px;color:var(--text-muted);margin-top:6px;line-height:1.5;word-break:break-all}
+.cw-wrote{margin-top:8px;padding:6px 9px;border-radius:9px;background:var(--bg-tertiary);border:1px solid var(--border);font-size:11.5px;line-height:1.6}
+.cw-wrote-line{color:var(--text-muted);word-break:break-word}
+.cw-wrote-line.ok{color:var(--text)}
+.cw-wrote-line.bad{color:#c0392b}
 .cw-sel-layer{position:absolute;inset:0;pointer-events:none;z-index:1}
 .cw-sel-rect{position:absolute;background:color-mix(in srgb,var(--primary) 26%,transparent);border-radius:2px}
 .cw-sel-bar{position:fixed;z-index:1700;display:none;align-items:center;gap:2px;padding:4px;border-radius:11px;background:var(--bg-secondary);border:1px solid var(--border);box-shadow:0 8px 24px rgba(0,0,0,.22)}
@@ -2199,7 +2203,7 @@ label{font-size:13px;color:var(--text-secondary);display:block;margin-bottom:4px
     <button type="button" class="bs-skip" id="bootSplashSkip">稍后</button>
   </div>
 </div>
-<script id="bootMain" data-src="modules/main.js?v=352159681-161"></script>
+<script id="bootMain" data-src="modules/main.js?v=355881271-161"></script>
 <script>
 (function () {
   var el = document.getElementById('bootSplash');
