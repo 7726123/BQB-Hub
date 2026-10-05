@@ -1155,7 +1155,7 @@ const CardWriterChat: CardWriterChatShape = {
           const now = Date.now();
           if (now - lastPaint > 1000) {
             lastPaint = now;
-            this._statusText = '正在出图（' + size + '×' + size + '）… ' + Math.round((j.elapsed || (now - t0)) / 1000) + 's';
+            this._statusText = '正在出图…';
             this.renderMessages(true);
           }
         }
@@ -1530,7 +1530,7 @@ const CardWriterChat: CardWriterChatShape = {
       }
       // 图片类工具：异步执行（10 秒级），先渲染状态条再 await
       if (t.name === 'draw_image' || t.name === 'set_avatar') {
-        this._statusText = (t.name === 'draw_image') ? '正在出图（约 10 秒）…' : '正在写入头像…';
+        this._statusText = (t.name === 'draw_image') ? '正在出图…' : '正在写入头像…';
         this.renderMessages(true);
         const ir = await this._executeImageTool(t);
         if (ir.ok && _WRITE_TOOLS.indexOf(String(t.name)) >= 0) writeOk = true;
