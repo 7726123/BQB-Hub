@@ -31,6 +31,7 @@ import { moduleRole, moduleSlot, pickModules, stPromptsToModules, nativeModulesT
 import { expandStMacros, expandStMacroText, createStMacroCtx } from '../lib/stmacros';
 import { DELTA_BLOCK_RE_G, DELTA_TAG_RE_G } from '../lib/delta-tag';
 import { StatusVars } from './statusvars';
+import { ImageHost } from './imagehost';
 
 // 价格表默认值（人民币/百万 token）：DeepSeek V4.1 峰时价。
 // 2026-09-26 之前默认是 1 / 0.1 / 2 —— 缓存价按"输入的 10%"填，而真实是 2%（命中便宜 50 倍），
@@ -608,6 +609,61 @@ const App: AppShape = {
   setStreamingOutput(v: boolean) {
     SM().set('streamingOutput', !!v);
     App.toast(v ? '流式输出：开（边生成边显示）' : '流式输出：关（整段生成完再显示）');
+  },
+
+  // 画图主机（本地 ComfyUI 的包装服务）：设置页「AI 与生成」里那三栏。
+  // 地址/token 存在 SM 'imageHostConfig'（见 domain/imagehost.ts）；这里只负责读表单、存、回显。
+  saveImageHost() {
+    const en = document.getElementById('imageHostEnabled') as HTMLInputElement | null;
+    const base = document.getElementById('imageHostBase') as HTMLInputElement | null;
+    const tok = document.getElementById('imageHostToken') as HTMLInputElement | null;
+    const cfg = ImageHost.save({
+      enabled: !!(en && en.checked),
+      base: base ? base.value : undefined,
+      token: tok ? tok.value : undefined
+    });
+    if (base) base.value = cfg.base;
+    if (tok) tok.value = cfg.token;
+    App._syncImageHostUI();
+    App.toast(cfg.base ? ('画图主机已保存' + (cfg.enabled ? '' : '（未启用）')) : '画图主机地址已清空');
+    return cfg;
+  },
+
+  async testImageHost() {
+    const st = await ImageHost.status(4000);
+    App._syncImageHostUI(st);
+    App.toast(st.ok
+      ? ('画图主机在线 · ' + (st.model || '未知模型') + (st.steps ? ('（' + st.steps + ' 步）') : ''))
+      : ('画图主机连接失败：' + (st.error || '未知错误')));
+    return st;
+  },
+
+  // 把 imageHostConfig（以及可选的探测结果）刷到设置页三栏 + 状态行上
+  _syncImageHostUI(st?: any) {
+    try {
+      const c = ImageHost.config();
+      const en = document.getElementById('imageHostEnabled') as HTMLInputElement | null;
+      const base = document.getElementById('imageHostBase') as HTMLInputElement | null;
+      const tok = document.getElementById('imageHostToken') as HTMLInputElement | null;
+      const badge = document.getElementById('imageHostBadge');
+      const state0 = document.getElementById('imageHostState');
+      if (en && document.activeElement !== en) en.checked = c.enabled;
+      if (base && document.activeElement !== base) base.value = c.base;
+      if (tok && document.activeElement !== tok) tok.value = c.token;
+      if (badge) {
+        badge.textContent = c.enabled ? 'ON' : 'OFF';
+        badge.style.background = c.enabled ? '#10b981' : '#6b7280';
+      }
+      if (state0) {
+        if (st) {
+          state0.textContent = st.ok
+            ? ('在线 · ' + (st.model || '未知模型') + (st.steps ? ('（' + st.steps + ' 步' + (st.size ? '，' + st.size : '') + '）') : ''))
+            : ('连接失败：' + (st.error || '未知错误'));
+        } else {
+          state0.textContent = (c.enabled && c.base) ? '已配置（点「测试连接」看是否在线）' : (c.base ? '已填地址（未启用）' : '未配置 · 在电脑上跑 node serve.mjs --lan，把地址和 token 填这里');
+        }
+      }
+    } catch (e) { /* 设置页没打开也不影响 */ }
   },
   _syncThinkingUI() {
     const el = document.getElementById('deepseekThinking');

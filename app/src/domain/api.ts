@@ -1258,8 +1258,14 @@ export const APIHandler = {
           try { args = JSON.parse(t.arguments || '{}'); } catch (e) { argsError = (e && (e as Error).message) ? (e as Error).message : String(e); }
           return { id: t.id || '', name: t.name, arguments: args, argsError: argsError || undefined };
         });
-        overrides.onTools(list);
-        onDone(null, false);
+        // 工具处理可以是异步的（写卡的生图工具要等 10 秒级出图）：返回值是 Promise 就等它跑完再收尾；
+        // 同步回调行为完全不变（biqi/助手等不受影响）。不等的话 onDone 会先到，把这一轮当成已结束。
+        const _toolRet: any = overrides.onTools(list);
+        if (_toolRet && typeof _toolRet.then === 'function') {
+          _toolRet.then(function () { onDone(null, false); }, function () { onDone(null, false); });
+        } else {
+          onDone(null, false);
+        }
       } else {
         onDone(fullContent || null, aborted, reasoning || undefined);
       }

@@ -2400,6 +2400,24 @@ const UIManager: UIManagerShape = {
         pState.textContent = p && p.name ? p.name : '';
       } catch (e) {}
     }
+    // 画图主机三栏（回显用 SM 现读，避免 ui.ts 再引一个 domain 模块）
+    try {
+      const ihEn = document.getElementById('imageHostEnabled') as HTMLInputElement | null;
+      if (ihEn || document.getElementById('imageHostBase')) {
+        const c = SM().get<any>('imageHostConfig', {}) || {};
+        const base = String(c.base || '');
+        const on = !!c.enabled;
+        const elBase = document.getElementById('imageHostBase') as HTMLInputElement | null;
+        const elTok = document.getElementById('imageHostToken') as HTMLInputElement | null;
+        const badge = document.getElementById('imageHostBadge');
+        const state0 = document.getElementById('imageHostState');
+        if (ihEn && document.activeElement !== ihEn) ihEn.checked = on;
+        if (elBase && document.activeElement !== elBase) elBase.value = base;
+        if (elTok && document.activeElement !== elTok) elTok.value = String(c.token || '');
+        if (badge) { badge.textContent = on ? 'ON' : 'OFF'; badge.style.background = on ? '#10b981' : '#6b7280'; }
+        if (state0) state0.textContent = (on && base) ? '已配置（点「测试连接」看是否在线）' : (base ? '已填地址（未启用）' : '未配置 · 在电脑上跑 node serve.mjs --lan，把地址和 token 填这里');
+      }
+    } catch (e) { /* ignore */ }
   },
 
   renderChapters() {

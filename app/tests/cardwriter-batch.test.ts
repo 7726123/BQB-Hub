@@ -87,7 +87,7 @@ function okOf(jsonText: string): any {
 }
 
 describe('批量删除：delete_entry 的 names 数组', () => {
-  it('一次删掉多个条目并回报数量；同名多处一并删净', () => {
+  it('一次删掉多个条目并回报数量；同名多处一并删净', async () => {
     const c = prime();
     c._draft = { characters: [], entries: [entry('甲'), entry('乙'), entry('丙'), entry('乙', '世界观')], deleted: [] };
     const r = c._executeToolResult({ name: 'delete_entry', arguments: { names: ['甲', '乙', '丙'] } });
@@ -103,7 +103,7 @@ describe('批量删除：delete_entry 的 names 数组', () => {
     expect(tomb).toContain('其他:丙');
   });
 
-  it('单条 name 形态仍只删第一条同名（向后兼容，不改既有语义）', () => {
+  it('单条 name 形态仍只删第一条同名（向后兼容，不改既有语义）', async () => {
     const c = prime();
     c._draft = { characters: [], entries: [entry('乙'), entry('乙', '世界观')], deleted: [] };
     const r = c._executeTool({ name: 'delete_entry', arguments: { name: '乙' } });
@@ -111,7 +111,7 @@ describe('批量删除：delete_entry 的 names 数组', () => {
     expect(c._draft.entries).toHaveLength(1); // 只删掉第一条
   });
 
-  it('未找到的名字进 failed 明细，已成功的项保留（模型据此只补做失败项）', () => {
+  it('未找到的名字进 failed 明细，已成功的项保留（模型据此只补做失败项）', async () => {
     const c = prime();
     c._draft = { characters: [], entries: [entry('甲')], deleted: [] };
     const r = c._executeToolResult({ name: 'delete_entry', arguments: { names: ['甲', '不存在的名字'] } });
@@ -123,7 +123,7 @@ describe('批量删除：delete_entry 的 names 数组', () => {
     expect(c._draft.entries).toHaveLength(0); // 成功的那一项确实删掉了
   });
 
-  it('超过 50 个名字 → 直接拒绝，草稿不动（防输出被截断导致整批作废）', () => {
+  it('超过 50 个名字 → 直接拒绝，草稿不动（防输出被截断导致整批作废）', async () => {
     const c = prime();
     const names = Array.from({ length: 51 }, (_v, i) => '条目' + i);
     c._draft = { characters: [], entries: names.slice(0, 1).map((n) => entry(n)), deleted: [] };
@@ -134,7 +134,7 @@ describe('批量删除：delete_entry 的 names 数组', () => {
     expect(JSON.stringify(c._draft)).toBe(before);
   });
 
-  it('可选 type 过滤：只删该类型的同名条目', () => {
+  it('可选 type 过滤：只删该类型的同名条目', async () => {
     const c = prime();
     c._draft = { characters: [], entries: [entry('乙'), entry('乙', '世界观')], deleted: [] };
     const r = c._executeToolResult({ name: 'delete_entry', arguments: { names: ['乙'], type: '世界观' } });
@@ -145,7 +145,7 @@ describe('批量删除：delete_entry 的 names 数组', () => {
 });
 
 describe('批量删除：delete_character 与 update_worldview', () => {
-  it('delete_character names 批量删角色', () => {
+  it('delete_character names 批量删角色', async () => {
     const c = prime();
     c._draft = { characters: [{ name: '林晚', content: 'x' }, { name: '沈夜', content: 'y' }], entries: [], deleted: [] };
     const r = c._executeToolResult({ name: 'delete_character', arguments: { names: ['林晚', '沈夜'] } });
@@ -154,7 +154,7 @@ describe('批量删除：delete_character 与 update_worldview', () => {
     expect(c._draft.deleted.map((d: any) => d.type)).toEqual(['角色', '角色']);
   });
 
-  it('update_worldview 批量删除必须显式传 delete:true，否则拒绝（防止把 names 误当批量改写）', () => {
+  it('update_worldview 批量删除必须显式传 delete:true，否则拒绝（防止把 names 误当批量改写）', async () => {
     const c = prime();
     c._draft = { characters: [], entries: [entry('世界背景', '世界观')], deleted: [] };
     const bad = c._executeToolResult({ name: 'update_worldview', arguments: { names: ['世界背景'] } });
@@ -166,7 +166,7 @@ describe('批量删除：delete_character 与 update_worldview', () => {
     expect(c._draft.entries).toHaveLength(0);
   });
 
-  it('update_worldview 批量删除只动世界观类型，不误删同名的其他条目', () => {
+  it('update_worldview 批量删除只动世界观类型，不误删同名的其他条目', async () => {
     const c = prime();
     c._draft = { characters: [], entries: [entry('甲', '其他'), entry('甲', '世界观')], deleted: [] };
     const r = c._executeToolResult({ name: 'update_worldview', arguments: { names: ['甲'], delete: true } });
@@ -177,7 +177,7 @@ describe('批量删除：delete_character 与 update_worldview', () => {
 });
 
 describe('批量写入：items 数组', () => {
-  it('upsert_entry items 一次写入多条，返回聚合结果', () => {
+  it('upsert_entry items 一次写入多条，返回聚合结果', async () => {
     const c = prime();
     c._draft = { characters: [], entries: [], deleted: [] };
     const r = c._executeToolResult({
@@ -189,7 +189,7 @@ describe('批量写入：items 数组', () => {
     expect(c._draft.entries.map((e: any) => e.name)).toEqual(['世界背景', '势力']);
   });
 
-  it('apply_character items 一次写入多个角色', () => {
+  it('apply_character items 一次写入多个角色', async () => {
     const c = prime();
     c._draft = { characters: [], entries: [], deleted: [] };
     const r = c._executeToolResult({
@@ -200,7 +200,7 @@ describe('批量写入：items 数组', () => {
     expect(c._draft.characters).toHaveLength(2);
   });
 
-  it('超过 10 项 → 拒绝，草稿不动', () => {
+  it('超过 10 项 → 拒绝，草稿不动', async () => {
     const c = prime();
     c._draft = { characters: [], entries: [], deleted: [] };
     const items = Array.from({ length: 11 }, (_v, i) => ({ type: '其他', name: '条' + i, content: 'x' }));
@@ -210,7 +210,7 @@ describe('批量写入：items 数组', () => {
     expect(c._draft.entries).toHaveLength(0);
   });
 
-  it('names 用在非删除类工具上 → 拒绝并指路 items', () => {
+  it('names 用在非删除类工具上 → 拒绝并指路 items', async () => {
     const c = prime();
     c._draft = { characters: [], entries: [], deleted: [] };
     const r = c._executeToolResult({ name: 'upsert_entry', arguments: { names: ['甲'] } });
@@ -220,10 +220,10 @@ describe('批量写入：items 数组', () => {
 });
 
 describe('批量结果回传模型：结构化 JSON 与 failed 明细', () => {
-  it('_handleTools 回传 ok=false + failed 数组，且草稿里的成功项保留', () => {
+  it('_handleTools 回传 ok=false + failed 数组，且草稿里的成功项保留', async () => {
     const c = prime();
     c._draft = { characters: [], entries: [entry('甲'), entry('乙')], deleted: [] };
-    const out = c._handleTools([{ id: 'call_1', name: 'delete_entry', arguments: { names: ['甲', '幽灵条目'] } }], '');
+    const out = await c._handleTools([{ id: 'call_1', name: 'delete_entry', arguments: { names: ['甲', '幽灵条目'] } }], '');
     expect(out).toHaveLength(1);
     const parsed = okOf(out[0]);
     expect(parsed.ok).toBe(false);
@@ -233,12 +233,12 @@ describe('批量结果回传模型：结构化 JSON 与 failed 明细', () => {
     expect(c._draft.entries.map((e: any) => e.name)).toEqual(['乙']);
   });
 
-  it('_toolsOk：有成功调用时置位、全失败时保持 false（收尾文案据此不说谎）', () => {
+  it('_toolsOk：有成功调用时置位、全失败时保持 false（收尾文案据此不说谎）', async () => {
     const c = prime();
     c._draft = { characters: [], entries: [entry('甲')], deleted: [] };
     WB_BOOKS = [{ id: 'wb1', name: '测试书', entries: [entry('甲')] }];
     expect(c._toolsOk).toBe(false);
-    c._handleTools([{ id: 'call_ok', name: 'delete_entry', arguments: { names: ['甲'] } }], '');
+    await c._handleTools([{ id: 'call_ok', name: 'delete_entry', arguments: { names: ['甲'] } }], '');
     expect(c._toolsOk).toBe(true); // 真的写入过 → 轮数用尽时该说「已写入的变更都保留着」
 
     const c2 = prime();
@@ -247,21 +247,21 @@ describe('批量结果回传模型：结构化 JSON 与 failed 明细', () => {
     expect(c2._toolsOk).toBe(false); // 一条都没成功 → 不能说「已写入」
   });
 
-  it('_writeOk：只读工具成功不算「写过」（否则假「已写入」兜底会漏判）', () => {
+  it('_writeOk：只读工具成功不算「写过」（否则假「已写入」兜底会漏判）', async () => {
     const c = prime();
     c._draft = { characters: [], entries: [entry('甲')], deleted: [] };
     WB_BOOKS = [{ id: 'wb1', name: '测试书', entries: [entry('甲')] }];
     expect(c._writeOk).toBe(false);
     // 只读工具：ok=true（读到了），但世界书没变 → _toolsOk 置位、_writeOk 必须保持 false
-    c._handleTools([{ id: 'call_read', name: 'read_current_book_json', arguments: {} }], '');
+    await c._handleTools([{ id: 'call_read', name: 'read_current_book_json', arguments: {} }], '');
     expect(c._toolsOk).toBe(true);
     expect(c._writeOk).toBe(false);
     // 写工具真的成功 → 置位
-    c._handleTools([{ id: 'call_w', name: 'upsert_entry', arguments: { type: '其他', name: '新条目', content: 'x' } }], '');
+    await c._handleTools([{ id: 'call_w', name: 'upsert_entry', arguments: { type: '其他', name: '新条目', content: 'x' } }], '');
     expect(c._writeOk).toBe(true);
   });
 
-  it('_claimsWrite：认完成性表述，不误判否定式/疑问式/纯讨论', () => {
+  it('_claimsWrite：认完成性表述，不误判否定式/疑问式/纯讨论', async () => {
     const c = Cw();
     expect(c._claimsWrite('已写入：林晚（更新）、国家（新增）')).toBe(true);
     expect(c._claimsWrite('好的，已经把世界观更新完毕。')).toBe(true);
@@ -274,44 +274,44 @@ describe('批量结果回传模型：结构化 JSON 与 failed 明细', () => {
     expect(c._claimsWrite(null)).toBe(false);
   });
 
-  it('设计轮最多一轮提交：第 2 轮及以后的工具调用不执行，且明确回传 ok=false（不静默吞掉）', () => {
+  it('设计轮最多一轮提交：第 2 轮及以后的工具调用不执行，且明确回传 ok=false（不静默吞掉）', async () => {
     const c = prime();
     c._draft = { characters: [], entries: [entry('甲')], deleted: [] };
     WB_BOOKS = [{ id: 'wb1', name: '测试书', entries: [entry('甲')] }];
     c._designTurn = true;
     // 第一轮：照执行
     c._toolRounds = 1;
-    let out = c._handleTools([{ id: 'c1', name: 'upsert_entry', arguments: { type: '其他', name: '新条目', content: 'x' } }], '');
+    let out = await c._handleTools([{ id: 'c1', name: 'upsert_entry', arguments: { type: '其他', name: '新条目', content: 'x' } }], '');
     expect(okOf(out[0]).ok).toBe(true);
     expect(c._writeOk).toBe(true);
     // 第二轮：拒绝执行，草稿与世界书都不得有变化，并回传原因让模型改用文字
     const before = c._draft.entries.map((e: any) => e.name);          // 第一轮真的写进去过
     const beforeWb = (WB_BOOKS[0].entries as any[]).map((e: any) => e.name); // 直写也生效过
     c._toolRounds = 2;
-    out = c._handleTools([{ id: 'c2', name: 'upsert_entry', arguments: { type: '其他', name: '再一条', content: 'y' } }], '');
+    out = await c._handleTools([{ id: 'c2', name: 'upsert_entry', arguments: { type: '其他', name: '再一条', content: 'y' } }], '');
     expect(okOf(out[0]).ok).toBe(false);
     expect(okOf(out[0]).message).toContain('设计轮最多一轮工具提交');
     expect(c._draft.entries.map((e: any) => e.name)).toEqual(before);                     // 没有被写入
     expect((WB_BOOKS[0].entries as any[]).map((e: any) => e.name)).toEqual(beforeWb);     // 世界书也没变
   });
 
-  it('操作轮不受"一轮"限制：同样的第 2 轮调用照执行', () => {
+  it('操作轮不受"一轮"限制：同样的第 2 轮调用照执行', async () => {
     const c = prime();
     c._draft = { characters: [], entries: [], deleted: [] };
     WB_BOOKS = [{ id: 'wb1', name: '测试书', entries: [] }];
     c._designTurn = false;
     c._toolRounds = 5;
-    const out = c._handleTools([{ id: 'c3', name: 'upsert_entry', arguments: { type: '其他', name: '甲', content: 'x' } }], '');
+    const out = await c._handleTools([{ id: 'c3', name: 'upsert_entry', arguments: { type: '其他', name: '甲', content: 'x' } }], '');
     expect(okOf(out[0]).ok).toBe(true);
     expect(c._draft.entries.map((e: any) => e.name)).toEqual(['甲']);
   });
 
-  it('单条调用仍走既有的 {ok,message} 形状，且删除真的写进世界书', () => {
+  it('单条调用仍走既有的 {ok,message} 形状，且删除真的写进世界书', async () => {
     const c = prime();
     c._draft = { characters: [], entries: [entry('甲')], deleted: [] };
     // 夹具要与真实情况一致：草稿是世界书的镜像，草稿里有的世界书里也有
     WB_BOOKS = [{ id: 'wb1', name: '测试书', entries: [entry('甲')] }];
-    const out = c._handleTools([{ id: 'call_2', name: 'delete_entry', arguments: { name: '甲' } }], '');
+    const out = await c._handleTools([{ id: 'call_2', name: 'delete_entry', arguments: { name: '甲' } }], '');
     const parsed = okOf(out[0]);
     expect(parsed.ok).toBe(true);
     expect(parsed.message).toBe('删除条目：甲');
@@ -319,7 +319,7 @@ describe('批量结果回传模型：结构化 JSON 与 failed 明细', () => {
     expect(WB_BOOKS[0].entries).toHaveLength(0); // 直写生效：世界书里的条目真的被删了
   });
 
-  it('批量删除不逐条落盘：墓碑写入过程中 _saveDraft 不被反复调用', () => {
+  it('批量删除不逐条落盘：墓碑写入过程中 _saveDraft 不被反复调用', async () => {
     const c = prime();
     let saves = 0;
     c._saveDraft = () => { saves++; };
@@ -332,7 +332,7 @@ describe('批量结果回传模型：结构化 JSON 与 failed 明细', () => {
 });
 
 describe('主角 / user：从零写卡不引入（用户 2026-09-25 明确要求）', () => {
-  it('base 明确：从零写卡没有主角概念，不要问、不要单开条目、不要挂靠', () => {
+  it('base 明确：从零写卡没有主角概念，不要问、不要单开条目、不要挂靠', async () => {
     const b = Cw()._defaultBlocks();
     const base = String(b.base);
     expect(base).toContain('【主角 / user：从零写卡不需要，不要主动引入');
@@ -343,14 +343,14 @@ describe('主角 / user：从零写卡不引入（用户 2026-09-25 明确要求
     expect(b.__version).toBeGreaterThanOrEqual(22);
   });
 
-  it('改造场景的保留规则仍在（{{user}} 不许删、不许写死人名）', () => {
+  it('改造场景的保留规则仍在（{{user}} 不许删、不许写死人名）', async () => {
     const base = String(Cw()._defaultBlocks().base);
     expect(base).toContain('【主角占位符');
     expect(base).toContain('必须原样保留');
     expect(base).toContain('禁止改写成具体人名');
   });
 
-  it('角色卡渲染用中性「关系：」，不再写「与主角关系：」', () => {
+  it('角色卡渲染用中性「关系：」，不再写「与主角关系：」', async () => {
     const txt = String((Cw() as unknown as { _charsToText: (a: unknown, b: unknown) => string })
       ._charsToText([{ name: '林晚', gender: '女', age: 17, relation: '同班同学' }], []));
     expect(txt).toContain('关系：同班同学');
@@ -359,7 +359,7 @@ describe('主角 / user：从零写卡不引入（用户 2026-09-25 明确要求
 });
 
 describe('对话示例（可选）：AI 先给候选让用户挑，角色不该死板', () => {
-  it('method 默认文案含【对话示例】：候选形式、可选不追问、原话写回、克制', () => {
+  it('method 默认文案含【对话示例】：候选形式、可选不追问、原话写回、克制', async () => {
     const b = Cw()._defaultBlocks();
     const m = String(b.method);
     expect(m).toContain('【对话示例');
@@ -372,19 +372,19 @@ describe('对话示例（可选）：AI 先给候选让用户挑，角色不该�
     expect(m).toContain('对话示例（可选，AI 先给候选让用户挑）');   // 写卡流程里也记了这一步
   });
 
-  it('apply_character 的工具描述里也提到「说话方式·例句」（模型看得到）', () => {
+  it('apply_character 的工具描述里也提到「说话方式·例句」（模型看得到）', async () => {
     const tools = String(JSON.stringify((Cw() as unknown as { _tools?: () => unknown })._tools ? (Cw() as unknown as { _tools: () => unknown })._tools() : []));
     expect(tools).toContain('说话方式·例句');
   });
 
-  it('规则靠版本升级推给老用户（v20 → v21 起）', () => {
+  it('规则靠版本升级推给老用户（v20 → v21 起）', async () => {
     const b = Cw()._defaultBlocks();
     expect(b.__version).toBeGreaterThanOrEqual(21);
   });
 });
 
 describe('主角占位符：写卡侧规则与残留判据', () => {
-  it('默认 base 含「{{user}}/{user} 必须原样保留」规则（改造时不许删、不许写死人名）', () => {
+  it('默认 base 含「{{user}}/{user} 必须原样保留」规则（改造时不许删、不许写死人名）', async () => {
     const b = Cw()._defaultBlocks();
     expect(b.base).toContain('【主角占位符');
     expect(b.base).toContain('必须原样保留');
@@ -393,7 +393,7 @@ describe('主角占位符：写卡侧规则与残留判据', () => {
     expect(b.__version).toBeGreaterThanOrEqual(20); // 规则靠版本升级推给老用户的自定义 base
   });
 
-  it('适配文档不再教模型删除 {{user}}，且与机械清洗的实际行为一致', () => {
+  it('适配文档不再教模型删除 {{user}}，且与机械清洗的实际行为一致', async () => {
     const doc = String(Cw()._readAdapterDoc());
     expect(doc).toContain('主角占位符例外');
     expect(doc).toContain('{{user}}');
@@ -401,7 +401,7 @@ describe('主角占位符：写卡侧规则与残留判据', () => {
     expect(doc).not.toContain('写入前用主角名替换');
   });
 
-  it('残留判据：含 {{user}}/{user} 的条目不算残留，真宏/标签仍算', () => {
+  it('残留判据：含 {{user}}/{user} 的条目不算残留，真宏/标签仍算', async () => {
     const big = 'x'.repeat(40 * 1024); // 撑过 60KB 阈值 → 走压缩视图（hasTavernResidue 在此暴露）
     WB_BOOKS = [{
       id: 'wb1', name: '大书', characters: [],
@@ -427,7 +427,7 @@ describe('read_current_book_json：按名读全文 / 分页读全文', () => {
     }];
   });
 
-  it('names → 返回指定条目/角色的全文，并列出没找到的名字', () => {
+  it('names → 返回指定条目/角色的全文，并列出没找到的名字', async () => {
     const c = prime();
     const r = String(c._readCurrentBookJson({ names: ['甲', '林晚', '不存在'] }));
     expect(r).toContain('甲的完整内容');
@@ -435,7 +435,7 @@ describe('read_current_book_json：按名读全文 / 分页读全文', () => {
     expect(r).toContain('【没有找到】不存在');
   });
 
-  it('offset/limit → 逐页读全文并给出下一批的 offset', () => {
+  it('offset/limit → 逐页读全文并给出下一批的 offset', async () => {
     const c = prime();
     const r = String(c._readCurrentBookJson({ offset: 0, limit: 2 }));
     expect(r).toContain('第 0~1 项 / 共 3 项');
@@ -445,7 +445,7 @@ describe('read_current_book_json：按名读全文 / 分页读全文', () => {
     expect(last).toContain('（已到末页）');
   });
 
-  it('不带参数且书不大 → 仍是原来的完整 JSON（老行为不变）', () => {
+  it('不带参数且书不大 → 仍是原来的完整 JSON（老行为不变）', async () => {
     const c = prime();
     const r = String(c._readCurrentBookJson());
     expect(r).toContain('"entries"');
@@ -455,7 +455,7 @@ describe('read_current_book_json：按名读全文 / 分页读全文', () => {
 });
 
 describe('read_current_book_json：压缩视图给多少正文（不再一律砍到 300 字）', () => {
-  it('条目不多时把典型条目整条带出来（800 字的条目不截断），只有超长条目才标 truncated', () => {
+  it('条目不多时把典型条目整条带出来（800 字的条目不截断），只有超长条目才标 truncated', async () => {
     WB_BOOKS = [{
       id: 'wb1', name: '大书',
       entries: [
@@ -475,7 +475,7 @@ describe('read_current_book_json：压缩视图给多少正文（不再一律砍
     expect(by['巨型'].head.length).toBeLessThanOrEqual(1500); // 单条上限
   });
 
-  it('条目上百条时逐条变短（总量有界），但至少 300 字且显式标记 truncated', () => {
+  it('条目上百条时逐条变短（总量有界），但至少 300 字且显式标记 truncated', async () => {
     WB_BOOKS = [{
       id: 'wb1', name: '大书',
       entries: Array.from({ length: 80 }, (_v, i) => entry('条' + i, '其他', 'c'.repeat(900))),
@@ -533,7 +533,7 @@ describe('写卡上下文注入：每次都注入，无开关', () => {
     expect(sys).toContain('这是一个剑与魔法的世界');
   });
 
-  it('源码与页面里都不再读写该开关（防死 UI 复活）', () => {
+  it('源码与页面里都不再读写该开关（防死 UI 复活）', async () => {
     const fs = require('node:fs');
     const path = require('node:path');
     const root = path.resolve(__dirname, '..', '..');
@@ -583,7 +583,7 @@ describe('轮次口径：工具常开（设计轮也给），靠软约束 + 设�
     return box;
   }
 
-  it('意图判定：讨论/构思/征询 → 设计轮；写入/修改/整理/跑批 → 操作轮', () => {
+  it('意图判定：讨论/构思/征询 → 设计轮；写入/修改/整理/跑批 → 操作轮', async () => {
     const c = Cw();
     const design = [
       '帮我想想这个角色怎么样', '要不要给他加个妹妹？', '先看看现在的设定',
@@ -630,7 +630,7 @@ describe('轮次口径：工具常开（设计轮也给），靠软约束 + 设�
     expect(String(box.msgs[box.msgs.length - 1].content)).not.toContain('【本轮：设计轮');
   });
 
-  it('变更工具的 schema 里不再有 status/origin 标记参数', () => {
+  it('变更工具的 schema 里不再有 status/origin 标记参数', async () => {
     const names = Cw()._tools().map((t: any) => t.function.name);
     expect(names).toContain('apply_character');
     expect(names).not.toContain('propose_setting');
@@ -659,7 +659,7 @@ describe('长按选择：自绘选区（不碰原生选择）', () => {
     c.messages = [{ role: 'assistant', content: '她说：器材室门口。然后就走了。' }];
   }
 
-  it('阈值 800ms：550ms 不触发、800ms 进入自绘选区（且不创建原生选区）', () => {
+  it('阈值 800ms：550ms 不触发、800ms 进入自绘选区（且不创建原生选区）', async () => {
     vi.useFakeTimers();
     try {
       const c = Cw();
@@ -677,7 +677,7 @@ describe('长按选择：自绘选区（不碰原生选择）', () => {
     } finally { vi.useRealTimers(); }
   });
 
-  it('长按不动选中手指下那一句；按住拖动按字扩选（含区间反转）', () => {
+  it('长按不动选中手指下那一句；按住拖动按字扩选（含区间反转）', async () => {
     const c = Cw();
     prime(c);
     c._offsetAt = () => 6;                       // 手指落在「器材室门口。」那一句里
@@ -690,7 +690,7 @@ describe('长按选择：自绘选区（不碰原生选择）', () => {
     expect(c._selText).toBe('器材室');
   });
 
-  it('「全选」= 整条气泡的所有字；浮条复制文案带字数', () => {
+  it('「全选」= 整条气泡的所有字；浮条复制文案带字数', async () => {
     const c = Cw();
     prime(c);
     const labels: string[] = [];
@@ -702,7 +702,7 @@ describe('长按选择：自绘选区（不碰原生选择）', () => {
     expect(labels[0]).toContain('字');
   });
 
-  it('拖动用 touchmove/pointermove（触摸滚动时 pointermove 会被 cancel），松手停监听', () => {
+  it('拖动用 touchmove/pointermove（触摸滚动时 pointermove 会被 cancel），松手停监听', async () => {
     const c = Cw();
     prime(c);
     const added: string[] = [], removed: string[] = [];
@@ -721,7 +721,7 @@ describe('长按选择：自绘选区（不碰原生选择）', () => {
     } finally { doc.addEventListener = origAdd; doc.removeEventListener = origRemove; }
   });
 
-  it('页面：消息区永远不可选 + 浮条有「全选」+ 自绘高亮层（防回归）', () => {
+  it('页面：消息区永远不可选 + 浮条有「全选」+ 自绘高亮层（防回归）', async () => {
     const fs = require('node:fs');
     const path = require('node:path');
     const html = fs.readFileSync(path.resolve(__dirname, '..', '..', 'web', 'index.html'), 'utf8');
@@ -745,7 +745,7 @@ describe('写卡工作副本 = 世界书镜像（以世界书为准）', () => {
     c._snapshotNow = () => {};
   }
 
-  it('世界书改过内容/删过条目/改过类型 → 副本整份对齐（旧实现只补缺，改与删都不同步）', () => {
+  it('世界书改过内容/删过条目/改过类型 → 副本整份对齐（旧实现只补缺，改与删都不同步）', async () => {
     const c = Cw();
     prime(c);
     const saves: number[] = [];
@@ -772,7 +772,7 @@ describe('写卡工作副本 = 世界书镜像（以世界书为准）', () => {
     expect(saves.length).toBe(1);
   });
 
-  it('内容一致时是纯比较：不落盘、不重绘（直写会触发本函数，不能成环）', () => {
+  it('内容一致时是纯比较：不落盘、不重绘（直写会触发本函数，不能成环）', async () => {
     const c = Cw();
     prime(c);
     let saves = 0, renders = 0;
@@ -789,7 +789,7 @@ describe('写卡工作副本 = 世界书镜像（以世界书为准）', () => {
     expect(renders).toBe(0);
   });
 
-  it('副本里正在新加的"无名空行"保留（还没写进世界书是正常的）', () => {
+  it('副本里正在新加的"无名空行"保留（还没写进世界书是正常的）', async () => {
     const c = Cw();
     prime(c);
     WB_BOOKS = [{ id: 'wb1', name: '测试书', entries: [{ id: 'e1', type: '其他', name: '甲', content: 'A' }] }];
@@ -880,7 +880,7 @@ describe('对话注入 ↔ 世界书 ↔ 写卡：同一本书的三处视图', 
   // 2026-09-25 查出的老 bug：_doWriteToWorldbook 之前是**原地改** old.content，而"无需写入"判据
   // 又拿 old.content 跟新内容比 —— 比较永远相等 → 只改内容的编辑被判成"已是最新"，saveAll 都不调
   // （于是改动只活在内存缓存里，可能永远不落盘）。现在改成复制旧对象再改，判据才准。
-  it('只改内容也必须真写并落盘（id 与注入开关保留）；原样重写才判「已是最新」', () => {
+  it('只改内容也必须真写并落盘（id 与注入开关保留）；原样重写才判「已是最新」', async () => {
     seed([
       { id: 'e1', type: '角色', name: '林薇', content: '旧内容', inject: false },
       { id: 'e2', type: '世界观', name: '学校', content: '市立三中。', inject: true },
@@ -1006,7 +1006,7 @@ describe('比奇临时修订 ↔ 写卡写入：不再互相盖住', () => {
 // 变量条目的含义（2026-09-26 定案）：名称=变量名、内容=给模型的讲解、注入开关=启用/停用；
 // 软件每轮把讲解与当前值发给模型并在正文之后收回报值，所以**内容里不能写输出格式**。
 describe('写卡支持「变量」条目', () => {
-  it('upsert_entry 支持 type=变量；同名更新、不同名新增（type 原样保留）', () => {
+  it('upsert_entry 支持 type=变量；同名更新、不同名新增（type 原样保留）', async () => {
     const c = prime();
     c._draft = { characters: [], entries: [], deleted: [] };
     const r1 = c._executeToolResult({ name: 'upsert_entry', arguments: { type: '变量', name: '任务数量', content: '每月 10 次；用完为止。' } });
@@ -1019,7 +1019,7 @@ describe('写卡支持「变量」条目', () => {
     expect(c._draft.entries[0].content).toBe('每月 12 次。');
   });
 
-  it('变量名带冒号/换行 → 拒收（回报格式按「名称：值」走），草稿不变', () => {
+  it('变量名带冒号/换行 → 拒收（回报格式按「名称：值」走），草稿不变', async () => {
     const c = prime();
     c._draft = { characters: [], entries: [], deleted: [] };
     for (const bad of ['任务：数量', '任务:数量', '任务\n数量']) {
@@ -1030,7 +1030,7 @@ describe('写卡支持「变量」条目', () => {
     expect(c._draft.entries).toHaveLength(0);
   });
 
-  it('set_entry_type 能改成「变量」（并同样校验变量名）', () => {
+  it('set_entry_type 能改成「变量」（并同样校验变量名）', async () => {
     const c = prime();
     c._draft = { characters: [], entries: [entry('状态', '其他', '好感度会变。')], deleted: [] };
     const ok = c._executeToolResult({ name: 'set_entry_type', arguments: { name: '状态', type: '变量' } });
@@ -1045,7 +1045,7 @@ describe('写卡支持「变量」条目', () => {
     expect(r.message).toContain('变量名');
   });
 
-  it('工具 schema：类型枚举里都有「变量」（upsert_entry / delete_entry / set_entry_type）', () => {
+  it('工具 schema：类型枚举里都有「变量」（upsert_entry / delete_entry / set_entry_type）', async () => {
     const tools = Cw()._tools();
     const byName = (n: string) => tools.find((t: any) => t.function.name === n);
     const enumsOf = (n: string): string[] => {
@@ -1062,7 +1062,7 @@ describe('写卡支持「变量」条目', () => {
     expect(enumsOf('set_entry_type')).toContain('角色');
   });
 
-  it('base 提示词说清「变量」是什么，并明确禁止在内容里写输出格式', () => {
+  it('base 提示词说清「变量」是什么，并明确禁止在内容里写输出格式', async () => {
     const base = String(Cw()._defaultBlocks().base || '');
     expect(base).toContain('「变量」条目 = **一个条目一个变量**');
     expect(base).toContain('内容里绝不要写输出格式');
@@ -1071,7 +1071,7 @@ describe('写卡支持「变量」条目', () => {
     expect(base).toContain('本软件里是**有效宏**');   // {{getvar::}} 的保留/清理规则
   });
 
-  it('直写世界书：变量条目原样落库（类型不丢、注入开关默认开）', () => {
+  it('直写世界书：变量条目原样落库（类型不丢、注入开关默认开）', async () => {
     const c = prime();
     c._draft = {
       characters: [],
@@ -1097,7 +1097,7 @@ describe('写卡支持「变量」条目', () => {
 // 类型降级回归（用户报过"原本是变量条目，变成了其他条目"）：
 // 写卡是"以草稿为准整表重建"，任何"没写类型就默认成其他"的路径都会悄悄改掉世界书里那条的类型。
 describe('条目类型不许被悄悄降级', () => {
-  it('直写世界书：草稿那行没写类型 → 沿用世界书里同名条目的类型（变量不会被写成其他）', () => {
+  it('直写世界书：草稿那行没写类型 → 沿用世界书里同名条目的类型（变量不会被写成其他）', async () => {
     const c = prime();
     WB_BOOKS = [{ id: 'wb1', name: '测试书', entries: [{ id: 'v1', type: '变量', name: '手里的现金（日元）', content: '现金。', inject: true }] }];
     c._draft = { characters: [], entries: [{ name: '手里的现金（日元）', content: '现金（日元）。' }], deleted: [] };   // 注意：没写 type
@@ -1112,7 +1112,7 @@ describe('条目类型不许被悄悄降级', () => {
     expect(v.content).toBe('现金（日元）。');
   });
 
-  it('upsert_entry 没传 type：按名字更新原条目并沿用它的类型（不另建同名「其他」）', () => {
+  it('upsert_entry 没传 type：按名字更新原条目并沿用它的类型（不另建同名「其他」）', async () => {
     const c = prime();
     c._draft = { characters: [], entries: [{ type: '变量', name: '任务数量', content: '每月 10 次。' }], deleted: [] };
     const r = c._executeToolResult({ name: 'upsert_entry', arguments: { name: '任务数量', content: '每月 12 次。' } });
@@ -1122,7 +1122,7 @@ describe('条目类型不许被悄悄降级', () => {
     expect(c._draft.entries[0]).toMatchObject({ type: '变量', name: '任务数量', content: '每月 12 次。' });
   });
 
-  it('upsert_entry 显式传 type：以显式类型为准（改类型是明确意图）', () => {
+  it('upsert_entry 显式传 type：以显式类型为准（改类型是明确意图）', async () => {
     const c = prime();
     c._draft = { characters: [], entries: [{ type: '变量', name: '任务数量', content: 'x' }], deleted: [] };
     const r = c._executeToolResult({ name: 'upsert_entry', arguments: { type: '其他', name: '任务数量', content: 'y' } });
@@ -1149,7 +1149,7 @@ describe('写卡思考纪律：预设分块可编辑 + 钉在请求最后一条'
     c._draft = { characters: [], entries: [entry('世界观', '世界观', '这是一个剑与魔法的世界')] };
   }
 
-  it('默认分块：think 有内容、版本 ≥26；base 写明"检查只做一遍/判定完即执行/不逐条汇报"', () => {
+  it('默认分块：think 有内容、版本 ≥26；base 写明"检查只做一遍/判定完即执行/不逐条汇报"', async () => {
     const b = Cw()._defaultBlocks();
     expect(b.__version).toBeGreaterThanOrEqual(26);
     expect(String(b.think)).toContain('【思考纪律');

@@ -441,6 +441,11 @@ label{font-size:13px;color:var(--text-secondary);display:block;margin-bottom:4px
    选区由应用自绘（长按选一句、按住滑动按字扩选、浮条「全选」整条），高亮用 .cw-sel-layer 里的半透明矩形。 */
 .cw-msg-text{-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
 .cw-msg-text{position:relative}
+/* 生成的图片（写卡对话里）：缩略图 + 参数小字，点开看大图 */
+.cw-imgs{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}
+.cw-imgs img{width:132px;height:132px;object-fit:cover;border-radius:10px;border:1px solid var(--border);cursor:zoom-in;background:var(--bg-tertiary)}
+.cw-imgs .cw-img-expired{width:132px;height:132px;border-radius:10px;border:1px dashed var(--border);display:flex;align-items:center;justify-content:center;font-size:11px;color:var(--text-muted);text-align:center;padding:6px;box-sizing:border-box}
+.cw-img-meta{font-size:11px;color:var(--text-muted);margin-top:6px;line-height:1.5;word-break:break-all}
 .cw-sel-layer{position:absolute;inset:0;pointer-events:none;z-index:1}
 .cw-sel-rect{position:absolute;background:color-mix(in srgb,var(--primary) 26%,transparent);border-radius:2px}
 .cw-sel-bar{position:fixed;z-index:1700;display:none;align-items:center;gap:2px;padding:4px;border-radius:11px;background:var(--bg-secondary);border:1px solid var(--border);box-shadow:0 8px 24px rgba(0,0,0,.22)}
@@ -1915,6 +1920,21 @@ label{font-size:13px;color:var(--text-secondary);display:block;margin-bottom:4px
                   <div class="set-icon">∑</div>
                   <div class="set-main"><div class="set-title">正则管理</div><div class="set-sub">输出文本替换规则与测试工具</div></div>
                   <span class="set-arrow">›</span>
+                </div>
+                <div class="set-row set-row-static" style="flex-direction:column;align-items:stretch;gap:8px;">
+                  <div style="display:flex;align-items:center;gap:10px;">
+                    <div class="set-icon">🎨</div>
+                    <div class="set-main"><div class="set-title">画图主机（本地 ComfyUI）</div><div class="set-sub" id="imageHostState">未配置 · 在电脑上跑 node serve.mjs --lan，把地址和 token 填这里</div></div>
+                    <label style="display:flex;align-items:center;flex:0 0 auto;">
+                      <input type="checkbox" id="imageHostEnabled" onchange="App.saveImageHost()">
+                      <span class="sw-badge" id="imageHostBadge" style="font-size:10px;padding:1px 6px;border-radius:4px;background:#6b7280;color:#fff;font-weight:600;">OFF</span>
+                    </label>
+                  </div>
+                  <input type="text" id="imageHostBase" placeholder="http://192.168.1.23:8787" onchange="App.saveImageHost()" style="font-size:13px;padding:7px 9px;border-radius:8px;border:1px solid var(--border);background:var(--bg-secondary);color:var(--text);outline:none;">
+                  <div style="display:flex;gap:8px;">
+                    <input type="password" id="imageHostToken" placeholder="配对 token（画图主机启动时显示的那串）" onchange="App.saveImageHost()" style="flex:1;min-width:0;font-size:13px;padding:7px 9px;border-radius:8px;border:1px solid var(--border);background:var(--bg-secondary);color:var(--text);outline:none;">
+                    <button class="small" id="imageHostTestBtn" onclick="App.testImageHost()" style="font-size:12px;padding:6px 12px;border-radius:8px;border:1px solid var(--primary);color:var(--primary);background:transparent;cursor:pointer;">测试连接</button>
+                  </div>
                 </div>
               </section>
 

@@ -66,7 +66,7 @@ function countInit(entries: any[]): number {
 }
 
 describe('upsert_entry：初始条目唯一', () => {
-  it('已有初始条目（同名）→ 更新，不新增', () => {
+  it('已有初始条目（同名）→ 更新，不新增', async () => {
     const c = Cw();
     c._draft = { characters: [], entries: [{ type: '初始', name: '故事起始', content: '开头A' }], deleted: [] };
     const r = c._executeTool({ name: 'upsert_entry', arguments: { type: '初始', name: '故事起始', content: '开头B' } });
@@ -75,7 +75,7 @@ describe('upsert_entry：初始条目唯一', () => {
     expect(c._draft.entries[0]).toEqual({ type: '初始', name: '故事起始', content: '开头B' });
   });
 
-  it('已有初始条目但 AI 传了不同条目名 → 仍更新原条目，不新增第二条（本次 bug 场景）', () => {
+  it('已有初始条目但 AI 传了不同条目名 → 仍更新原条目，不新增第二条（本次 bug 场景）', async () => {
     const c = Cw();
     c._draft = { characters: [], entries: [{ type: '初始', name: '世界初始', content: '旧内容' }], deleted: [] };
     const r = c._executeTool({ name: 'upsert_entry', arguments: { type: '初始', name: '初始状态', content: '新内容' } });
@@ -84,7 +84,7 @@ describe('upsert_entry：初始条目唯一', () => {
     expect(c._draft.entries[0]).toEqual({ type: '初始', name: '初始状态', content: '新内容' });
   });
 
-  it('草稿无初始条目 → 新增第一条', () => {
+  it('草稿无初始条目 → 新增第一条', async () => {
     const c = Cw();
     c._draft = { characters: [], entries: [{ type: '世界观', name: '力量体系', content: 'X' }], deleted: [] };
     const r = c._executeTool({ name: 'upsert_entry', arguments: { type: '初始', name: '故事起点', content: '开局内容' } });
@@ -92,7 +92,7 @@ describe('upsert_entry：初始条目唯一', () => {
     expect(countInit(c._draft.entries)).toBe(1);
   });
 
-  it('普通条目 upsert 仍按 同类型同名 匹配（不受影响）', () => {
+  it('普通条目 upsert 仍按 同类型同名 匹配（不受影响）', async () => {
     const c = Cw();
     c._draft = { characters: [], entries: [{ type: '其他', name: '道具', content: 'A' }], deleted: [] };
     c._executeTool({ name: 'upsert_entry', arguments: { type: '其他', name: '武器', content: 'B' } });
@@ -102,7 +102,7 @@ describe('upsert_entry：初始条目唯一', () => {
 });
 
 describe('set_entry_type → 初始：顶替原初始', () => {
-  it('同层改类型：把「其他」条目改成初始 → 原初始被顶替删除，只剩一条', () => {
+  it('同层改类型：把「其他」条目改成初始 → 原初始被顶替删除，只剩一条', async () => {
     const c = Cw();
     c._draft = { characters: [], entries: [{ type: '初始', name: '旧初始', content: '旧' }, { type: '其他', name: '补充', content: 'C' }], deleted: [] };
     const r = c._executeTool({ name: 'set_entry_type', arguments: { name: '补充', type: '初始' } });
@@ -111,7 +111,7 @@ describe('set_entry_type → 初始：顶替原初始', () => {
     expect(c._draft.entries[0].name).toBe('补充');
   });
 
-  it('角色卡迁回初始：原初始被顶替，只剩一条', () => {
+  it('角色卡迁回初始：原初始被顶替，只剩一条', async () => {
     const c = Cw();
     c._draft = { characters: [{ name: '林晚', content: '人设' }], entries: [{ type: '初始', name: '旧初始', content: '旧' }], deleted: [] };
     const r = c._executeTool({ name: 'set_entry_type', arguments: { name: '林晚', type: '初始' } });
@@ -122,7 +122,7 @@ describe('set_entry_type → 初始：顶替原初始', () => {
 });
 
 describe('_doWriteToWorldbook：直写去重兜底', () => {
-  it('内容存在两条初始 → 直写后世界书只有一条（保留最后一条）', () => {
+  it('内容存在两条初始 → 直写后世界书只有一条（保留最后一条）', async () => {
     const c = Cw();
     c._draft = {
       characters: [],
@@ -147,7 +147,7 @@ describe('_doWriteToWorldbook：直写去重兜底', () => {
     expect(init.content).toBe('B内容');
   });
 
-  it('存量世界书已有多条初始（历史数据）→ 下次直写自动收敛为一条', () => {
+  it('存量世界书已有多条初始（历史数据）→ 下次直写自动收敛为一条', async () => {
     WB_BOOKS = [{ id: 'wb1', name: '测试书', entries: [
       { id: 'a', type: '初始', name: '旧1', content: 'c1' },
       { id: 'b', type: '初始', name: '旧2', content: 'c2' },
@@ -165,7 +165,7 @@ describe('_doWriteToWorldbook：直写去重兜底', () => {
 });
 
 describe('写卡预设：只做设计不写正文 + 分块升级', () => {
-  it('默认 base 明确禁止在写卡里写正文，并引导去「写作」页试写', () => {
+  it('默认 base 明确禁止在写卡里写正文，并引导去「写作」页试写', async () => {
     const b = Cw()._defaultBlocks();
     expect(b.base).toContain('只做设计，不写正文');
     expect(b.base).toContain('「写作」页');
@@ -174,7 +174,7 @@ describe('写卡预设：只做设计不写正文 + 分块升级', () => {
     expect(b.base).toContain('最多给一两句示例对白'); // 卡面语料仍允许，避免把示例对话也禁掉
   });
 
-  it('分块升级（旧版本 → 当前默认）：base/method 换新默认，用户改过的 selfcheck/亲密/其他 原样保留', () => {
+  it('分块升级（旧版本 → 当前默认）：base/method 换新默认，用户改过的 selfcheck/亲密/其他 原样保留', async () => {
     const store: Record<string, any> = {
       cwPresetBlocks: {
         base: '我的旧base', method: '我的旧method',
@@ -202,7 +202,7 @@ describe('写卡预设：只做设计不写正文 + 分块升级', () => {
 });
 
 describe('直写：删除即时生效 / 无变化不重建', () => {
-  it('副本清空（用户删光条目）→ 世界书条目一并清掉（不被「没有可写入内容」拦下）', () => {
+  it('副本清空（用户删光条目）→ 世界书条目一并清掉（不被「没有可写入内容」拦下）', async () => {
     WB_BOOKS = [{ id: 'wb1', name: '测试书', entries: [{ id: 'a', type: '世界观', name: '世界背景', content: 'X' }] }];
     const c = Cw();
     c._draft = { characters: [], entries: [], deleted: [] };
@@ -214,7 +214,7 @@ describe('直写：删除即时生效 / 无变化不重建', () => {
     expect(WB_BOOKS[0].entries).toHaveLength(0);
   });
 
-  it('副本与世界书都空 → 明确返回「没有可写入内容」，不动世界书', () => {
+  it('副本与世界书都空 → 明确返回「没有可写入内容」，不动世界书', async () => {
     WB_BOOKS = [{ id: 'wb1', name: '测试书', entries: [] }];
     const c = Cw();
     c._draft = { characters: [], entries: [], deleted: [] };
@@ -224,7 +224,7 @@ describe('直写：删除即时生效 / 无变化不重建', () => {
     expect(WB_BOOKS[0].entries).toHaveLength(0);
   });
 
-  it('内容与世界书一致 → 判为「已是最新」，不重建条目（id 不变）', () => {
+  it('内容与世界书一致 → 判为「已是最新」，不重建条目（id 不变）', async () => {
     const existing = { id: 'keep_me', type: '世界观', name: '世界背景', content: 'X' };
     WB_BOOKS = [{ id: 'wb1', name: '测试书', entries: [existing] }];
     const c = Cw();
@@ -237,7 +237,7 @@ describe('直写：删除即时生效 / 无变化不重建', () => {
 });
 
 describe('写入即完全写入（没有中间态/标记）', () => {
-  it('草稿里的每一条都写入世界书：不再有「讨论中不写入」的过滤', () => {
+  it('草稿里的每一条都写入世界书：不再有「讨论中不写入」的过滤', async () => {
     WB_BOOKS = [{ id: 'wb1', name: '测试书', entries: [] }];
     const c = Cw();
     c._draft = {
@@ -262,7 +262,7 @@ describe('写入即完全写入（没有中间态/标记）', () => {
     expect(wbNames).toEqual(expect.arrayContaining(['林晚', '构想角色', '世界背景', '备用想法']));
   });
 
-  it('删掉旧数据里的 status/origin 标记：写入时不再按它过滤', () => {
+  it('删掉旧数据里的 status/origin 标记：写入时不再按它过滤', async () => {
     WB_BOOKS = [{ id: 'wb1', name: '测试书', entries: [] }];
     const c = Cw();
     // 模拟老版本存在设备里的草稿：条目上还挂着 proposed/origin=ai
@@ -274,7 +274,7 @@ describe('写入即完全写入（没有中间态/标记）', () => {
     expect(c._draft.characters[0]).toEqual({ name: '旧卡', content: '内容' });   // 两个标记字段被清掉
   });
 
-  it('propose_setting 工具已下线：schema 里没有它，调用也只回未知工具', () => {
+  it('propose_setting 工具已下线：schema 里没有它，调用也只回未知工具', async () => {
     const c = Cw();
     c._draft = { characters: [], entries: [], deleted: [] };
     expect(c._tools().map((t: any) => t.function.name)).not.toContain('propose_setting');
@@ -286,7 +286,7 @@ describe('写入即完全写入（没有中间态/标记）', () => {
     expect(JSON.stringify(apply)).not.toContain('origin');
   });
 
-  it('confirmed 范围重名 → 阻断写入，不写任何内容', () => {
+  it('confirmed 范围重名 → 阻断写入，不写任何内容', async () => {
     WB_BOOKS = [{ id: 'wb1', name: '测试书', entries: [] }];
     const c = Cw();
     c._draft = {
@@ -304,7 +304,7 @@ describe('写入即完全写入（没有中间态/标记）', () => {
     expect(WB_BOOKS[0].entries).toHaveLength(0);
   });
 
-  it('短角色卡（<30字）不阻断写入，但返回验收提示', () => {
+  it('短角色卡（<30字）不阻断写入，但返回验收提示', async () => {
     WB_BOOKS = [{ id: 'wb1', name: '测试书', entries: [] }];
     const c = Cw();
     c._draft = {
@@ -325,7 +325,7 @@ describe('写入即完全写入（没有中间态/标记）', () => {
     expect(WB_BOOKS[0].entries).toHaveLength(2);
   });
 
-  it('_recentHistory 40 轮窗口：超长历史只带最近 40 轮，不足则全量', () => {
+  it('_recentHistory 40 轮窗口：超长历史只带最近 40 轮，不足则全量', async () => {
     const c = Cw();
     // 250 轮（500 条消息）：应只保留最后 40 轮（80 条）
     const msgs: any[] = [];
@@ -344,7 +344,7 @@ describe('写入即完全写入（没有中间态/标记）', () => {
 describe('refreshContext：null 守卫顺序 + 失效引用自愈', () => {
   function restore(): void { (Cw() as any).refreshContext = (anyG as { _realRefreshContext?: unknown })._realRefreshContext; }
 
-  it('当前书 id 指向已删除的书 → 自愈重指现有书，不抛错、下拉正常选中', () => {
+  it('当前书 id 指向已删除的书 → 自愈重指现有书，不抛错、下拉正常选中', async () => {
     const c = Cw();
     restore();
     c._targetBookId = null;
@@ -357,7 +357,7 @@ describe('refreshContext：null 守卫顺序 + 失效引用自愈', () => {
     expect(c._context.bookName).toBe('测试书');
   });
 
-  it('一本世界书都没有 → 优雅降级：默认选中「全新世界书」，不抛错', () => {
+  it('一本世界书都没有 → 优雅降级：默认选中「全新世界书」，不抛错', async () => {
     const c = Cw();
     restore();
     c._targetBookId = null;
@@ -371,7 +371,7 @@ describe('refreshContext：null 守卫顺序 + 失效引用自愈', () => {
     expect(c._context).toBeNull();
   });
 
-  it('正常路径：当前书存在 → 上下文与下拉选中正常', () => {
+  it('正常路径：当前书存在 → 上下文与下拉选中正常', async () => {
     const c = Cw();
     restore();
     c._targetBookId = null;
@@ -384,11 +384,11 @@ describe('refreshContext：null 守卫顺序 + 失效引用自愈', () => {
   });
 });
 describe('_handleTools：参数 JSON 解析失败显式回传', () => {
-  it('argsError → ok=false 且带根因信息，不执行工具、草稿不动', () => {
+  it('argsError → ok=false 且带根因信息，不执行工具、草稿不动', async () => {
     const c = Cw();
     c._draft = { characters: [], entries: [{ type: '初始', name: '故事起始', content: '开头' }], deleted: [] };
     const before = JSON.stringify(c._draft);
-    const r = c._handleTools([{ id: 'call_x', name: 'upsert_entry', arguments: {}, argsError: 'Unexpected token n in JSON at position 0' }], '');
+    const r = await c._handleTools([{ id: 'call_x', name: 'upsert_entry', arguments: {}, argsError: 'Unexpected token n in JSON at position 0' }], '');
     expect(r).toHaveLength(1);
     // 结果统一为结构化 JSON（此前 argsError 分支回的是裸字符串，与提示词承诺的
     // {"ok":true/false,"message":"..."} 不一致，模型收到的不是 JSON）

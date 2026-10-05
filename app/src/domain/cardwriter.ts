@@ -5,6 +5,8 @@ import { CharacterManager } from './character';
 import { SettingSyncManager } from './settingsync';
 import { selectedRawText, rawOffsetOf, nodeAtRawOffset, roundIndexOf, collectRoundDeletes } from '../lib/msgslice';
 import { renderMdStrong } from '../lib/mdtext';
+import { ImageHost, AVATAR_SIZE, DRAFT_SIZE, AVATAR_STORE_SIZE } from './imagehost';
+import { resizeDataUrlLongSide } from '../lib/imagedata';
 
 // 安全提示：本模块在 app.js 之前加载，加载期（init/_load）触发的兜底提示不能依赖
 // App.toast（App 尚不存在会二次抛 ReferenceError）→ 退回 index.html 头部的
@@ -42,8 +44,10 @@ const _MAX_AGENT_ROUNDS = 24;
 // 所以门控从「给不给工具」改成「只限轮数」：设计轮也能调工具，但最多一轮，不允许连环多轮。
 const _DESIGN_TOOL_ROUNDS = 1;
 // 会改世界书的工具（其余 lookup_book / read_current_book_json / read_adapter_doc /
-// adapt_tavern_lorebook 是只读工具：它们返回 ok=true 只说明"读到了"，不代表写过任何东西）
-const _WRITE_TOOLS = ['apply_character', 'delete_character', 'update_worldview', 'upsert_entry', 'delete_entry', 'set_entry_type'];
+// adapt_tavern_lorebook 是只读工具：它们返回 ok=true 只说明"读到了"，不代表写过任何东西）。
+// set_avatar 也算：它确实改了条目（头像），算进 _writeOk 才不会被"假已写入"兜底误判成空口声称。
+// draw_image 不算：出图不写世界书。
+const _WRITE_TOOLS = ['apply_character', 'delete_character', 'update_worldview', 'upsert_entry', 'delete_entry', 'set_entry_type', 'set_avatar'];
 export interface CardWriterChatShape {
   [k: string]: any;
   messages?: any;
@@ -96,6 +100,16 @@ const CardWriterChat: CardWriterChatShape = {
   // 已执行的工具调用是即时写库的、且工具调用只在整轮流完后才执行，所以重发同一轮是幂等的。
   _pausedResume: null,
   _resumeWatcher: null, // visibilitychange 监听（回到前台自动接着跑）
+
+  // 画图主机（本地 ComfyUI）：本会话生成的图片句柄。
+  // 消息里只存 imageIds，不存图——768² 的 PNG base64 约 1MB，进消息会把存储撑爆；
+  // 重载后句柄失效 → 渲染成「已过期」占位（设成头像的那张是永久的，在世界书里）。
+  _genImages: new Map<string, any>(), // id -> { full, thumb, seed, size, seconds, prompt }
+  _imgSeq: 0,
+  _drawCancelled: false, // 用户点了「暂停」：中断出图轮询
+  _drawAbort: null as any, // 当前出图请求的 AbortController（停止时 abort）
+  _drawToolsOn: false, // 本轮是否给 draw_image/set_avatar（= 主机已启用且在线的探测结果）
+  _hostStatus: { at: 0, ok: false, model: '', hint: '' }, // 画图主机状态缓存（60 秒）
 
   // 文本选择（长按气泡选中整条 → 浮条 复制/删除/多选）
   _selIdx: -1, // 当前选中的消息下标（-1 = 无）
@@ -512,6 +526,7 @@ const CardWriterChat: CardWriterChatShape = {
     this.refreshContext();
     this._syncDraftFromWorldbook(); // 发送前把已入库缺失内容补进草稿（删除墓碑除外）
     const ctx = this._context;
+    await this._refreshHostStatus(); // 画图主机状态（60 秒缓存）：决定这轮给不给画图工具、注不注入生图规则
 
     // 静态预设段：分块编辑（base/method/selfcheck 常驻，nsfw/handgun 由开关控制），
     // 自定义（cwPresetBlocks）优先，否则用默认分块；回复字数不限
@@ -569,6 +584,19 @@ const CardWriterChat: CardWriterChatShape = {
       const _think = String((this._loadBlocks() || {}).think || '').trim();
       if (_think) messages.push({ role: 'system', content: _think });
     } catch (e) { /* 思考纪律注入失败不影响生成 */ }
+
+    // 生图规则：**只在画图主机这一轮探测到在线时**注入（一条独立的近端 system 消息）。
+    // 不写进用户预设 → 不覆盖用户对预设的自定义，主机没配/离线时这段规则自动消失，
+    // 工具也不给 → 模型据此知道要说明"主机没开"，而不是假装画了。
+    if (this._drawToolsOn) {
+      messages.push({
+        role: 'system', content: '【生图（本机画图主机）】你可以用 draw_image 在用户电脑的 ComfyUI 上画图（约 10 秒一张），用 set_avatar 把某张图设为角色头像：\n'
+          + '- 先问用户要不要画（把你要画的内容摘要说清楚），用户同意后再调用；不要自作主张连续出图。\n'
+          + '- prompt 用英文，按工具说明里的「画风与提示词要求」写；头像一律 1:1（软件固定 768×768，别传尺寸）；用户要"几个候选"时连续调用 2~3 次 draft:true。\n'
+          + '- 出图后把图给用户看，再问要不要设为某角色的头像；**必须等用户明确同意**（"用这张 / 设为头像 / 就它了"）才调用 set_avatar，并把用户的原话填进 user_said。\n'
+          + '- 画图失败（主机离线 / ComfyUI 没开）就把原因如实告诉用户，不要重试超过一次，也不要说"正在画"。'
+      });
+    }
 
     // 设计轮（用户没给写入/操作指令）：**工具照给**（只作兜底），但口头把口径收紧到设计轮。
     // 指令贴在历史之后 = 模型最后看到的话；同时 system 与历史的前缀不动（不拖累缓存命中）。
@@ -758,7 +786,8 @@ const CardWriterChat: CardWriterChatShape = {
                 // 完全访问模式：模型调工具直接执行（"做不做"完全由模型判断，
                 // 预设【授权判断/调用前自检】软约束负责引导；前端不做任何关键词拦截）
                 this._statusText = '正在应用第 ' + (round + 1) + '/' + maxRounds + ' 轮 · ' + tools.length + ' 项变更…';
-                const results = this._handleTools(tools, userText);
+                // 异步工具（draw_image 是 10 秒级网络等待）会 await：先把状态条渲染出去，否则用户以为卡住了
+                this.renderMessages(true);
                 // 重复调用守卫（deepseek-harness repeat-tool-reminder 移植）：
                 // 相同工具+相同参数连续调用（说明没进展）→ 注入提醒，不拦截
                 const repeatKey = JSON.stringify(tools.map(function (t: any) { return [t.name, JSON.stringify(t.arguments || {})]; }));
@@ -767,31 +796,40 @@ const CardWriterChat: CardWriterChatShape = {
                 const repeatReminder = (this._repeatCount === 3 || this._repeatCount === 5)
                   ? '【重复调用提醒】你正在用完全相同的工具和参数重复调用（连续 ' + this._repeatCount + ' 次）。请先分析上一次的执行结果：如果任务已完成就停止调用；如果未完成，换一种方式或参数，不要原样重复。'
                   : null;
-                // 标准并行 tool_calls 协议形：一条 assistant 携带全部调用 + 逐条 tool 结果。
-                // assistant 保留本轮完整文字（模型能看到自己的思路）；每调用一条 assistant 的
-                // 旧形会把同一段文字重复 N 份，后续每轮输入 token 随工具数膨胀（prefill 变慢），
-                // 也偏离标准形、降低模型单轮并行提交的意愿。协议细节（content+tool_calls 拆分 /
-                // reasoning_content 占位 / tool 后桥接 assistant）仍由 api.ts 标准化层处理。
-                msgs.push({
-                  role: 'assistant',
-                  content: turnText,
-                  tool_calls: tools.map((t: any, i: any) => ({ id: t.id || ('call_' + i), type: 'function', function: { name: t.name, arguments: JSON.stringify(t.arguments || {}) } }))
-                });
-                tools.forEach((t: any, i: any) => {
-                  msgs.push({ role: 'tool', tool_call_id: t.id || ('call_' + i), content: results[i] || 'ok' });
-                });
-                if (repeatReminder) msgs.push({ role: 'system', content: repeatReminder });
-                // 设计轮的软收尾：工具已经提交过一轮了，下一轮只该输出文字（工具还在，但别再多轮循环）
-                if (this._designTurn && this._toolRounds >= _DESIGN_TOOL_ROUNDS) {
+                // 工具执行改成 async（出图要等），异步期间流式回调已结束 → turnText 快照一次最稳妥
+                const turnTextSnapshot = turnText;
+                void (async () => {
+                  let results: any[] = [];
+                  try { results = await this._handleTools(tools, userText); }
+                  catch (e) {
+                    results = tools.map(function () { return JSON.stringify({ ok: false, message: '失败：工具执行异常（' + ((e && (e as Error).message) || e) + '）' }); });
+                  }
+                  // 标准并行 tool_calls 协议形：一条 assistant 携带全部调用 + 逐条 tool 结果。
+                  // assistant 保留本轮完整文字（模型能看到自己的思路）；每调用一条 assistant 的
+                  // 旧形会把同一段文字重复 N 份，后续每轮输入 token 随工具数膨胀（prefill 变慢），
+                  // 也偏离标准形、降低模型单轮并行提交的意愿。协议细节（content+tool_calls 拆分 /
+                  // reasoning_content 占位 / tool 后桥接 assistant）仍由 api.ts 标准化层处理。
                   msgs.push({
-                    role: 'system', content: '【设计轮·收尾】工具提交已经执行完（结果见上）。设计轮最多一轮提交：'
-                      + '现在**不要再调用任何工具**，直接用文字把结论和剩余设计讲清楚；还有没提交完的内容，用文字说明，'
-                      + '让用户回一句「继续」再提交。'
+                    role: 'assistant',
+                    content: turnTextSnapshot,
+                    tool_calls: tools.map((t: any, i: any) => ({ id: t.id || ('call_' + i), type: 'function', function: { name: t.name, arguments: JSON.stringify(t.arguments || {}) } }))
                   });
-                }
-                // turnText 变量每轮重置（最终轮文字由 onChunk/onDone 写入气泡）
-                turnText = '';
-                resolve(runTurn(msgs, round + 1));
+                  tools.forEach((t: any, i: any) => {
+                    msgs.push({ role: 'tool', tool_call_id: t.id || ('call_' + i), content: results[i] || 'ok' });
+                  });
+                  if (repeatReminder) msgs.push({ role: 'system', content: repeatReminder });
+                  // 设计轮的软收尾：工具已经提交过一轮了，下一轮只该输出文字（工具还在，但别再多轮循环）
+                  if (this._designTurn && this._toolRounds >= _DESIGN_TOOL_ROUNDS) {
+                    msgs.push({
+                      role: 'system', content: '【设计轮·收尾】工具提交已经执行完（结果见上）。设计轮最多一轮提交：'
+                        + '现在**不要再调用任何工具**，直接用文字把结论和剩余设计讲清楚；还有没提交完的内容，用文字说明，'
+                        + '让用户回一句「继续」再提交。'
+                    });
+                  }
+                  // turnText 变量每轮重置（最终轮文字由 onChunk/onDone 写入气泡）
+                  turnText = '';
+                  resolve(runTurn(msgs, round + 1));
+                })();
               }
             }
           );
@@ -874,6 +912,9 @@ const CardWriterChat: CardWriterChatShape = {
   // 锁会一直挂着——此前没有任何入口能解开它，用户只能重启 App。这是那个自救入口。
   stopTurn() {
     try { if (APIHandler && APIHandler.abort) APIHandler.abort(); } catch (e) { /* ignore */ }
+    // 出图轮询也要一起停：draw_image 是 10 秒级的网络等待，只掐 LLM 请求停不掉它
+    this._drawCancelled = true;
+    try { if (this._drawAbort && this._drawAbort.abort) this._drawAbort.abort(); } catch (e) { /* ignore */ }
     this._isSending = false;
     this._statusText = '';
     this._dropPaused(); // 停止后不再挂「待继续」，否则回前台会自动续跑一条用户已经放弃的请求
@@ -979,7 +1020,7 @@ const CardWriterChat: CardWriterChatShape = {
 
   // 工具 schema：模型通过 function calling 提交变更，前端执行后回传结果，形成 agent 循环
   _tools() {
-    return [
+    const _base: any[] = [
       { type: 'function', function: { name: 'apply_character', description: '新增或更新角色卡（同名角色=更新覆盖，不同名=新增）。**批量整理/改造大卡时用 items 数组一次提交多个角色（单次上限 10 个），不要一个角色一次调用磨轮数**。**调用时机：仅在用户明确确认（写入吧/可以/就这样/直接写入/帮我构建好）或明确要求创建/修改角色时调用；构思/讨论/征询（你觉得/怎么样/帮我想想）时严禁调用；没有明确写入指令时严禁调用**。只提交用户已明确确定的设定，讨论中尚未拍板的内容一律不要写入；content 必须完整最终版（以「姓名：xxx」开头，含性别/年龄/外貌/性格/背景/关系；配过示例台词的加「说话方式·例句」一行），不要省略。', parameters: { type: 'object', properties: { name: { type: 'string', description: '角色名（单条）' }, content: { type: 'string', description: '完整人设内容，以「姓名：xxx」开头，含性别/年龄/外貌/性格/背景/关系（配过示例台词的加「说话方式·例句」）' }, items: { type: 'array', description: '批量：一次提交多个角色，每项 {name, content}（与 name/content 二选一；单次上限 10 个，超过拆多次调用）', items: { type: 'object', properties: { name: { type: 'string' }, content: { type: 'string' } } } } }, required: [] } } },
       { type: 'function', function: { name: 'delete_character', description: '删除角色。**批量清理大卡用 names 数组一次传多个角色名（单次上限 50 个），不要一条一条磨轮数**。**调用时机：仅当用户明确要求删除（删掉/删除/不要这个角色）时调用；构思/讨论时严禁调用；没有明确写入指令时严禁调用**。', parameters: { type: 'object', properties: { name: { type: 'string', description: '要删除的角色名（单条）' }, names: { type: 'array', items: { type: 'string' }, description: '批量：一次删除多个角色名，单次上限 50 个（超过拆多次调用）' } }, required: [] } } },
       { type: 'function', function: { name: 'update_worldview', description: '创建或更新世界观条目（type=世界观）。世界观可以拆成多条细分条目（如：世界背景、力量体系、国家地理、种族文明），每条一个方向。**批量删除世界观条目用 names 数组 + delete:true（单次上限 50 个）**。**调用时机：仅在用户确认或明确要求设定世界观时调用；构思/讨论时严禁调用；没有明确写入指令时严禁调用**。只提交用户明确确定的内容。', parameters: { type: 'object', properties: { name: { type: 'string', description: '世界观条目名（方向名），如"世界背景""力量体系""国家地理"；不填默认"世界观"' }, content: { type: 'string', description: '该方向的世界观内容' }, delete: { type: 'boolean', description: 'true=删除该世界观条目（批量删除必须显式传 true）' }, names: { type: 'array', items: { type: 'string' }, description: '批量删除：一次删多个世界观条目名（必须同时传 delete:true；单次上限 50 个）' } } } } },
@@ -991,6 +1032,168 @@ const CardWriterChat: CardWriterChatShape = {
       { type: 'function', function: { name: 'read_adapter_doc', description: '**只读辅助工具**：读取「酒馆世界书适配指南」文档全文（独立于系统 Prompt）。**调用时机：当用户说要把酒馆世界书转成当前软件格式、且你需要了解酒馆字段如何映射、哪些该丢、哪些该问用户时调用**。返回文档全文，用于指导你对酒馆 JSON 的处理。非稳定注入，按需读取。', parameters: { type: 'object', properties: {} } } },
       { type: 'function', function: { name: 'adapt_tavern_lorebook', description: '把酒馆格式的世界书 JSON 转成本软件可用的结构化报告。**调用时机：仅当用户明确说『这是酒馆的世界书，帮我改成适配的』或类似表述时调用**。本工具不直接写入世界书；它只生成一份『扫描报告』，含 kept（可直接写入）/ dropped（应丢弃）/ needs_user（需要用户拍板）。**默认不要传 json_text：工具会自己读取当前书里留存的酒馆原文（导入酒馆 PNG 卡时已自动存档）；只有用户在聊天里另贴了一份别的酒馆 JSON 时才传 json_text 覆盖**。调用前应（如尚未读取）先调用 read_adapter_doc 阅读独立文档 tavern-adapter-preset.md 了解判断规则；调用后**用自然语言把报告念给用户**，尤其 needs_user 部分要逐条问（超过 3 条时给批量选项）。等用户在聊天里给出决定后，再把决定编入 decisions 数组重跑本工具；report.needs_user 为空后再用 upsert_entry/apply_character/delete_entry 提交（调用即写入世界书）。**写入后必须复查确认再宣布完成：调用 read_current_book_json 读取刚写入的世界书，逐条核对 kept 条目是否齐全、类型是否正确、content 是否已清洗（无酒馆残留 {{}} 宏/标签）、是否有缺漏或误删；核对无误后再向用户宣布『改造完成』，如有缺漏/错误先用 upsert_entry/apply_character/delete_entry 修正再复检，不得在未复查的情况下直接宣布完成**。参数 json_text 是酒馆世界书 JSON 原文（优先用 read_current_book_json 读到的内容填入，不要重复让用户贴）；decisions 是用户上一轮针对 needs_user 的回复，数组，元素形如：uid 数字，action 取 keep 或 drop 或 keep_as 或 merge_into，可带 target_type（角色/世界观/其他/初始）、target_name、target_uid。', parameters: { type: 'object', properties: { json_text: { type: 'string', description: '酒馆世界书 JSON 原文；**留空即可**（缺省读当前书留存的酒馆原文）。只有当用户另贴了一份别的酒馆 JSON 时才填' }, policy: { type: 'string', enum: ['conservative', 'balanced', 'aggressive'], description: '清洗力度档位；默认 balanced' }, decisions: { type: 'array', description: '上一轮 needs_user 的用户决定', items: { type: 'object', properties: { uid: { type: 'number' }, action: { type: 'string', enum: ['keep', 'drop', 'keep_as', 'merge_into'] }, target_type: { type: 'string' }, target_name: { type: 'string' }, target_uid: { type: 'number' } } } }, target_book_id: { type: 'string', description: '要覆盖的世界书 ID；默认当前激活书' } }, required: [] } } }
     ];
+    // 画图工具只在「画图主机已启用且这一轮探测到在线」时提供；不给工具时生图规则也会消失，
+    // 模型据此知道要说明"主机没开"，而不是假装画了（见 _callAPI 里的 _drawToolsOn）。
+    if (this._drawToolsOn) _base.push(this._imageToolDraw(), this._imageToolAvatar());
+    return _base;
+  },
+
+  // —— 画图工具（本机 ComfyUI，协议见 domain/imagehost.ts）——
+  // 两段确认（用户定的交互）：先问要不要画 → 同意后 draw_image；出图后 → 同意才 set_avatar。
+  _imageToolDraw() {
+    const st: any = this._hostStatus || {};
+    const model = st.model ? String(st.model) : '';
+    const hint = st.hint ? String(st.hint) : '';
+    return {
+      type: 'function',
+      function: {
+        name: 'draw_image',
+        description: '在本机「画图主机」（用户电脑上的 ComfyUI）上生成一张图片并显示给用户，约 10 秒。'
+          + (model ? ('当前画图模型：' + model + '。') : '')
+          + (hint ? ('画风与提示词要求：' + hint + ' ') : '')
+          + '**调用时机：先问用户要不要画、得到同意后再调用**，不要自作主张连续出图。'
+          + '头像一律 1:1（软件固定按 768×768 出图，你不需要传尺寸）；想给用户挑构图时用 draft:true 连续出 2~3 张（512×512，更快）。'
+          + '出图后请用户看图，并询问要不要设为某个角色的头像；**设为头像必须再等用户明确同意，然后调用 set_avatar**。',
+        parameters: {
+          type: 'object',
+          properties: {
+            prompt: { type: 'string', description: '英文正向提示词（按上面的画风/提示词要求写）' },
+            seed: { type: 'integer', description: '可选：沿用上一张的 seed，可让同一角色更接近' },
+            draft: { type: 'boolean', description: 'true = 草稿模式（512×512，更快，用于挑构图）' }
+          },
+          required: ['prompt']
+        }
+      }
+    };
+  },
+  _imageToolAvatar() {
+    return {
+      type: 'function',
+      function: {
+        name: 'set_avatar',
+        description: '把一张已生成的图设为某个角色的头像（压到 512 后写进世界书，永久生效）。'
+          + '**只在用户看到图之后明确同意时调用**（如「用这张 / 设为头像 / 就它了」）；没得到同意就调用属于越权。'
+          + '如果这个角色是在同一批里刚用 apply_character 新建的，等下一轮再设（那时它才写进世界书）。',
+        parameters: {
+          type: 'object',
+          properties: {
+            character: { type: 'string', description: '角色名（必须与世界书里的名字完全一致）' },
+            image_id: { type: 'string', description: 'draw_image 返回的图片 id（img1 / img2 …）' },
+            user_said: { type: 'string', description: '用户表示同意时的原话（原样引用几个字，便于核对）' }
+          },
+          required: ['character', 'image_id']
+        }
+      }
+    };
+  },
+
+  // 画图主机状态探测（60 秒缓存）：_callAPI 每轮开头调一次，结果决定 _drawToolsOn（给不给工具、注不注入规则）
+  async _refreshHostStatus() {
+    try {
+      if (!ImageHost.ready()) { this._drawToolsOn = false; return; }
+      const now = Date.now();
+      const cached: any = this._hostStatus || { at: 0, ok: false, model: '', hint: '' };
+      if (now - (cached.at || 0) < 60000) { this._drawToolsOn = !!cached.ok; return; }
+      const st = await ImageHost.status(1500);
+      this._hostStatus = { at: now, ok: !!st.ok, model: st.model || '', hint: st.hint || '' };
+      this._drawToolsOn = !!st.ok;
+    } catch (e) { this._drawToolsOn = false; }
+  },
+
+  // 图片类工具（异步，见 _handleTools 的 await 分支）：draw 有 10 秒级网络等待，set_avatar 要压图
+  async _executeImageTool(t: any) {
+    try {
+      const a = t.arguments || {};
+      if (t.name === 'draw_image') return await this._toolDrawImage(a);
+      if (t.name === 'set_avatar') return await this._toolSetAvatar(a);
+      return { ok: false, message: '工具不存在：' + t.name };
+    } catch (e) {
+      return { ok: false, message: '失败：图片工具执行出错（' + ((e && (e as Error).message) || e) + '）' };
+    }
+  },
+
+  async _toolDrawImage(a: any) {
+    if (!ImageHost.ready()) {
+      return { ok: false, message: '失败：画图主机未配置或未启用。请告诉用户去「设置 → AI 与生成 → 画图主机」填地址和 token；本轮改用文字说明。' };
+    }
+    const prompt = String((a && a.prompt) || '').trim();
+    if (!prompt) return { ok: false, message: '工具调用参数无效：prompt 不能为空' };
+    const st = await ImageHost.status(2000);
+    this._hostStatus = { at: Date.now(), ok: !!st.ok, model: st.model || '', hint: st.hint || '' };
+    if (!st.ok) {
+      return { ok: false, message: '失败：画图主机离线（' + (st.error || '') + '）。请告诉用户检查电脑上的 ComfyUI 和画图主机是否在运行，不要重试。' };
+    }
+    const isDraft = !!(a && a.draft);
+    const size = isDraft ? DRAFT_SIZE : AVATAR_SIZE;
+    const seed = (a && a.seed !== undefined && a.seed !== null && String(a.seed) !== '') ? Math.floor(Number(a.seed)) : undefined;
+    this._drawCancelled = false;
+    this._drawAbort = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+    const signal = this._drawAbort ? this._drawAbort.signal : undefined;
+    const t0 = Date.now();
+    try {
+      const d = await ImageHost.draw({ prompt: prompt, width: size, height: size, seed: seed, steps: isDraft ? 8 : undefined }, signal);
+      if (!d.ok) {
+        return { ok: false, message: '失败：' + (d.error || '提交失败') + '（检查画图主机上的 ComfyUI 是否在运行）' };
+      }
+      let lastPaint = 0;
+      const w = await ImageHost.waitJob(d.jobId, {
+        signal: signal,
+        timeoutMs: 180000,
+        onTick: (j: any) => {
+          const now = Date.now();
+          if (now - lastPaint > 1000) {
+            lastPaint = now;
+            this._statusText = '正在出图（' + size + '×' + size + '）… ' + Math.round((j.elapsed || (now - t0)) / 1000) + 's';
+            this.renderMessages(true);
+          }
+        }
+      });
+      if (this._drawCancelled || (signal && signal.aborted)) return { ok: false, message: '失败：用户已停止本轮，出图已中断' };
+      if (!w.ok) return { ok: false, message: '失败：' + (w.error || '出图失败') };
+      const full = await ImageHost.imageDataUrl(d.jobId, signal);
+      if (!full) return { ok: false, message: '失败：取图失败（画图主机没有返回图片字节）' };
+      const thumb = (await resizeDataUrlLongSide(full, 420, 0.85)) || full;
+      const id = 'img' + (++this._imgSeq);
+      const seconds = Math.round((Date.now() - t0) / 100) / 10;
+      this._genImages.set(id, {
+        full: full, thumb: thumb, seed: (w.meta && w.meta.seed), size: (w.meta && w.meta.size) || (size + 'x' + size),
+        seconds: seconds, prompt: prompt
+      });
+      while (this._genImages.size > 12) {
+        const k = this._genImages.keys().next().value as string;
+        this._genImages.delete(k);
+      }
+      // 挂到最后一条 assistant 消息（此刻它就是本轮的流式占位气泡）→ renderMessages 渲染缩略图
+      const last: any = this.messages[this.messages.length - 1];
+      if (last && last.role === 'assistant') {
+        last.imageIds = (last.imageIds || []).concat([id]);
+        this._save();
+      }
+      this.renderMessages(true);
+      return {
+        ok: true,
+        message: '图片已生成并显示给用户（图片 id：' + id + '，' + size + '×' + size + '，seed '
+          + ((w.meta && w.meta.seed) == null ? '?' : w.meta.seed) + '，耗时 ' + seconds + ' 秒）。'
+          + '请用中文简短说明这张图，并问用户要不要把它设为某个角色的头像（得到明确同意后再调用 set_avatar）。'
+      };
+    } finally {
+      this._drawAbort = null;
+    }
+  },
+
+  async _toolSetAvatar(a: any) {
+    const char = String((a && (a.character || a.name)) || '').trim();
+    const id = String((a && (a.image_id || a.imageId)) || '').trim();
+    if (!char) return { ok: false, message: '工具调用参数无效：缺少角色名' };
+    if (!id) return { ok: false, message: '工具调用参数无效：缺少 image_id（draw_image 返回的那个 id）' };
+    const img: any = this._genImages.get(id);
+    if (!img) return { ok: false, message: '未找到图片：' + id + '（生成的图片只在本会话内有效，请重新画一张再设）' };
+    // 入库前压到 512（与手动选头像一致）；canvas 不可用时退回原图（功能优先）
+    const stored = (await resizeDataUrlLongSide(String(img.full || ''), AVATAR_STORE_SIZE, 0.92)) || String(img.full || '');
+    const r = ImageHost.applyAvatarToCharacter(char, stored);
+    if (!r.ok) return r;
+    const said = (a && a.user_said) ? ('（用户原话：' + String(a.user_said).slice(0, 40) + '）') : '';
+    return { ok: true, message: r.message + said };
   },
 
   // 执行单个工具（单条路径）：直接应用到草稿并返回执行结果文本（回传给模型）
@@ -1286,7 +1489,8 @@ const CardWriterChat: CardWriterChatShape = {
   },
 
   // 执行模型输出的工具调用（完全访问模式：onTools 已直接调用，此处执行并返回结构化结果）
-  _handleTools(tools: any, userText: any) {
+  // **async**：画图工具（draw_image）要 10 秒级网络等待——顺序执行多个调用，await 前会先把状态条渲染出去。
+  async _handleTools(tools: any, userText: any) {
     // 设计轮的硬保险（不是"不给工具"，而是"最多一轮提交"）：第一轮照执行，之后多出来的调用
     // 一律不执行并**明确告知模型**（ok=false + 原因）——静默吞掉才会重演"说写了其实没写"。
     if (this._designTurn && (this._toolRounds || 0) > _DESIGN_TOOL_ROUNDS) {
@@ -1301,21 +1505,32 @@ const CardWriterChat: CardWriterChatShape = {
     this._toolsHandled = true; // 已通过工具提交变更
     let writeOk = false; // 本轮是否有写工具真的成功（只读工具不算）
     // 工具结果结构化 JSON 回传（成熟 agent 协议）：模型精确判断成功/失败，失败时自动修正
-    const results = tools.map((t: any) => {
+    const results: string[] = [];
+    for (const t of tools) {
       // 参数 JSON 解析失败：把解析错误原文回传给模型（区别于「缺少参数」——模型看不到
       // 根因会原样重试同样的坏转义）。消息以「失败」开头，命中下方 ok 判定。
       // 最常见成因是输出被 max_tokens 截断：这种失败不会写坏数据，但用户端此前完全无感
       //（工具轮不触发 finish_reason 的截断提示），这里补一条 toast，别让整批静默作废。
       if (t.argsError) {
         try { if (!_cwHidden()) cwToast('有工具调用参数不完整（多为输出被截断），该调用已跳过；可减少单次条目数后重试'); } catch (e) { /* ignore */ }
-        return JSON.stringify({ ok: false, message: '失败：工具参数不是合法 JSON（' + t.argsError + '）——请重新输出该调用，arguments 必须是合法 JSON（字符串内的引号/换行需转义）' });
+        results.push(JSON.stringify({ ok: false, message: '失败：工具参数不是合法 JSON（' + t.argsError + '）——请重新输出该调用，arguments 必须是合法 JSON（字符串内的引号/换行需转义）' }));
+        continue;
+      }
+      // 图片类工具：异步执行（10 秒级），先渲染状态条再 await
+      if (t.name === 'draw_image' || t.name === 'set_avatar') {
+        this._statusText = (t.name === 'draw_image') ? '正在出图（约 10 秒）…' : '正在写入头像…';
+        this.renderMessages(true);
+        const ir = await this._executeImageTool(t);
+        if (ir.ok && _WRITE_TOOLS.indexOf(String(t.name)) >= 0) writeOk = true;
+        results.push(JSON.stringify({ ok: !!ir.ok, message: ir.message }));
+        continue;
       }
       const r = this._executeToolResult(t);
       if (r.ok && _WRITE_TOOLS.indexOf(String(t.name)) >= 0) writeOk = true;
-      return (r.failed && r.failed.length)
+      results.push((r.failed && r.failed.length)
         ? JSON.stringify({ ok: r.ok, message: r.message, failed: r.failed })
-        : JSON.stringify({ ok: r.ok, message: r.message });
-    });
+        : JSON.stringify({ ok: r.ok, message: r.message }));
+    }
     // 直写世界书：工具变更即时生效（不再有「草稿 → 覆盖写入」两步）；被验收拦下时
     // 把原因并进最后一条工具结果回传，模型据此改名/合并后重试
     let _wr = '';
@@ -1362,6 +1577,25 @@ const CardWriterChat: CardWriterChatShape = {
     return false;
   },
 
+  // 生成的图片缩略图（消息里只存 imageIds；图片数据只在本会话内存里，重载后显示占位）。
+  // 点缩略图 → UIManager.viewAvatar 全屏看原图（dataURL 直接当 src 用）。
+  _imagesHtml(m: any) {
+    const ids = (m && m.imageIds) ? m.imageIds : null;
+    if (!ids || !ids.length) return '';
+    const cells: string[] = [];
+    const metas: string[] = [];
+    for (const gid of ids) {
+      const g = this._genImages.get(gid);
+      const src = g ? String(g.thumb || g.full || '').replace(/"/g, '&quot;') : '';
+      if (!src) { cells.push('<div class="cw-img-expired">图片已过期<br>（需要时重新生成）</div>'); continue; }
+      cells.push('<img src="' + src + '" title="点击看大图" onclick="UIManager.viewAvatar(this.src)">');
+      metas.push(String(g.size || '') + ' · seed ' + ((g.seed == null) ? '?' : g.seed) + ' · ' + g.seconds + 's');
+    }
+    if (!cells.length) return '';
+    return '<div class="cw-imgs">' + cells.join('') + '</div>' +
+      (metas.length ? '<div class="cw-img-meta">' + metas.join('　') + '</div>' : '');
+  },
+
   renderMessages(isStreaming: any) {
     this._syncSendState(); // 发送键双态：生成中显示为「暂停」（请求卡死时它是唯一的自救入口）
     // 重渲染会把自绘选区的高亮层一起换掉 → 选区还在就重画一次（流式之外的刷新也会走这里）
@@ -1380,6 +1614,7 @@ const CardWriterChat: CardWriterChatShape = {
       let cls = 'chat-msg ' + (m.role === 'user' ? 'user' : 'assistant');
       if (isStreaming && i === this.messages.length - 1 && m.role === 'assistant') cls += ' streaming';
       let content = m.content || '';
+      const imgHtml = this._imagesHtml(m); // 生成的图片（缩略图贴气泡里；有图就不算"空内容"）
       // 深度思考块：reasoningLive = 正在思考（实时展开）；reasoning = 已结束（折叠可展开）
       // 思考强度为 off 时一律不渲染思考块（历史消息中的旧思考也已隐藏）
       const _cwThinkOn = App.thinkingLevel() !== 'off';
@@ -1388,7 +1623,7 @@ const CardWriterChat: CardWriterChatShape = {
       // 流式等待期：不渲染气泡，渲染独立状态条（spinner + 文案）。
       // 空气泡根治：空内容永远不会成为气泡；工具轮/思考轮只走状态条。
       // 正在深度思考时不走状态条——思考块本身就是反馈，避免两者叠加闪动
-      if (!content && !liveThink && m.role === 'assistant' && this._isSending && i === this.messages.length - 1) {
+      if (!content && !imgHtml && !liveThink && m.role === 'assistant' && this._isSending && i === this.messages.length - 1) {
         const st = htmlEscape(this._statusText || '正在分析…');
         html += '<div class="cw-status"><span class="cw-spinner"></span><span class="cw-status-text">' + st + '</span></div>';
         continue;
@@ -1437,7 +1672,7 @@ const CardWriterChat: CardWriterChatShape = {
         ' onpointerdown="CardWriterChat.msgPressStart(event,' + i + ')"' +
         ' onpointerup="CardWriterChat.msgPressEnd(' + i + ')"' +
         ' onpointermove="CardWriterChat.msgPressMove(event,' + i + ')"' + '>' +
-        thinkHtml + '<div class="cw-msg-text" data-i="' + i + '">' + content + '</div></div>' + resumeHtml;
+        thinkHtml + '<div class="cw-msg-text" data-i="' + i + '">' + content + '</div>' + imgHtml + '</div>' + resumeHtml;
       if (multiOn) {
         html += '<div class="cw-row' + (m.role === 'user' ? ' user' : '') + (multiChecked ? ' sel' : '') + '">' +
           '<span class="cw-check"></span>' + bubble + '</div>';
