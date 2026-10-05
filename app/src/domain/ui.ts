@@ -13,6 +13,7 @@ import { StatusVars } from './statusvars';
 import { parseKnowers } from './realstate';   // 「部分人知道」的知情者名单解析（与读取侧共用一份）
 import { formatVersion } from '../lib/webver';
 import { avatarUrl } from '../lib/avatarurl';
+import { saveImageToDevice, shareImageFromDevice, canSaveImage, canShareImage } from '../lib/saveimage';
 // 社区聊天：独立 legacy 全局（modules/community.js），运行时成员按 typeof 探测
 declare const CommunityChat: { [k: string]: any };
 export interface UIManagerShape {
@@ -20,6 +21,7 @@ export interface UIManagerShape {
   confirmCallback?: any;
   _wbPage?: any;
   _wbPageSize?: any;
+  _viewerImg?: { id: string; label: string; ctx: string } | null;   // 全屏看图里那张"生成的图"（供「基于这张改」用）
   _wbViewEntryId?: any;   // 「查看全文」弹窗当前展示的条目 id（供弹窗里的「编辑」跳转）
   _drag?: any;
   timer?: any;
@@ -1575,10 +1577,54 @@ const UIManager: UIManagerShape = {
     reader.readAsDataURL(file);
   },
 
-  viewAvatar(src: any) {
+  // 看图。opt 只在"生成的图"上传（带图号/来源/哪个面板），用来显示「基于这张改」并知道把引用填进哪个输入框。
+  viewAvatar(src: any, opt?: { id?: string; label?: string; ctx?: string }) {
     var viewer = document.getElementById('imgViewer');
     document.getElementById('imgViewerImg')!.src = src;
     viewer!.style.display = 'flex';
+    this._viewerImg = (opt && opt.id) ? { id: String(opt.id), label: String(opt.label || ''), ctx: String(opt.ctx || '') } : null;
+    var bar = document.getElementById('imgViewerBar');
+    if (bar) bar.style.display = 'flex';
+    var baseBtn = document.getElementById('imgViewerBase');
+    if (baseBtn) baseBtn.style.display = this._viewerImg ? '' : 'none';
+    var bridge = (window as unknown as { HttpBridge?: any }).HttpBridge;
+    var saveBtn = document.getElementById('imgViewerSave');
+    if (saveBtn) saveBtn.style.display = canSaveImage(bridge) ? '' : 'none';
+    var shareBtn = document.getElementById('imgViewerShare');
+    if (shareBtn) shareBtn.style.display = canShareImage(bridge) ? '' : 'none';
+  },
+
+  closeViewer() { var v = document.getElementById('imgViewer'); if (v) v.style.display = 'none'; },
+
+  // 「基于这张改」：把「把图3改成：」填进对应面板的输入框，用户补一句就能发（模型按图号找 base_image）
+  useViewerAsBase() {
+    const info: any = (this as any)._viewerImg;
+    if (!info) return;
+    const text = '把' + (info.label || '这张图') + '改成：';
+    let el: any = null;
+    try {
+      const prefer = info.ctx === 'cardwriter' ? 'cardwriterInput' : 'biqiInput';
+      el = document.getElementById(prefer) || document.getElementById('biqiInput') || document.getElementById('cardwriterInput');
+    } catch (e) { el = null; }
+    if (!el) { try { App.toast('先在写卡或比奇里开一个输入框，再说这句话'); } catch (e) { /* ignore */ } return; }
+    el.value = text;
+    try { el.dispatchEvent(new Event('input', { bubbles: true })); } catch (e) { /* ignore */ }
+    this.closeViewer();
+    try { el.focus(); } catch (e) { /* ignore */ }
+    try { App.toast('已填入「' + text + '」，补一句要改成什么就能发'); } catch (e) { /* ignore */ }
+  },
+
+  // 存到手机相册（原生 MediaStore；旧系统落应用目录）——老 APK 没这方法时按钮不显示
+  saveViewerImage() {
+    const img = document.getElementById('imgViewerImg') as HTMLImageElement | null;
+    const r = saveImageToDevice(img ? img.src : '', (window as unknown as { HttpBridge?: any }).HttpBridge);
+    try { App.toast(r.ok ? ('已保存到 ' + (r.path || '相册') + '，去相册/图库看看') : ('保存失败：' + r.error)); } catch (e) { /* ignore */ }
+  },
+
+  shareViewerImage() {
+    const img = document.getElementById('imgViewerImg') as HTMLImageElement | null;
+    const r = shareImageFromDevice(img ? img.src : '', (window as unknown as { HttpBridge?: any }).HttpBridge);
+    if (!r.ok) { try { App.toast('分享失败：' + r.error); } catch (e) { /* ignore */ } }
   },
 
   // 数据库角色档案取头像：优先世界书同名字角色条目的头像，其次记录自带 __avatar

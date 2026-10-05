@@ -10,7 +10,7 @@ const anyG = globalThis as unknown as Record<string, unknown>;
 const ih = vi.hoisted(() => ({
   ready: true,
   statusCalls: 0,
-  statusResult: { ok: true, model: 'miaomiaoRealskin_anima13.safetensors', hint: 'tag 风格，用 danbooru tag' } as any,
+  statusResult: { ok: true, model: 'miaomiaoRealskin_anima13.safetensors', hint: 'tag 风格，用 danbooru tag', caps: ['img2img', 'hires'] } as any,
   drawCalls: [] as any[],
   drawResult: { ok: true, jobId: 'job1' } as any,
   waitResult: { ok: true, meta: { status: 'done', seed: 42, size: '768x768', elapsed: 9800 } } as any,
@@ -71,7 +71,7 @@ beforeAll(async () => {
 
 beforeEach(() => {
   ih.ready = true; ih.statusCalls = 0;
-  ih.statusResult = { ok: true, model: 'miaomiaoRealskin_anima13.safetensors', hint: 'tag 风格，用 danbooru tag' };
+  ih.statusResult = { ok: true, model: 'miaomiaoRealskin_anima13.safetensors', hint: 'tag 风格，用 danbooru tag', caps: ['img2img', 'hires'] };
   ih.drawCalls = []; ih.drawResult = { ok: true, jobId: 'job1' };
   ih.waitResult = { ok: true, meta: { status: 'done', seed: 42, size: '768x768', elapsed: 9800 } };
   ih.image = 'data:image/png;base64,AAA'; ih.applies = []; ih.applyResult = null; ih.viewed = [];
@@ -115,7 +115,7 @@ describe('门控与主机状态', () => {
 
     C._drawToolsOn = true;
     // 生产路径里 _drawToolsOn=true 总是伴随探测结果（_refreshHostStatus 写入），这里照做
-    C._hostStatus = { at: Date.now(), ok: true, model: 'miaomiaoRealskin_anima13.safetensors', hint: 'tag 风格，用 danbooru tag' };
+    C._hostStatus = { at: Date.now(), ok: true, model: 'miaomiaoRealskin_anima13.safetensors', hint: 'tag 风格，用 danbooru tag', caps: ['img2img', 'hires'] };
     const tools = C._tools();
     names = tools.map((t: any) => t.function.name);
     expect(names).toContain('draw_image');
@@ -124,8 +124,21 @@ describe('门控与主机状态', () => {
     expect(draw.function.description).toContain('miaomiaoRealskin_anima13');
     expect(draw.function.description).toContain('danbooru tag');
     expect(draw.function.description).toContain('先问用户要不要画');
+    expect(draw.function.description).toContain('base_image');            // 主机支持改图 → 给底图参数
+    expect(Object.keys(draw.function.parameters.properties)).toContain('base_image');
+    expect(draw.function.parameters.properties.base_image.description).toContain('图3');
+    expect(draw.function.parameters.properties.base_image.description).toContain('角色名');
     const av = tools.find((t: any) => t.function.name === 'set_avatar');
     expect(av.function.description).toContain('只在用户看到图之后明确同意时调用');
+  });
+
+  it('老主机（无 caps）：不给 base_image/strength 参数，规则里也不提改图', () => {
+    C._drawToolsOn = true;
+    C._hostStatus = { at: Date.now(), ok: true, model: 'm', hint: '', caps: [] };
+    const props = Object.keys((C._tools().find((t: any) => t.function.name === 'draw_image') as any).function.parameters.properties);
+    expect(props).not.toContain('base_image');
+    expect(props).not.toContain('strength');
+    expect(C._imageRuleMessage()).not.toContain('base_image');
   });
 
   it('_refreshHostStatus：未启用不发请求；在线置 true；60 秒内复用缓存；失败置 false', async () => {
@@ -215,6 +228,53 @@ describe('draw_image', () => {
     expect(r.ok).toBe(false);
     expect(r.message).toContain('出图超时');
     expect(C._genImages.size).toBe(0);
+  });
+
+  // 用户 2026-10-06：不一定是"上一张"，要能指名第几张 → base_image 传图号（界面上那个「图3」）
+  it('以图改图：base_image 传图号 → 带 initImage+denoise 提交；回执标"基于图1改的"，新图标"改自图1"', async () => {
+    C._genImages.set('img1', { full: 'data:image/png;base64,SRC', thumb: 'data:image/png;base64,T', seed: 1, size: '768x768', seconds: 9 });
+    C._imgSeq = 1;   // 已有 img1，下一张是 img2
+    C.messages = [{ role: 'assistant', content: '' }];
+    const out = await C._handleTools([{ id: 'c1', name: 'draw_image', arguments: { prompt: 'snow, winter', base_image: '图1', strength: 'slight' } }], '');
+    const r = JSON.parse(out[0]);
+    expect(r.ok).toBe(true);
+    expect(ih.drawCalls[0].initImage).toBe('data:image/png;base64,SRC');
+    expect(ih.drawCalls[0].denoise).toBe(0.35);          // slight
+    expect(ih.drawCalls[0].hires).toBeUndefined();       // 标准档不重修
+    expect(r.message).toContain('基于图1改的');
+    expect(r.message).toContain('界面编号：图2');
+    expect(C._genImages.get('img2').base).toBe('图1');
+    expect(C.messages[0].imageIds).toEqual(['img2']);
+  });
+
+  it('精细档：1024/36 单次直出（hires 两步重修实测 3 倍耗时且没更好，档位不带它）', async () => {
+    ih.drawCalls = [];
+    await C._handleTools([{ id: 'c1', name: 'draw_image', arguments: { prompt: 'x', quality: 'high' } }], '');
+    expect(ih.drawCalls[0].width).toBe(1024);
+    expect(ih.drawCalls[0].steps).toBe(36);
+    expect(ih.drawCalls[0].hires).toBeUndefined();
+    expect(C._genImages.get('img1').hires).toBe(false);
+  });
+
+  it('底图引用过期 → 如实失败、不提交（不再静默画成全新一张）', async () => {
+    ih.drawCalls = [];
+    const out = await C._handleTools([{ id: 'c1', name: 'draw_image', arguments: { prompt: 'x', base_image: '图9' } }], '');
+    const r = JSON.parse(out[0]);
+    expect(r.ok).toBe(false);
+    expect(r.message).toContain('图9');
+    expect(r.message).toContain('只在本会话内存');
+    expect(ih.drawCalls.length).toBe(0);
+  });
+
+  it('老主机不支持改图 → 明确失败（不会悄悄变成全新出图）', async () => {
+    ih.statusResult = { ok: true, model: 'm', hint: '', caps: [] };
+    C._genImages.set('img1', { full: 'data:image/png;base64,SRC' });
+    ih.drawCalls = [];
+    const out = await C._handleTools([{ id: 'c1', name: 'draw_image', arguments: { prompt: 'x', base_image: '图1' } }], '');
+    const r = JSON.parse(out[0]);
+    expect(r.ok).toBe(false);
+    expect(r.message).toContain('不支持以图改图');
+    expect(ih.drawCalls.length).toBe(0);
   });
 });
 

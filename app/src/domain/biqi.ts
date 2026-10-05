@@ -11,7 +11,7 @@ import { PluginManager } from './plugins';
 import { SettingSyncManager } from './settingsync';
 import { WorldBookManager } from './worldbook';
 import { renderMdStrong } from '../lib/mdtext';
-import { probeHost, drawImageToStore, genImagesHtml, type HostStatusCache } from './imagedraw';
+import { probeHost, drawImageToStore, genImagesHtml, imageLabel, type HostStatusCache } from './imagedraw';
 
 export interface BiqiMessage { role: 'user' | 'assistant'; content: string; _steps?: string[]; imageIds?: string[] }
 
@@ -400,9 +400,12 @@ export const BiqiAgent: {
       if (ids.length) {
         const info = ids.map((gid: string) => {
           const gg = this._genImages.get(gid);
-          return gg ? (gid + '（' + gg.size + ' · seed ' + (gg.seed == null ? '?' : gg.seed) + '）') : (gid + '（已过期）');
+          const no = imageLabel(gid);
+          if (!gg) return gid + '（已过期）';
+          return (no ? (no + '（id ' + gid + '）') : gid) + '｜' + gg.size + ' · seed ' + (gg.seed == null ? '?' : gg.seed)
+            + (gg.base ? (' · 改自' + gg.base) : '');
         }).join('、');
-        text += '\n（本轮出过图：' + info + '，图片只显示给作者、不随对话传给你）';
+        text += '\n（本轮出过图：' + info + '。作者说"图3 / 第3张"就是它，要改就用 draw_image 的 base_image；图片只显示给作者、不随对话传给你）';
       }
       return { role: m.role, content: text };
     });
@@ -571,30 +574,34 @@ export const BiqiAgent: {
     const st: any = this._hostStatus || {};
     const model = st.model ? String(st.model) : '';
     const hint = st.hint ? String(st.hint) : '';
+    const caps: string[] = Array.isArray(st.caps) ? st.caps : [];
+    const canImg2img = caps.indexOf('img2img') >= 0;
+    const props: any = {
+      prompt: { type: 'string', description: '英文正向提示词（按上面的画风/提示词要求写；改图时写"要改成什么"，不用把原图内容整段重写）' },
+      seed: { type: 'integer', description: '可选：沿用上一张的 seed，可让同一人物/风格更接近（上一张的 seed 在历史里）' },
+      quality: {
+        type: 'string',
+        enum: ['fast', 'draft', 'normal', 'high'],
+        description: '画质档位：fast=最快（512×512/12 步，约 5~8 秒）；draft=草稿（512×512/20 步，用于挑构图）；normal=标准（768×768/28 步，默认）；high=更精细（1024×1024/36 步，约 30 秒）'
+      }
+    };
+    if (canImg2img) {
+      props.base_image = { type: 'string', description: '可选：以哪张图做底图（改图 / 沿用某个角色的样子）。可填：① "图3" 或 "img3"——对话里图片左下角的编号，作者说"第几张"就填那个；② "last"——最近生成的那张；③ 角色名——用 TA 当前的头像。不填 = 全新出图。' };
+      props.strength = { type: 'string', enum: ['slight', 'medium', 'strong'], description: '改图幅度（只有传了 base_image 时有效）：slight=只小改、尽量保构图；medium=中等（默认）；strong=大改、只保留大体结构' };
+    }
     return {
       type: 'function',
       function: {
         name: 'draw_image',
-        description: '在作者电脑的「画图主机」（ComfyUI）上生成一张图，直接显示在对话里给作者看，约 10~30 秒。'
+        description: '在作者电脑的「画图主机」（ComfyUI）上生成一张图，直接显示在对话里给作者看，约 10~35 秒。'
           + (model ? ('当前画图模型：' + model + '。') : '')
           + (hint ? ('画风与提示词要求：' + hint + ' ') : '')
           + '**作者明确让你画时直接调用，不要再问"要不要画/可以吗"**；他只是讨论画面、还没让你画时先讨论，不要抢着画。'
           + 'prompt 用英文；画什么以最近上下文为准（人物外观、当前场景、正在发生的事），拿不准时先 read_story / read_worldbook 看一眼。'
+          + (canImg2img ? '作者要"改某一张"（"把图3改成雪景""基于这张改""照着苏黎的头像画一张"）时传 base_image，并按他的幅度选 strength。' : '')
           + '档位：不填=标准（768×768，约 14 秒）；作者说"快一点/先看看"用 quality:"fast"（512，约 5~8 秒）；'
-          + '一次出 2~3 张让他挑构图用 quality:"draft"（512×512/20 步，可连续调用几次）；说"更精细/更大"用 quality:"high"（1024，约 30 秒）。',
-        parameters: {
-          type: 'object',
-          properties: {
-            prompt: { type: 'string', description: '英文正向提示词（按上面的画风/提示词要求写）' },
-            seed: { type: 'integer', description: '可选：沿用上一张的 seed，可让同一人物/风格更接近（上一张的 seed 在历史里）' },
-            quality: {
-              type: 'string',
-              enum: ['fast', 'draft', 'normal', 'high'],
-              description: '画质档位：fast=最快（512×512/12 步，约 5~8 秒）；draft=草稿（512×512/20 步，用于挑构图）；normal=标准（768×768/28 步，默认）；high=更精细（1024×1024/36 步，约 30 秒）'
-            }
-          },
-          required: ['prompt']
-        }
+          + '一次出 2~3 张让他挑构图用 quality:"draft"（512×512/20 步，可连续调用几次）；说"更精细/更大"用 quality:"high"（1024×1024/36 步，约 30 秒）。',
+        parameters: { type: 'object', properties: props, required: ['prompt'] }
       }
     };
   },
@@ -605,11 +612,17 @@ export const BiqiAgent: {
   //     用户看到这种提议只会白点一下，所以必须明确告诉模型"你没有画图能力"。
   _imageRuleMessage(): string {
     if (this._drawToolsOn) {
-      return '【生图（作者电脑上的画图主机）】你可以用 draw_image 出图，结果会直接显示在对话里（约 10~30 秒）：\n'
+      const caps: string[] = Array.isArray((this._hostStatus || {}).caps) ? (this._hostStatus as any).caps : [];
+      const canImg2img = caps.indexOf('img2img') >= 0;
+      return '【生图（作者电脑上的画图主机）】你可以用 draw_image 出图，结果会直接显示在对话里（约 10~35 秒）：\n'
         + '- 作者明确让你画（"画一张…""生图""来张图""就按这个画"）→ **直接调用 draw_image，不要再问"要不要画/可以吗"**，也不要只说"这就画"却不调用；\n'
         + '- 他只是讨论画面、还没让你画时 → 正常讨论，别抢着画；讨论里他认可了，也一样直接画；\n'
+        + '- 出图后图上会有编号（气泡左下角的「图1/图2…」）：作者之后说"把图3改成雪景""基于图2再来一张"时，就用那个编号指代它'
+        + (canImg2img
+          ? '（draw_image 传 base_image = 图号 / "last" / 角色名用 TA 的头像；幅度按他的话选 strength；prompt 只写"要改成什么"）'
+          : '（本机画图主机是旧版、暂时不支持改图；他真要改就按新的描述重新画一张）') + '；\n'
         + '- 提示词落在最近上下文里能确定的东西上（人物外观、当前场景、正在发生的事）；他没说的细节按上下文最合理的样子补，别自己另起一个故事；\n'
-        + '- 出图后用一两句中文说明画的是什么，问他要不要换一张或调整；失败（主机离线/超时）就如实说原因，不要重试超过一次，也不要假装画了。';
+        + '- 出图后用一两句中文说明画的是什么，问他要不要换一张或调整；失败（主机离线/超时/主机不支持改图）就如实说原因，不要重试超过一次，也不要假装画了。';
     }
     return '【生图】本轮你没有画图工具——作者还没配置画图主机，或者画图主机没在运行。因此：\n'
       + '- **不要提议"要不要我画一张"**，不要说"我可以帮你出图/生成图片/配图"，也不要输出生图提示词；专注设定与剧情。\n'
@@ -629,6 +642,8 @@ export const BiqiAgent: {
         quality: a && a.quality,
         legacyDraft: !!(a && a.draft),
         seed: a && a.seed,
+        baseImage: a && a.base_image,
+        strength: a && a.strength,
         store: this._genImages,
         nextId: () => 'img' + (++this._imgSeq),
         onTick: () => { this._status = '正在出图…'; this.renderMessages(); },
@@ -641,16 +656,20 @@ export const BiqiAgent: {
           this.renderMessages();
         }
       });
-      if (out.host) this._hostStatus = { at: Date.now(), ok: !!out.host.ok, model: out.host.model || '', hint: out.host.hint || '' };
+      if (out.host) this._hostStatus = { at: Date.now(), ok: !!out.host.ok, model: out.host.model || '', hint: out.host.hint || '', caps: out.host.caps || [] };
       if (!out.ok) return JSON.stringify({ ok: false, error: out.error });
       const t: any = out.tier;
+      const label = imageLabel(out.id);
       return JSON.stringify({
         ok: true,
         image_id: out.id,
+        image_label: label,
         size: out.size,
         seed: (out.seed == null ? null : out.seed),
         seconds: out.seconds,
-        message: '图片已生成并显示在对话里（' + out.id + '，' + t.label + '档，耗时 ' + out.seconds + ' 秒）。'
+        base: out.base || '',
+        message: '图片已生成并显示在对话里（' + out.id + (label ? ('，界面编号 ' + label) : '') + '，' + t.label + '档，耗时 ' + out.seconds + ' 秒'
+          + (out.base ? ('，基于' + out.base + '改的' + (out.hires ? '（两步放大重修）' : '')) : '') + '）。'
           + '用一两句中文说明画面，并问作者要不要调整或换一张。'
       });
     } catch (e: any) {
@@ -691,7 +710,7 @@ export const BiqiAgent: {
     if (t.name === 'draw_image') {
       let j: any = null;
       try { j = JSON.parse(out); } catch (e) { /* ignore */ }
-      if (j && j.ok) return '🎨 出图 → ' + (j.size || '') + ' · ' + (j.seconds == null ? '?' : j.seconds) + 's · ' + (j.image_id || '');
+      if (j && j.ok) return '🎨 ' + (j.base ? '改图' : '出图') + ' → ' + (j.size || '') + ' · ' + (j.seconds == null ? '?' : j.seconds) + 's · ' + (j.image_label || j.image_id || '');
       return '⚠️ 出图失败 → ' + String((j && j.error) || '').slice(0, 60);
     }
     let ok = false;
@@ -795,11 +814,12 @@ export const BiqiAgent: {
     } catch (e) { /* ignore */ }
   },
 
-  // 点缩略图看大图：给全屏查看器换原图（气泡里是 420px 缩略图）
+  // 点缩略图看大图：给全屏查看器换原图（气泡里是 420px 缩略图）。带图号与来源面板：
+  // 查看器里的「基于这张改」据此把「把图3改成：」填进比奇输入框。
   viewImage(id: any): void {
     const g = this._genImages.get(String(id || ''));
     const src = (g && (g.full || g.thumb)) || '';
-    if (src) UIManager.viewAvatar(src);
+    if (src) UIManager.viewAvatar(src, { id: String(id || ''), label: imageLabel(id), ctx: 'biqi' });
   },
 };
 

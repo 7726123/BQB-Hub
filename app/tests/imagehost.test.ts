@@ -98,6 +98,8 @@ describe('ImageHost 配置', () => {
     expect([AVATAR_SIZE, DRAFT_SIZE, AVATAR_STORE_SIZE, FAST_SIZE, FAST_STEPS, HIGH_SIZE, HIGH_STEPS]).toEqual([768, 512, 512, 512, 12, 1024, 36]);
     expect(DRAFT_STEPS).toBe(20);
     expect(QUALITY_TIERS.normal.steps).toBeUndefined();       // 标准档交回工作流
+    // hires（两步重修）2026-10-06 实测 88s vs 直出 30s、观感未更好 → 档位不用它（能力与协议字段保留）
+    expect(QUALITY_TIERS.high.hires).toBeUndefined();
     expect(Object.keys(QUALITY_TIERS)).toEqual(['fast', 'draft', 'normal', 'high']);
   });
 });
@@ -105,17 +107,24 @@ describe('ImageHost 配置', () => {
 describe('ImageHost.status', () => {
   beforeEach(() => { ImageHost.save({ enabled: true, base: 'http://h:1', token: 't' }); });
 
-  it('解析工作流信息（模型/风格说明/步数/尺寸）', async () => {
+  it('解析工作流信息（模型/风格说明/步数/尺寸）+ 主机能力 caps', async () => {
     fakeFetch((url, opt) => {
       expect(url).toBe('http://h:1/api/comfy/status');
       expect((opt.headers || {}).Authorization).toBe('Bearer t');
-      return jsonRes({ ok: true, version: '0.38.2', workflow: { model: 'miaomiao.safetensors', hint: 'tag 风格', steps: 12, size: '896x1344' } });
+      return jsonRes({ ok: true, version: '0.38.2', caps: ['img2img', 'hires'], workflow: { model: 'miaomiao.safetensors', hint: 'tag 风格', steps: 12, size: '896x1344' } });
     });
     const st = await ImageHost.status();
     expect(st.ok).toBe(true);
     expect(st.model).toBe('miaomiao.safetensors');
     expect(st.hint).toBe('tag 风格');
     expect(st.steps).toBe(12);
+    expect(st.caps).toEqual(['img2img', 'hires']);
+  });
+
+  it('老主机不带 caps → 空数组（调用方据此不给改图参数）', async () => {
+    fakeFetch(() => jsonRes({ ok: true, workflow: { model: 'm' } }));
+    const st = await ImageHost.status();
+    expect(st.caps).toEqual([]);
   });
 
   it('401 报"配对 token 不对"，连不上报超时/网络错误', async () => {
@@ -155,6 +164,23 @@ describe('ImageHost.draw / waitJob', () => {
     expect(w.ok).toBe(true);
     expect(w.meta.size).toBe('768x768');
     expect(ticks.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('以图改图/两步重修字段照原样进请求体（initImage/denoise/hires）', async () => {
+    let body: any = null;
+    fakeFetch((url, opt) => { body = JSON.parse(opt.body); return jsonRes({ jobId: 'j9' }); });
+    const d = await ImageHost.draw({ prompt: 'p', width: 1024, height: 1024, steps: 36, initImage: 'data:image/png;base64,AAA', denoise: 0.35, hires: true });
+    expect(d).toEqual({ ok: true, jobId: 'j9' });
+    expect(body.initImage).toBe('data:image/png;base64,AAA');
+    expect(body.denoise).toBe(0.35);
+    expect(body.hires).toBe(true);
+    expect(body.width).toBe(1024);
+    // 不带底图时不该塞 initImage/denoise/hires（老主机也能吃）
+    body = null;
+    await ImageHost.draw({ prompt: 'p', width: 768, height: 768 });
+    expect(body.initImage).toBeUndefined();
+    expect(body.denoise).toBeUndefined();
+    expect(body.hires).toBeUndefined();
   });
 
   it('出图失败/超时都返回结构化错误', async () => {

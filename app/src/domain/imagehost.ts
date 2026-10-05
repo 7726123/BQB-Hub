@@ -1,12 +1,16 @@
 // 画图主机客户端：调用户局域网里的「画图主机」（本机 ComfyUI 的包装服务）。
 // 协议（与 imgtest/serve.mjs 完全一致，将来换成正式 host agent 也不用改这里）：
-//   GET  /api/comfy/status               → { ok, version, device, workflow:{ model, hint, steps, size } }
-//   POST /api/comfy/draw                 → { jobId }        body: { prompt, width?, height?, steps?, seed? }
+//   GET  /api/comfy/status               → { ok, version, device, caps?, workflow:{ model, hint, steps, size } }
+//   POST /api/comfy/draw                 → { jobId }   body: { prompt, width?, height?, steps?, seed?,
+//                                                                  initImage?, denoise?, hires? }
 //   GET  /api/comfy/jobs/{id}            → { status: running|done|failed, elapsed, seed, size, error? }
 //   GET  /api/comfy/jobs/{id}/image      → PNG 字节
 //
+// caps（主机能力，2026-10-06 加）：'img2img' = 支持以图改图（initImage+denoise）；'hires' = 支持两步放大重修。
+//   老主机不带 caps → 不给「以图改图」参数（会明确报错），hires 也只是退回单次直出。
+//
 // 约定（2026-10-05 定，实测于 RTX 4060 Laptop 8G + miaomiaoRealskin_anima13）：
-//   · 头像固定 768×768（1:1）；cfg/步数/精度由主机侧工作流决定（当前 12 步 / cfg 1.0 / fp8 ≈10s）；
+//   · 头像固定 768×768（1:1）；cfg/步数/精度由主机侧工作流决定（当前 36 步 / cfg 1.0 / fp8）；
 //   · 入库头像压 512（长边）；原图只在本会话内存里留句柄，不进存储；
 //   · 主机可能离线（用户没开 ComfyUI / 没开电脑）——所有函数返回结构化结果，绝不抛。
 import { SM } from '../infra/gate';
@@ -26,11 +30,13 @@ export const HIGH_SIZE = 1024;    // 更精细档：1024 / 36 步
 export const HIGH_STEPS = 36;
 
 // 质量档位：工具参数 quality → 尺寸/步数（单一事实来源；steps 缺省表示交给工作流自己的步数）
-//   fast   512/12  用户说"快一点"          约 5~8 秒
-//   draft  512/20  一次出 2~3 张挑构图     约 8~10 秒
-//   normal 768/工作流 28 步（默认头像）    约 14 秒
-//   high   1024/36 用户说"更精细/更大"     约 30 秒
-export const QUALITY_TIERS: Record<string, { size: number; steps?: number; label: string }> = {
+//   fast   512/12            用户说"快一点"          约 5~8 秒
+//   draft  512/20            一次出 2~3 张挑构图     约 8~10 秒
+//   normal 768/工作流 28 步（默认头像）              约 14 秒
+//   high   1024/36           用户说"更精细/更大"     约 30 秒
+// 注：hires（768 起稿 → 放大 → 低强度重画）2026-10-06 实测在这套模型/显卡上是 88 秒 vs 直出 30 秒、
+// 观感也没有更好（还偏软），所以**档位不用它**；主机能力（caps:hires）与协议字段都保留，方便以后换参数再试。
+export const QUALITY_TIERS: Record<string, { size: number; steps?: number; hires?: boolean; label: string }> = {
   fast: { size: FAST_SIZE, steps: FAST_STEPS, label: '快' },
   draft: { size: DRAFT_SIZE, steps: DRAFT_STEPS, label: '草稿' },
   normal: { size: AVATAR_SIZE, steps: undefined, label: '标准' },
@@ -121,12 +127,15 @@ export const ImageHost = {
     const wf = d.workflow || {};
     return {
       ok: !!d.ok, version: d.version || '', device: d.device || '',
+      // 主机能力（老主机不带 → 空数组：不给"以图改图"参数、hires 退回单次直出）
+      caps: Array.isArray(d.caps) ? d.caps.map((x: any) => String(x)) : [],
       model: wf.model || '', hint: wf.hint || '', steps: wf.steps, size: wf.size,
       error: d.ok ? '' : (d.error || '画图主机返回异常')
     };
   },
 
-  async draw(opts: { prompt: string; width?: number; height?: number; steps?: number; seed?: number }, signal?: AbortSignal): Promise<any> {
+  /** 提交一次出图。initImage(底图 dataURL)+denoise=以图改图；hires=两步放大重修。 */
+  async draw(opts: { prompt: string; width?: number; height?: number; steps?: number; seed?: number; initImage?: string; denoise?: number; hires?: boolean }, signal?: AbortSignal): Promise<any> {
     const c = this.config();
     if (!c.base) return { ok: false, error: '未配置画图主机地址' };
     const prompt = String(opts.prompt || '').trim();
@@ -136,7 +145,12 @@ export const ImageHost = {
     if (opts.height) body.height = opts.height;
     if (opts.steps) body.steps = opts.steps;
     if (opts.seed !== undefined && opts.seed !== null && String(opts.seed) !== '') body.seed = opts.seed;
-    const r = await _fetchJson(c.base + '/api/comfy/draw', { method: 'POST', headers: _headers(c, true), body: JSON.stringify(body) }, 15000, signal);
+    if (opts.initImage) {
+      body.initImage = String(opts.initImage);
+      if (opts.denoise != null) body.denoise = Number(opts.denoise);
+    }
+    if (opts.hires) body.hires = true;
+    const r = await _fetchJson(c.base + '/api/comfy/draw', { method: 'POST', headers: _headers(c, true), body: JSON.stringify(body) }, 60000, signal);
     if (!r.ok) return { ok: false, error: r.error || '提交失败' };
     const jobId = String((r.data && r.data.jobId) || '');
     return jobId ? { ok: true, jobId: jobId } : { ok: false, error: '画图主机没有返回任务号' };

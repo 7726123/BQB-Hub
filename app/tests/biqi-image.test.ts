@@ -15,7 +15,7 @@ const SM = () => (globalThis as unknown as { StorageManager: { get: (k: string, 
 const ih = vi.hoisted(() => ({
   ready: true,
   statusCalls: 0,
-  statusResult: { ok: true, model: 'miaomiaoRealskin_anima13.safetensors', hint: 'tag 风格，用 danbooru tag' } as any,
+  statusResult: { ok: true, model: 'miaomiaoRealskin_anima13.safetensors', hint: 'tag 风格，用 danbooru tag', caps: ['img2img', 'hires'] } as any,
   drawCalls: [] as any[],
   drawResult: { ok: true, jobId: 'job1' } as any,
   waitResult: { ok: true, meta: { status: 'done', seed: 7, size: '768x768', elapsed: 9000 } } as any,
@@ -74,7 +74,7 @@ beforeEach(() => {
   seedBook();
   PluginManager.setEnabled('biqi', true);
   ih.ready = true; ih.statusCalls = 0;
-  ih.statusResult = { ok: true, model: 'miaomiaoRealskin_anima13.safetensors', hint: 'tag 风格，用 danbooru tag' };
+  ih.statusResult = { ok: true, model: 'miaomiaoRealskin_anima13.safetensors', hint: 'tag 风格，用 danbooru tag', caps: ['img2img', 'hires'] };
   ih.drawCalls = []; ih.drawResult = { ok: true, jobId: 'job1' };
   ih.waitResult = { ok: true, meta: { status: 'done', seed: 7, size: '768x768', elapsed: 9000 } };
   ih.image = 'data:image/png;base64,AAA';
@@ -109,14 +109,24 @@ describe('比奇生图：门控与规则文案', () => {
     expect(toolNames()).toContain('read_worldbook');   // 原有工具不受影响
 
     BiqiAgent._drawToolsOn = true;
-    BiqiAgent._hostStatus = { at: Date.now(), ok: true, model: 'miaomiaoRealskin_anima13.safetensors', hint: 'tag 风格，用 danbooru tag' };
+    BiqiAgent._hostStatus = { at: Date.now(), ok: true, model: 'miaomiaoRealskin_anima13.safetensors', hint: 'tag 风格，用 danbooru tag', caps: ['img2img', 'hires'] };
     const d = drawTool();
     expect(d).toBeTruthy();
     expect(String(d.function.description)).toContain('miaomiaoRealskin_anima13');
     expect(String(d.function.description)).toContain('danbooru tag');
     expect(String(d.function.description)).toContain('直接调用');
     expect(String(d.function.description)).toContain('不要再问');
+    expect(String(d.function.description)).toContain('base_image');   // 主机支持改图
     expect(d.function.parameters.required).toEqual(['prompt']);
+    expect(Object.keys(d.function.parameters.properties)).toContain('strength');
+  });
+
+  it('老主机（无 caps）：不给 base_image/strength，规则也不提"改图"参数', () => {
+    BiqiAgent._drawToolsOn = true;
+    BiqiAgent._hostStatus = { at: Date.now(), ok: true, model: 'm', hint: '', caps: [] };
+    const props = Object.keys(drawTool().function.parameters.properties);
+    expect(props).not.toContain('base_image');
+    expect(props).not.toContain('strength');
   });
 
   it('_imageRuleMessage：在线=让画就直接画、不反问；离线=明确"没有画图能力"、不许提议', () => {
@@ -217,13 +227,40 @@ describe('比奇生图：draw_image 执行', () => {
     expect((BiqiAgent.messages[0] as any).imageIds).toBeUndefined();
   });
 
-  it('_stepLine：成功一行（尺寸/秒/id）、失败一行（原因截断）', async () => {
+  it('以图改图：作者指名图号（base_image="图1"）→ 带 initImage+denoise；步骤行写"改图"', async () => {
+    BiqiAgent.messages = [{ role: 'assistant', content: '' }];
+    BiqiAgent._genImages.set('img1', { full: 'data:image/png;base64,SRC', thumb: 'data:image/png;base64,T', seed: 1, size: '768x768', seconds: 9 });
+    BiqiAgent._imgSeq = 1;   // 下一张是 img2
+    const out = await BiqiAgent._executeTool({ id: 'c1', name: 'draw_image', arguments: { prompt: 'snow, winter', base_image: '图1', strength: 'strong' } } as any);
+    const j = JSON.parse(out);
+    expect(j.ok).toBe(true);
+    expect(j.base).toBe('图1');
+    expect(j.image_label).toBe('图2');
+    expect(ih.drawCalls[0].initImage).toBe('data:image/png;base64,SRC');
+    expect(ih.drawCalls[0].denoise).toBe(0.75);          // strong
+    expect(BiqiAgent._stepLine({ id: 'c1', name: 'draw_image' } as any, out)).toContain('🎨 改图');
+  });
+
+  it('精细档：1024/36 单次直出（hires 不下发）；底图过期给出人话解释', async () => {
+    BiqiAgent.messages = [{ role: 'assistant', content: '' }];
+    ih.drawCalls = [];
+    await BiqiAgent._executeTool({ id: 'c1', name: 'draw_image', arguments: { prompt: 'x', quality: 'high' } } as any);
+    expect(ih.drawCalls[0].width).toBe(1024);
+    expect(ih.drawCalls[0].hires).toBeUndefined();
+    ih.drawCalls = [];
+    const bad = JSON.parse(await BiqiAgent._executeTool({ id: 'c2', name: 'draw_image', arguments: { prompt: 'x', base_image: '图9' } } as any));
+    expect(bad.ok).toBe(false);
+    expect(bad.error).toContain('只在本会话内存');
+    expect(ih.drawCalls.length).toBe(0);
+  });
+
+  it('_stepLine：成功一行（尺寸/秒/图号）、失败一行（原因截断）', async () => {
     BiqiAgent.messages = [{ role: 'assistant', content: '' }];
     const out = await BiqiAgent._executeTool({ id: 'c1', name: 'draw_image', arguments: { prompt: 'x' } } as any);
     const line = BiqiAgent._stepLine({ id: 'c1', name: 'draw_image' } as any, out);
     expect(line).toContain('🎨 出图');
     expect(line).toContain('768x768');
-    expect(line).toContain('img1');
+    expect(line).toContain('图1');            // 步骤行用界面编号（与气泡上的「图1」一致）
 
     ih.waitResult = { ok: false, error: '出图失败' };
     const bad = await BiqiAgent._executeTool({ id: 'c2', name: 'draw_image', arguments: { prompt: 'x' } } as any);

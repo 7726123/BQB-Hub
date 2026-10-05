@@ -11,6 +11,7 @@ import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
 import android.provider.MediaStore;
+import android.util.Base64;
 import android.webkit.JavascriptInterface;
 import androidx.core.content.FileProvider;
 import org.json.JSONObject;
@@ -135,35 +136,7 @@ public class HttpBridge {
             if (safeName.isEmpty()) safeName = "share.json";
             String mime = (mimeType == null || mimeType.isEmpty()) ? "text/plain" : mimeType;
             byte[] data = content.getBytes("UTF-8");
-
-            File dir = context.getCacheDir();
-            if (!dir.exists() && !dir.mkdirs()) throw new IOException("mkdir failed");
-            File file = new File(dir, safeName);
-            FileOutputStream fos = new FileOutputStream(file);
-            fos.write(data);
-            fos.flush();
-            fos.close();
-
-            final Uri uri = FileProvider.getUriForFile(context, context.getPackageName() + ".fileprovider", file);
-            final String shareMime = mime;
-            final Intent inner = new Intent(Intent.ACTION_SEND);
-            inner.setType(shareMime);
-            inner.putExtra(Intent.EXTRA_STREAM, uri);
-            inner.setClipData(ClipData.newRawUri(null, uri));
-            inner.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
-
-            // @JavascriptInterface 跑在后台线程，startActivity 必须在主线程
-            Handler main = new Handler(Looper.getMainLooper());
-            main.post(new Runnable() {
-                @Override public void run() {
-                    try {
-                        Intent chooser = Intent.createChooser(inner, "分享到");
-                        chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                        context.startActivity(chooser);
-                    } catch (Exception e) { /* 无可用分享目标时静默 */ }
-                }
-            });
-            return new JSONObject().put("ok", true).toString();
+            return shareBytes(safeName, data, mime);
         } catch (Exception e) {
             try {
                 return new JSONObject().put("ok", false).put("error", String.valueOf(e.getMessage())).toString();
@@ -171,5 +144,114 @@ public class HttpBridge {
                 return "{\"ok\":false,\"error\":\"unknown\"}";
             }
         }
+    }
+
+    /* ── 图片（base64）存本地 / 分享 —— 2026-10-06 加。saveFile/shareFile 只写 UTF-8 文本，
+          拿它们存 PNG 会存出一个坏文件，所以图片走下面两个方法（先 base64 解码再写字节）。 ── */
+
+    /** 拆 data URL（`data:image/png;base64,AAAA` 或裸 base64）→ 字节。 */
+    private static byte[] decodeBase64Image(String content) {
+        String s = content == null ? "" : content;
+        int comma = s.indexOf(',');
+        if (s.startsWith("data:") && comma > 0) s = s.substring(comma + 1);
+        s = s.replaceAll("\\s", "");
+        if (s.isEmpty()) throw new IllegalArgumentException("base64 内容为空");
+        return Base64.decode(s, Base64.DEFAULT);
+    }
+
+    /** 存图片：Android 10+ 进系统相册（MediaStore.Images → Pictures/BQB Hub，免权限）；旧系统写应用专属目录。 */
+    @JavascriptInterface
+    public String saveFileBase64(String filename, String base64, String mimeType) {
+        try {
+            String safeName = filename == null ? "" : filename.replaceAll("[\\\\/:*?\"<>|]", "_");
+            if (safeName.isEmpty()) safeName = "BQB_image.png";
+            String mime = (mimeType == null || mimeType.isEmpty()) ? "image/png" : mimeType;
+            byte[] data = decodeBase64Image(base64);
+            boolean image = mime.startsWith("image/");
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                ContentValues values = new ContentValues();
+                values.put(MediaStore.MediaColumns.DISPLAY_NAME, safeName);
+                values.put(MediaStore.MediaColumns.MIME_TYPE, mime);
+                values.put(MediaStore.MediaColumns.RELATIVE_PATH, image ? (Environment.DIRECTORY_PICTURES + "/BQB Hub") : Environment.DIRECTORY_DOWNLOADS);
+                values.put(MediaStore.MediaColumns.IS_PENDING, 1);
+                ContentResolver resolver = context.getContentResolver();
+                Uri uri = resolver.insert(image ? MediaStore.Images.Media.EXTERNAL_CONTENT_URI : MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
+                if (uri == null) throw new IOException("MediaStore insert failed");
+                OutputStream os = resolver.openOutputStream(uri);
+                os.write(data);
+                os.flush();
+                os.close();
+                values.clear();
+                values.put(MediaStore.MediaColumns.IS_PENDING, 0);
+                resolver.update(uri, values, null, null);
+                return new JSONObject().put("ok", true)
+                        .put("path", image ? ("相册/BQB Hub/" + safeName) : ("下载/" + safeName)).toString();
+            }
+            File dir = context.getExternalFilesDir(image ? Environment.DIRECTORY_PICTURES : Environment.DIRECTORY_DOWNLOADS);
+            if (dir == null) dir = new File(context.getFilesDir(), image ? "pictures" : "downloads");
+            if (!dir.exists() && !dir.mkdirs()) throw new IOException("mkdir failed");
+            File f = new File(dir, safeName);
+            FileOutputStream fos = new FileOutputStream(f);
+            fos.write(data);
+            fos.flush();
+            fos.close();
+            return new JSONObject().put("ok", true).put("path", f.getAbsolutePath()).toString();
+        } catch (Exception e) {
+            try {
+                return new JSONObject().put("ok", false).put("error", String.valueOf(e.getMessage())).toString();
+            } catch (Exception ex) {
+                return "{\"ok\":false,\"error\":\"unknown\"}";
+            }
+        }
+    }
+
+    /** 分享图片（微信/QQ/…）：字节落缓存目录再走 ACTION_SEND。 */
+    @JavascriptInterface
+    public String shareFileBase64(String filename, String base64, String mimeType) {
+        try {
+            String safeName = filename == null ? "" : filename.replaceAll("[\\\\/:*?\"<>|]", "_");
+            if (safeName.isEmpty()) safeName = "BQB_image.png";
+            String mime = (mimeType == null || mimeType.isEmpty()) ? "image/png" : mimeType;
+            return shareBytes(safeName, decodeBase64Image(base64), mime);
+        } catch (Exception e) {
+            try {
+                return new JSONObject().put("ok", false).put("error", String.valueOf(e.getMessage())).toString();
+            } catch (Exception ex) {
+                return "{\"ok\":false,\"error\":\"unknown\"}";
+            }
+        }
+    }
+
+    /** 字节写进缓存目录并弹分享面板（shareFile / shareFileBase64 共用）。 */
+    private String shareBytes(String safeName, byte[] data, String mime) throws Exception {
+        File dir = context.getCacheDir();
+        if (!dir.exists() && !dir.mkdirs()) throw new IOException("mkdir failed");
+        File file = new File(dir, safeName);
+        FileOutputStream fos = new FileOutputStream(file);
+        fos.write(data);
+        fos.flush();
+        fos.close();
+
+        final Uri uri = FileProvider.getUriForFile(context, context.getPackageName() + ".fileprovider", file);
+        final String shareMime = mime;
+        final Intent inner = new Intent(Intent.ACTION_SEND);
+        inner.setType(shareMime);
+        inner.putExtra(Intent.EXTRA_STREAM, uri);
+        inner.setClipData(ClipData.newRawUri(null, uri));
+        inner.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+
+        // @JavascriptInterface 跑在后台线程，startActivity 必须在主线程
+        Handler main = new Handler(Looper.getMainLooper());
+        main.post(new Runnable() {
+            @Override public void run() {
+                try {
+                    Intent chooser = Intent.createChooser(inner, "分享到");
+                    chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                    context.startActivity(chooser);
+                } catch (Exception e) { /* 无可用分享目标时静默 */ }
+            }
+        });
+        return new JSONObject().put("ok", true).toString();
     }
 }
