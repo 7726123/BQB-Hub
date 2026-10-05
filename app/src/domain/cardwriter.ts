@@ -5,7 +5,8 @@ import { CharacterManager } from './character';
 import { SettingSyncManager } from './settingsync';
 import { selectedRawText, rawOffsetOf, nodeAtRawOffset, roundIndexOf, collectRoundDeletes } from '../lib/msgslice';
 import { renderMdStrong } from '../lib/mdtext';
-import { ImageHost, QUALITY_TIERS, AVATAR_STORE_SIZE } from './imagehost';
+import { ImageHost, AVATAR_STORE_SIZE } from './imagehost';
+import { probeHost, drawImageToStore, genImagesHtml, type HostStatusCache } from './imagedraw';
 import { resizeDataUrlLongSide } from '../lib/imagedata';
 
 // 安全提示：本模块在 app.js 之前加载，加载期（init/_load）触发的兜底提示不能依赖
@@ -109,7 +110,7 @@ const CardWriterChat: CardWriterChatShape = {
   _drawCancelled: false, // 用户点了「暂停」：中断出图轮询
   _drawAbort: null as any, // 当前出图请求的 AbortController（停止时 abort）
   _drawToolsOn: false, // 本轮是否给 draw_image/set_avatar（= 主机已启用且在线的探测结果）
-  _hostStatus: { at: 0, ok: false, model: '', hint: '' }, // 画图主机状态缓存（60 秒）
+  _hostStatus: { at: 0, ok: false, model: '', hint: '' } as HostStatusCache, // 画图主机状态缓存（60 秒）
 
   // 文本选择（长按气泡选中整条 → 浮条 复制/删除/多选）
   _selIdx: -1, // 当前选中的消息下标（-1 = 无）
@@ -1104,17 +1105,12 @@ const CardWriterChat: CardWriterChatShape = {
     };
   },
 
-  // 画图主机状态探测（60 秒缓存）：_callAPI 每轮开头调一次，结果决定 _drawToolsOn（给不给工具、注不注入规则）
+  // 画图主机状态探测（60 秒缓存，见 imagedraw.ts）：_callAPI 每轮开头调一次，
+  // 结果决定 _drawToolsOn（给不给工具、注不注入规则）。
+  // 未配置（绝大多数用户）在这里就返回：不动 probeHost，保持 _callAPI 进入前的调用时序不变。
   async _refreshHostStatus() {
-    try {
-      if (!ImageHost.ready()) { this._drawToolsOn = false; return; }
-      const now = Date.now();
-      const cached: any = this._hostStatus || { at: 0, ok: false, model: '', hint: '' };
-      if (now - (cached.at || 0) < 60000) { this._drawToolsOn = !!cached.ok; return; }
-      const st = await ImageHost.status(1500);
-      this._hostStatus = { at: now, ok: !!st.ok, model: st.model || '', hint: st.hint || '' };
-      this._drawToolsOn = !!st.ok;
-    } catch (e) { this._drawToolsOn = false; }
+    if (!ImageHost.ready()) { this._drawToolsOn = false; return; }
+    this._drawToolsOn = await probeHost(this._hostStatus);
   },
 
   // 图片类工具（异步，见 _handleTools 的 await 分支）：draw 有 10 秒级网络等待，set_avatar 要压图
@@ -1130,75 +1126,44 @@ const CardWriterChat: CardWriterChatShape = {
   },
 
   async _toolDrawImage(a: any) {
-    if (!ImageHost.ready()) {
-      return { ok: false, message: '失败：画图主机未配置或未启用。请告诉用户去「设置 → AI 与生成 → 画图主机」填地址和 token；本轮改用文字说明。' };
-    }
-    const prompt = String((a && a.prompt) || '').trim();
-    if (!prompt) return { ok: false, message: '工具调用参数无效：prompt 不能为空' };
-    const st = await ImageHost.status(2000);
-    this._hostStatus = { at: Date.now(), ok: !!st.ok, model: st.model || '', hint: st.hint || '' };
-    if (!st.ok) {
-      return { ok: false, message: '失败：画图主机离线（' + (st.error || '') + '）。请告诉用户检查电脑上的 ComfyUI 和画图主机是否在运行，不要重试。' };
-    }
-    // 质量档位 → 尺寸/步数（见 imagehost.ts 的 QUALITY_TIERS）；旧参数 draft:true 仍然兼容
-    const tierKey = String((a && (a.quality || (a.draft ? 'draft' : 'normal'))) || 'normal').toLowerCase();
-    const tier = QUALITY_TIERS[tierKey] || QUALITY_TIERS.normal;
-    const size = tier.size;
-    const seed = (a && a.seed !== undefined && a.seed !== null && String(a.seed) !== '') ? Math.floor(Number(a.seed)) : undefined;
     this._drawCancelled = false;
     this._drawAbort = (typeof AbortController !== 'undefined') ? new AbortController() : null;
     const signal = this._drawAbort ? this._drawAbort.signal : undefined;
-    const t0 = Date.now();
+    let out: any;
     try {
-      const d = await ImageHost.draw({ prompt: prompt, width: size, height: size, seed: seed, steps: tier.steps }, signal);
-      if (!d.ok) {
-        return { ok: false, message: '失败：' + (d.error || '提交失败') + '（检查画图主机上的 ComfyUI 是否在运行）' };
-      }
-      let lastPaint = 0;
-      const w = await ImageHost.waitJob(d.jobId, {
+      out = await drawImageToStore({
+        prompt: String((a && a.prompt) || ''),
+        quality: a && a.quality,
+        legacyDraft: !!(a && a.draft),
+        seed: a && a.seed,
+        store: this._genImages,
+        nextId: () => 'img' + (++this._imgSeq),
         signal: signal,
-        timeoutMs: 180000,
-        onTick: (j: any) => {
-          const now = Date.now();
-          if (now - lastPaint > 1000) {
-            lastPaint = now;
-            this._statusText = '正在出图…';
-            this.renderMessages(true);
+        onTick: () => { this._statusText = '正在出图…'; this.renderMessages(true); },
+        shouldCancel: () => this._drawCancelled,
+        // 挂到最后一条 assistant 消息（此刻它就是本轮的流式占位气泡）→ renderMessages 渲染缩略图
+        onImage: (id: string) => {
+          const last: any = this.messages[this.messages.length - 1];
+          if (last && last.role === 'assistant') {
+            last.imageIds = (last.imageIds || []).concat([id]);
+            this._save();
           }
+          this.renderMessages(true);
         }
       });
-      if (this._drawCancelled || (signal && signal.aborted)) return { ok: false, message: '失败：用户已停止本轮，出图已中断' };
-      if (!w.ok) return { ok: false, message: '失败：' + (w.error || '出图失败') };
-      const full = await ImageHost.imageDataUrl(d.jobId, signal);
-      if (!full) return { ok: false, message: '失败：取图失败（画图主机没有返回图片字节）' };
-      const thumb = (await resizeDataUrlLongSide(full, 420, 0.85)) || full;
-      const id = 'img' + (++this._imgSeq);
-      const seconds = Math.round((Date.now() - t0) / 100) / 10;
-      this._genImages.set(id, {
-        full: full, thumb: thumb, seed: (w.meta && w.meta.seed), size: (w.meta && w.meta.size) || (size + 'x' + size),
-        seconds: seconds, prompt: prompt
-      });
-      while (this._genImages.size > 12) {
-        const k = this._genImages.keys().next().value as string;
-        this._genImages.delete(k);
-      }
-      // 挂到最后一条 assistant 消息（此刻它就是本轮的流式占位气泡）→ renderMessages 渲染缩略图
-      const last: any = this.messages[this.messages.length - 1];
-      if (last && last.role === 'assistant') {
-        last.imageIds = (last.imageIds || []).concat([id]);
-        this._save();
-      }
-      this.renderMessages(true);
-      return {
-        ok: true,
-        message: '图片已生成并显示给用户（图片 id：' + id + '，' + tier.label + '档 ' + size + '×' + size
-          + (tier.steps ? ('/' + tier.steps + ' 步') : '') + '，seed '
-          + ((w.meta && w.meta.seed) == null ? '?' : w.meta.seed) + '，耗时 ' + seconds + ' 秒）。'
-          + '请用中文简短说明这张图，并问用户要不要把它设为某个角色的头像（得到明确同意后再调用 set_avatar）。'
-      };
     } finally {
       this._drawAbort = null;
     }
+    if (out.host) this._hostStatus = { at: Date.now(), ok: !!out.host.ok, model: out.host.model || '', hint: out.host.hint || '' };
+    if (!out.ok) return { ok: false, message: out.error };
+    const tier: any = out.tier;
+    return {
+      ok: true,
+      message: '图片已生成并显示给用户（图片 id：' + out.id + '，' + tier.label + '档 ' + tier.size + '×' + tier.size
+        + (tier.steps ? ('/' + tier.steps + ' 步') : '') + '，seed ' + (out.seed == null ? '?' : out.seed)
+        + '，耗时 ' + out.seconds + ' 秒）。'
+        + '请用中文简短说明这张图，并问用户要不要把它设为某个角色的头像（得到明确同意后再调用 set_avatar）。'
+    };
   },
 
   async _toolSetAvatar(a: any) {
@@ -1598,22 +1563,8 @@ const CardWriterChat: CardWriterChatShape = {
   },
 
   // 生成的图片缩略图（消息里只存 imageIds；图片数据只在本会话内存里，重载后显示占位）。
-  // 点缩略图 → UIManager.viewAvatar 全屏看原图（dataURL 直接当 src 用）。
   _imagesHtml(m: any) {
-    const ids = (m && m.imageIds) ? m.imageIds : null;
-    if (!ids || !ids.length) return '';
-    const cells: string[] = [];
-    const metas: string[] = [];
-    for (const gid of ids) {
-      const g = this._genImages.get(gid);
-      const src = g ? String(g.thumb || g.full || '').replace(/"/g, '&quot;') : '';
-      if (!src) { cells.push('<div class="cw-img-expired">图片已过期<br>（需要时重新生成）</div>'); continue; }
-      cells.push('<img src="' + src + '" title="点击看大图" onclick="UIManager.viewAvatar(this.src)">');
-      metas.push(String(g.size || '') + ' · seed ' + ((g.seed == null) ? '?' : g.seed) + ' · ' + g.seconds + 's');
-    }
-    if (!cells.length) return '';
-    return '<div class="cw-imgs">' + cells.join('') + '</div>' +
-      (metas.length ? '<div class="cw-img-meta">' + metas.join('　') + '</div>' : '');
+    return genImagesHtml(this._genImages, m);
   },
 
   renderMessages(isStreaming: any) {

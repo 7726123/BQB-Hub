@@ -4,13 +4,16 @@
 //      可增/改/删临时世界书条目——立即生效，原书零触碰。
 // 落盘路径：改动包成 DeltaOp 交给 SettingSyncManager.applyApproved（同一套语义：改名并入、
 //      add 命中已有条目转更新、删原书条目走软删除），因此自带快照，可直接用「回滚上一批」撤回。
+// 生图：主机（用户电脑上的 ComfyUI，协议见 domain/imagehost.ts）在线时给 draw_image 工具，
+//      交互策略与写卡 Agent 不同——作者明确让画就直接画，不反问（用户 2026-10-05 定的）。
 import { SM } from '../infra/gate';
 import { PluginManager } from './plugins';
 import { SettingSyncManager } from './settingsync';
 import { WorldBookManager } from './worldbook';
 import { renderMdStrong } from '../lib/mdtext';
+import { probeHost, drawImageToStore, genImagesHtml, type HostStatusCache } from './imagedraw';
 
-export interface BiqiMessage { role: 'user' | 'assistant'; content: string; _steps?: string[] }
+export interface BiqiMessage { role: 'user' | 'assistant'; content: string; _steps?: string[]; imageIds?: string[] }
 
 export const BIQI_SYSTEM =
   '你是「比奇」，这本书的设定管家。作者会和你讨论剧情接下来怎么走，你负责据此维护**临时世界书**。\n' +
@@ -89,6 +92,14 @@ export const BiqiAgent: {
   _tools(): unknown[];
   _executeTool(t: ToolCall): Promise<string>;
   _stepLine(t: ToolCall, out: string): string;
+  _imageToolDraw(): unknown;
+  _imageRuleMessage(): string;
+  _refreshHostStatus(): Promise<void>;
+  _toolDrawImage(a: any): Promise<string>;
+  _genImages: Map<string, any>;
+  _imgSeq: number;
+  _drawToolsOn: boolean;
+  _hostStatus: HostStatusCache;
   _applyOp(op: 'add' | 'mod' | 'del', target: string, content: string, reason: string, type?: string): { ok: boolean; text: string };
   readWorldbook(): string;
   readStory(): string;
@@ -101,6 +112,12 @@ export const BiqiAgent: {
   _open: false,
   _mode: 'novel' as 'novel' | 'chat',   // 小说模式 / 对话模式各一份会话与临时世界书
   _loadedKey: '',   // 当前内存里的对话属于哪本书的存档键（换书时据此切会话）
+  // 画图主机（本地 ComfyUI）：本会话生成的图片句柄。消息里只存 imageIds，不存图
+  // （768² 的 PNG base64 约 1MB，进消息会把存储撑爆）；重载后句柄失效 → 渲染成「已过期」占位。
+  _genImages: new Map<string, any>(), // id -> { full, thumb, seed, size, seconds, prompt }
+  _imgSeq: 0,
+  _drawToolsOn: false, // 本轮是否给 draw_image（= 主机已启用且在线的探测结果）
+  _hostStatus: { at: 0, ok: false, model: '', hint: '' } as HostStatusCache, // 画图主机状态缓存（60 秒）
   _ratio: BIQI_DEFAULT_RATIO,
   _snapped: false,
   _kbOpen: false,
@@ -314,6 +331,7 @@ export const BiqiAgent: {
   clear(): void {
     this.messages = [];
     this._steps = [];
+    this._genImages.clear();   // 对话没了，句柄也一起放掉（原图只在本会话内存里）
     try { SM().set(this._historyKey(), []); } catch (e) { /* ignore */ }
     this.renderMessages();
   },
@@ -322,7 +340,7 @@ export const BiqiAgent: {
     const box = document.getElementById('biqiMessages');
     if (!box) return;
     if (!this.messages.length) {
-      box.innerHTML = '<div class="chat-empty">我是比奇，这本书的设定管家<br>聊聊接下来剧情该怎么走，或者让我把某段设定改掉；<br>改动只落在临时世界书，原书不动。</div>';
+      box.innerHTML = '<div class="chat-empty">我是比奇，这本书的设定管家<br>聊聊接下来剧情该怎么走，或者让我把某段设定改掉；<br>改动只落在临时世界书，原书不动。<br>配好画图主机后，也可以直接说「画一张…」。</div>';
       return;
     }
     const self = this;
@@ -330,13 +348,14 @@ export const BiqiAgent: {
       const cls = m.role === 'user' ? 'chat-msg user' : 'chat-msg assistant';
       const thinking = self._isSending && i === self.messages.length - 1 && m.role === 'assistant';
       const raw = String(m.content || '');
+      const imgHtml = genImagesHtml(self._genImages, m); // 生成的图片（有图就不算"空内容"，也不再压状态条）
       const stepsHtml = (m._steps && m._steps.length)
         ? '<div class="as-steps">' + m._steps.map(function (t) { return '<div>' + htmlEscape(t) + '</div>'; }).join('') + '</div>'
         : '';
       const body = raw.trim()
         ? renderMdStrong(htmlEscape(raw)).replace(/\n/g, '<br>') + (thinking ? '<span class="as-caret"></span>' : '')
-        : (thinking ? '<div class="as-status"><span class="cw-spinner"></span>' + htmlEscape(self._status || '正在处理…') + '</div>' : '');
-      return '<div class="' + cls + '">' + body + stepsHtml + '</div>';
+        : ((thinking && !imgHtml) ? '<div class="as-status"><span class="cw-spinner"></span>' + htmlEscape(self._status || '正在处理…') + '</div>' : '');
+      return '<div class="' + cls + '">' + body + stepsHtml + imgHtml + '</div>';
     }).join('');
     this._scrollMessagesToBottom();
   },
@@ -370,9 +389,26 @@ export const BiqiAgent: {
   async _runLoop(_userText: string): Promise<void> {
     // 本轮属于哪个模式，就写哪个模式的临时世界书（overlay/待裁决表都带模式后缀）
     try { SettingSyncManager.setMode(this._mode); } catch (e) { /* ignore */ }
-    const msgs: any[] = [{ role: 'system', content: BIQI_SYSTEM }].concat(
-      this.messages.slice(-20).filter(m => String(m.content || '').trim()).map(m => ({ role: m.role, content: m.content }))
-    );
+    // 画图主机状态（60 秒缓存）：决定这轮给不给 draw_image、注入正向还是反向的生图规则
+    await this._refreshHostStatus();
+    // 历史里的图片：模型看不到图（对话只传文字），但要让它知道"上一轮出过图"——否则
+    // 「再画一张，和刚才同风格」这类话接不上。句柄只在本会话内存里，重载后退化成"已过期"。
+    const hist = this.messages.slice(-20).filter(m => String(m.content || '').trim()).map((m: any) => {
+      let text = String(m.content || '');
+      const ids: string[] = (m.imageIds && m.imageIds.length) ? m.imageIds : [];
+      if (ids.length) {
+        const info = ids.map((gid: string) => {
+          const gg = this._genImages.get(gid);
+          return gg ? (gid + '（' + gg.size + ' · seed ' + (gg.seed == null ? '?' : gg.seed) + '）') : (gid + '（已过期）');
+        }).join('、');
+        text += '\n（本轮出过图：' + info + '，图片只显示给作者、不随对话传给你）';
+      }
+      return { role: m.role, content: text };
+    });
+    const msgs: any[] = [
+      { role: 'system', content: BIQI_SYSTEM },
+      { role: 'system', content: this._imageRuleMessage() },
+    ].concat(hist);
     let finalText = '';
     let lastErr = '';
     const setStatus = (t: string) => { this._status = t; this.renderMessages(); };
@@ -406,6 +442,7 @@ export const BiqiAgent: {
           const t = r.tools[i];
           if (t.name === 'read_worldbook') setStatus('正在看世界书…');
           else if (t.name === 'read_story') setStatus('正在读最近正文…');
+          else if (t.name === 'draw_image') setStatus('正在出图…');
           else setStatus('正在修改临时世界书…');
           let out = '';
           try { out = await this._executeTool(t); } catch (e: any) { out = JSON.stringify({ ok: false, error: String((e && e.message) || e) }); }
@@ -455,7 +492,7 @@ export const BiqiAgent: {
   },
 
   _tools(): unknown[] {
-    return [
+    const base: unknown[] = [
       {
         type: 'function',
         function: {
@@ -521,12 +558,110 @@ export const BiqiAgent: {
         },
       },
     ];
+    // 画图工具只在「画图主机已启用且这一轮探测到在线」时提供；不给工具时规则也会切换成
+    // "你没有画图能力"（见 _imageRuleMessage），避免它嘴上提议"要不要我画一张"（用户看不到能点的东西）。
+    if (this._drawToolsOn) base.push(this._imageToolDraw());
+    return base;
+  },
+
+  // —— 生图（本机 ComfyUI，协议见 domain/imagedraw.ts / imagehost.ts）——
+  // 交互策略与写卡 Agent 相反：作者明确让画就直接画、不反问；只是讨论画面时先讨论。
+  _imageToolDraw(): unknown {
+    const st: any = this._hostStatus || {};
+    const model = st.model ? String(st.model) : '';
+    const hint = st.hint ? String(st.hint) : '';
+    return {
+      type: 'function',
+      function: {
+        name: 'draw_image',
+        description: '在作者电脑的「画图主机」（ComfyUI）上生成一张图，直接显示在对话里给作者看，约 10~30 秒。'
+          + (model ? ('当前画图模型：' + model + '。') : '')
+          + (hint ? ('画风与提示词要求：' + hint + ' ') : '')
+          + '**作者明确让你画时直接调用，不要再问"要不要画/可以吗"**；他只是讨论画面、还没让你画时先讨论，不要抢着画。'
+          + 'prompt 用英文；画什么以最近上下文为准（人物外观、当前场景、正在发生的事），拿不准时先 read_story / read_worldbook 看一眼。'
+          + '档位：不填=标准（768×768，约 14 秒）；作者说"快一点/先看看"用 quality:"fast"（512，约 5~8 秒）；'
+          + '一次出 2~3 张让他挑构图用 quality:"draft"（512×512/20 步，可连续调用几次）；说"更精细/更大"用 quality:"high"（1024，约 30 秒）。',
+        parameters: {
+          type: 'object',
+          properties: {
+            prompt: { type: 'string', description: '英文正向提示词（按上面的画风/提示词要求写）' },
+            seed: { type: 'integer', description: '可选：沿用上一张的 seed，可让同一人物/风格更接近（上一张的 seed 在历史里）' },
+            quality: {
+              type: 'string',
+              enum: ['fast', 'draft', 'normal', 'high'],
+              description: '画质档位：fast=最快（512×512/12 步，约 5~8 秒）；draft=草稿（512×512/20 步，用于挑构图）；normal=标准（768×768/28 步，默认）；high=更精细（1024×1024/36 步，约 30 秒）'
+            }
+          },
+          required: ['prompt']
+        }
+      }
+    };
+  },
+
+  // 生图规则文案（每轮注入一条独立 system 消息，与用户预设无关）：
+  //   · 主机在线：作者让画就直接画（不反问）；只讨论就先讨论。
+  //   · 主机没配/没开：反向规则——不给工具只能拦住"真去画"，拦不住它嘴上提议"要不要我画一张"，
+  //     用户看到这种提议只会白点一下，所以必须明确告诉模型"你没有画图能力"。
+  _imageRuleMessage(): string {
+    if (this._drawToolsOn) {
+      return '【生图（作者电脑上的画图主机）】你可以用 draw_image 出图，结果会直接显示在对话里（约 10~30 秒）：\n'
+        + '- 作者明确让你画（"画一张…""生图""来张图""就按这个画"）→ **直接调用 draw_image，不要再问"要不要画/可以吗"**，也不要只说"这就画"却不调用；\n'
+        + '- 他只是讨论画面、还没让你画时 → 正常讨论，别抢着画；讨论里他认可了，也一样直接画；\n'
+        + '- 提示词落在最近上下文里能确定的东西上（人物外观、当前场景、正在发生的事）；他没说的细节按上下文最合理的样子补，别自己另起一个故事；\n'
+        + '- 出图后用一两句中文说明画的是什么，问他要不要换一张或调整；失败（主机离线/超时）就如实说原因，不要重试超过一次，也不要假装画了。';
+    }
+    return '【生图】本轮你没有画图工具——作者还没配置画图主机，或者画图主机没在运行。因此：\n'
+      + '- **不要提议"要不要我画一张"**，不要说"我可以帮你出图/生成图片/配图"，也不要输出生图提示词；专注设定与剧情。\n'
+      + '- 只有当作者主动要求画图时，才说明：需要先在「设置 → AI 与生成 → 画图主机」填上电脑的地址和配对 token，并让电脑上的画图主机保持运行。';
+  },
+
+  // 画图主机状态探测（60 秒缓存，见 imagedraw.ts）：_runLoop 每轮开头调一次
+  async _refreshHostStatus(): Promise<void> {
+    this._drawToolsOn = await probeHost(this._hostStatus);
+  },
+
+  // 出一次图，返回给模型看的 JSON 文本（图片同步挂在最后一条 assistant 消息上）
+  async _toolDrawImage(a: any): Promise<string> {
+    try {
+      const out = await drawImageToStore({
+        prompt: String((a && a.prompt) || ''),
+        quality: a && a.quality,
+        legacyDraft: !!(a && a.draft),
+        seed: a && a.seed,
+        store: this._genImages,
+        nextId: () => 'img' + (++this._imgSeq),
+        onTick: () => { this._status = '正在出图…'; this.renderMessages(); },
+        onImage: (id: string) => {
+          const last: any = this.messages[this.messages.length - 1];
+          if (last && last.role === 'assistant') {
+            last.imageIds = (last.imageIds || []).concat([id]);
+            this._save();
+          }
+          this.renderMessages();
+        }
+      });
+      if (out.host) this._hostStatus = { at: Date.now(), ok: !!out.host.ok, model: out.host.model || '', hint: out.host.hint || '' };
+      if (!out.ok) return JSON.stringify({ ok: false, error: out.error });
+      const t: any = out.tier;
+      return JSON.stringify({
+        ok: true,
+        image_id: out.id,
+        size: out.size,
+        seed: (out.seed == null ? null : out.seed),
+        seconds: out.seconds,
+        message: '图片已生成并显示在对话里（' + out.id + '，' + t.label + '档，耗时 ' + out.seconds + ' 秒）。'
+          + '用一两句中文说明画面，并问作者要不要调整或换一张。'
+      });
+    } catch (e: any) {
+      return JSON.stringify({ ok: false, error: '失败：出图时出错（' + String((e && e.message) || e) + '）' });
+    }
   },
 
   async _executeTool(t: ToolCall): Promise<string> {
     const a = (t.arguments || {}) as Record<string, string>;
     if (t.name === 'read_worldbook') return this.readWorldbook();
     if (t.name === 'read_story') return this.readStory();
+    if (t.name === 'draw_image') return await this._toolDrawImage(a);
     if (t.name === 'add_entry' || t.name === 'update_entry' || t.name === 'delete_entry') {
       const name = String(a.name || '').trim();
       if (!name) return JSON.stringify({ ok: false, error: 'name 不能为空' });
@@ -551,6 +686,12 @@ export const BiqiAgent: {
       let n = 0;
       try { n = (JSON.parse(out).chars || 0); } catch (e) { /* ignore */ }
       return '📖 读最近正文 → ' + n + ' 字';
+    }
+    if (t.name === 'draw_image') {
+      let j: any = null;
+      try { j = JSON.parse(out); } catch (e) { /* ignore */ }
+      if (j && j.ok) return '🎨 出图 → ' + (j.size || '') + ' · ' + (j.seconds == null ? '?' : j.seconds) + 's · ' + (j.image_id || '');
+      return '⚠️ 出图失败 → ' + String((j && j.error) || '').slice(0, 60);
     }
     let ok = false;
     let msg = '';

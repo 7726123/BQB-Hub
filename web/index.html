@@ -1247,7 +1247,7 @@ label{font-size:13px;color:var(--text-secondary);display:block;margin-bottom:4px
         <span style="font-size:12px;color:var(--text-muted);display:flex;align-items:center;">字数：<span id="wordCount">0</span></span>
         <input type="text" id="titleInput" placeholder="未命名小说" title="小说标题" style="display:none;">
         <div id="editor-toolbar-right">
-        <button id="biqiToolbarBtn" onclick="BiqiAgent.toggle()" title="和比奇讨论剧情、维护临时世界书" style="display:none;align-items:center;gap:5px;">
+        <button id="biqiToolbarBtn" onclick="BiqiAgent.toggle()" title="和比奇讨论剧情、维护临时世界书、出图" style="display:none;align-items:center;gap:5px;">
           <svg class="ic-20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.75 6.25A2.75 2.75 0 0 1 7.5 3.5h9a2.75 2.75 0 0 1 2.75 2.75v7A2.75 2.75 0 0 1 16.5 16h-3.2l-4.05 3.75V16H7.5a2.75 2.75 0 0 1-2.75-2.75Z"/><path d="M13.6 3.7v5.2l1.6-1.35 1.6 1.35V3.7"/></svg><span>比奇</span>
         </button>
         <button onclick="App.importNovelText()" title="导入正文（.txt，UTF-8 / GBK）" class="icon-btn" style="display:flex;align-items:center;padding:6px 10px;" aria-label="导入正文">
@@ -1305,7 +1305,7 @@ label{font-size:13px;color:var(--text-secondary);display:block;margin-bottom:4px
         </div>
         <div id="biqiMessages"></div>
         <div class="chat-input-area">
-          <textarea id="biqiInput" rows="1" placeholder="和比奇说：接下来怎么写 / 把某条设定改成…" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();BiqiAgent.send()}"></textarea>
+          <textarea id="biqiInput" rows="1" placeholder="和比奇说：接下来怎么写 / 改某条设定 / 画一张…" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();BiqiAgent.send()}"></textarea>
           <button class="primary small" onclick="BiqiAgent.send()">发送</button>
         </div>
         <div id="biqiGrip" title="拖动调整高度（拖到底变整屏）" aria-label="拖动调整高度"><span></span></div>
