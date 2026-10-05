@@ -1044,7 +1044,7 @@ const CardWriterChat: CardWriterChatShape = {
         + '- 先问用户要不要画（把你要画的内容摘要说清楚），用户同意后再调用；不要自作主张连续出图。\n'
         + '- 出图后图上会有编号（气泡左下角的「图1/图2…」）：用户之后说"把图3改成…""基于图2再来一张"时，就用那个编号指代它'
         + (canImg2img
-          ? '（draw_image 传 base_image = 图号 / "last" / 角色名用 TA 的头像；幅度按他的话选 strength；prompt 只写"要改成什么"）'
+          ? '（draw_image 的 base_image 填编号 / "last" / 角色名用 TA 的头像；**幅度按"改什么"选 strength：换姿势动作、换整套衣服、换背景一律 strong（只保脸）；换表情/衣色/加减小物件用 medium；只有修手指眼睛这类小毛病才用 slight**）'
           : '（本机画图主机是旧版、暂时不支持改图；他真要改就按新的描述重新画一张）') + '。\n'
         + (canImg2img
           ? '- 改图（用户说"改一下/换成…/再画一张类似的"）用 draw_image 传 base_image（图号 / "last" / 角色名用 TA 的头像），幅度按他的话选 strength；prompt 只写"要改成什么"。\n'
@@ -1078,8 +1078,8 @@ const CardWriterChat: CardWriterChatShape = {
       }
     };
     if (canImg2img) {
-      props.base_image = { type: 'string', description: '可选：以哪张图做底图（改图 / 沿用某个角色的样子）。可填：① "图3" 或 "img3"——对话里图片左下角的编号，用户说"第几张"就填那个；② "last"——最近生成的那张；③ 角色名——用 TA 当前的头像。不填 = 全新出图。' };
-      props.strength = { type: 'string', enum: ['slight', 'medium', 'strong'], description: '改图幅度（只有传了 base_image 时有效）：slight=只小改、尽量保构图；medium=中等（默认）；strong=大改、只保留大体结构' };
+      props.base_image = { type: 'string', description: '可选：以什么为底图（改图 / 沿用某个角色的样子）。可填：① "图3" 或 "img3"——对话里图片左下角的编号，用户说"第几张"就填那个；② "last"——最近生成的那张；③ 角色名——用 TA 当前的头像（想让新图和这个角色是同一张脸时用它）。不填 = 全新出图。角色还没有头像时会照常按描述画（不报错）。' };
+      props.strength = { type: 'string', enum: ['slight', 'medium', 'strong'], description: '改图幅度（有 base_image 时）：slight=**只修小毛病**（手指/眼睛/局部瑕疵，姿势、服装、背景都不动）；medium=中等（换表情、换衣服颜色、加减小物件、换光线，姿势构图基本不动）；strong=大改（**换姿势/动作、换整套衣服、换背景场景、换机位**，只保住人物和脸）。**用户要改姿势、动作、衣服、背景时一律用 strong**；没说的时候看改的是什么——只有"修瑕疵"才用 slight。' };
     }
     return {
       type: 'function',
@@ -1178,6 +1178,7 @@ const CardWriterChat: CardWriterChatShape = {
       message: '图片已生成并显示给用户（图片 id：' + out.id + (label ? ('，界面编号：' + label) : '') + '，' + tier.label + '档 ' + tier.size + '×' + tier.size
         + (tier.steps ? ('/' + tier.steps + ' 步') : '') + '，seed ' + (out.seed == null ? '?' : out.seed)
         + '，耗时 ' + out.seconds + ' 秒' + (out.base ? ('，基于' + out.base + '改的' + (out.hires ? '，两步放大重修' : '')) : '') + '）。'
+        + (out.baseNote ? ('（本次没有用底图：' + out.baseNote + '——请如实告诉用户。）') : '')
         + '请用中文简短说明这张图，并问用户要不要把它设为某个角色的头像（得到明确同意后再调用 set_avatar）。'
     };
   },

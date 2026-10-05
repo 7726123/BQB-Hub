@@ -43,14 +43,23 @@ export function resolveTier(quality?: unknown, legacyDraft?: boolean): TierInfo 
   return { key: key, size: t.size, steps: t.steps, hires: !!t.hires, label: t.label };
 }
 
-/** 改图幅度（工具参数 strength → denoise）：越小越保构图。 */
+/** 改图幅度（工具参数 strength → denoise）：越小越保构图。
+ *  分档按"改什么"选（2026-10-06 用户校准）：
+ *    slight 0.35 —— **只修小毛病**（手指/眼睛/局部瑕疵），姿势构图衣服背景都不动
+ *    medium 0.55 —— 换表情、换衣服颜色、加减小物件、换光线；姿势与构图基本不动
+ *    strong 0.75 —— 换姿势/动作、换整套衣服、换背景场景、换机位；**只保住人物（脸）** */
 export const STRENGTH_DENOISE: Record<string, number> = { slight: 0.35, medium: 0.55, strong: 0.75 };
 export function strengthDenoise(strength?: unknown): number {
   const k = String(strength || '').toLowerCase();
   return STRENGTH_DENOISE[k] != null ? STRENGTH_DENOISE[k] : STRENGTH_DENOISE.medium;
 }
 
-export interface BaseImageResult { ok: boolean; dataUrl?: string; label?: string; error?: string }
+export interface BaseImageResult {
+  ok: boolean;
+  dataUrl?: string; label?: string; error?: string;
+  /** soft=true：引用的是"角色的头像"，但这个角色还没有头像——调用方可以**不带头像照常画**（不用当失败） */
+  soft?: boolean;
+}
 
 function _avatarOf(name: string): string {
   // 角色当前头像：原书条目 → 临时层（两种模式都找）。返回 dataURL 或 ''。
@@ -109,7 +118,7 @@ export async function resolveBaseImage(ref: unknown, store: Map<string, any>): P
   }
   // 不是编号 → 当角色名，用它的头像
   const av = _avatarOf(raw);
-  if (!av) return { ok: false, error: '「' + raw + '」既不是本会话的图片编号，也没有找到同名角色或它的头像（可以先用这个编号，或先给角色设头像）' };
+  if (!av) return { ok: false, soft: true, error: '「' + raw + '」还没有头像（可以照常按描述画，只是脸不会固定；想要 TA 的脸一致就先给这个角色设一张头像）' };
   if (/^data:/i.test(av)) return { ok: true, dataUrl: av, label: raw + '的头像' };
   // 头像可能是外链（导入的卡）：抓成 dataURL 再交给主机（CORS 拦不住就当失败）
   try {
@@ -132,8 +141,10 @@ export interface DrawOutcome {
   /** 本次探测结果（调用方写回自己的 60 秒缓存；未配置主机时为 undefined） */
   host?: { ok: boolean; model: string; hint: string; caps: string[] };
   id?: string; tier?: TierInfo; seed?: unknown; size?: string; seconds?: number; prompt?: string;
-  /** 以图改图时的底图说明（如「图3」「林晚的头像」），没改图则为空 */
+  // 以图改图时的底图说明（如「图3」「林晚的头像」），没改图则为空
   base?: string;
+  /** 想要头像当底图但那个角色还没有头像时的说明（这次是按描述画的） */
+  baseNote?: string;
   /** 实际是不是走了两步放大重修（老主机没这能力时为 false） */
   hires?: boolean;
 }
@@ -175,18 +186,24 @@ export async function drawImageToStore(opts: {
     return { ok: false, host: host, error: '失败：画图主机离线（' + (st.error || '') + '）。请告诉用户检查电脑上的 ComfyUI 和画图主机是否在运行，不要重试。' };
   }
   const caps: string[] = host.caps || [];
-  // 底图：解析引用 → dataURL（句柄过期/找不到角色都要给出人话解释）
+  // 底图：解析引用 → dataURL。**角色没头像不算失败**（照常画，只提示一句）——比奇默认拿角色头像当底图，
+  // 新角色还没头像时不该整张画不出来；但用户点名的那张图（图号/last）没了就是真失败。
   let initImage = '';
   let baseLabel = '';
+  let baseNote = '';
   const baseRef = String(opts.baseImage || '').trim();
   if (baseRef) {
     if (caps.indexOf('img2img') < 0) {
       return { ok: false, host: host, error: '失败：画图主机不支持以图改图（电脑上的画图主机是旧版，请更新后再试）；这次可以不带 base_image 重新出图。' };
     }
     const b = await resolveBaseImage(baseRef, opts.store);
-    if (!b.ok) return { ok: false, host: host, error: '失败：' + (b.error || '底图不可用') };
-    initImage = String(b.dataUrl || '');
-    baseLabel = String(b.label || baseRef);
+    if (!b.ok && !b.soft) return { ok: false, host: host, error: '失败：' + (b.error || '底图不可用') };
+    if (b.ok) {
+      initImage = String(b.dataUrl || '');
+      baseLabel = String(b.label || baseRef);
+    } else {
+      baseNote = String(b.error || '');   // 软失败：不带头像照常画，把原因带回给模型
+    }
   }
   const tier = resolveTier(opts.quality, opts.legacyDraft);
   const size = tier.size;
@@ -239,7 +256,7 @@ export async function drawImageToStore(opts: {
     opts.store.delete(k);
   }
   try { if (opts.onImage) opts.onImage(id); } catch (e) { /* ignore */ }
-  return { ok: true, host: host, id: id, tier: tier, seed: meta.seed, size: sizeText, seconds: seconds, prompt: prompt, base: baseLabel, hires: hires };
+  return { ok: true, host: host, id: id, tier: tier, seed: meta.seed, size: sizeText, seconds: seconds, prompt: prompt, base: baseLabel, baseNote: baseNote, hires: hires };
 }
 
 /** 消息里的图片缩略图（消息只存 imageIds；图片数据只在本会话内存里，重载后显示占位）。

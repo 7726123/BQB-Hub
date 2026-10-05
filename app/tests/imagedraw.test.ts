@@ -97,12 +97,13 @@ describe('resolveBaseImage：指名第几张', () => {
     expect(h.mode).toBe('novel');   // 模式用完还原
   });
 
-  it('既不是图号也不是有头像的角色 → 失败并给出两条出路', async () => {
+  it('角色没头像：软失败（soft=true），调用方可以照常按描述画', async () => {
     h.books = [{ id: 'wb1', entries: [{ id: 'e1', type: '角色', name: '林晚', content: '没头像' }] }];
     const r = await m.resolveBaseImage('林晚', store([]));
     expect(r.ok).toBe(false);
-    expect(r.error).toContain('林晚');
-    expect(r.error).toContain('编号');
+    expect(r.soft).toBe(true);           // 关键：不是硬失败——比奇默认拿角色头像当底图，新角色没头像不该整张画不出来
+    expect(r.error).toContain('还没有头像');
+    expect(r.error).toContain('按描述画');
   });
 });
 

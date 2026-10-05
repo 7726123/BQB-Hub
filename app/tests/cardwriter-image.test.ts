@@ -276,6 +276,27 @@ describe('draw_image', () => {
     expect(r.message).toContain('不支持以图改图');
     expect(ih.drawCalls.length).toBe(0);
   });
+
+  it('角色还没有头像：不报错、照常按描述画，并在回执里说明（"默认用角色头像当底图"的前提）', async () => {
+    WB_BOOKS = [{ id: 'wb1', entries: [{ id: 'e1', type: '角色', name: '林晚', content: '…' }] }];   // 没有 avatar
+    ih.drawCalls = [];
+    const out = await C._handleTools([{ id: 'c1', name: 'draw_image', arguments: { prompt: 'x', base_image: '林晚', strength: 'strong' } }], '');
+    const r = JSON.parse(out[0]);
+    expect(r.ok).toBe(true);
+    expect(ih.drawCalls[0].initImage).toBeUndefined();   // 不带头像照常画
+    expect(r.message).toContain('还没有头像');
+    expect(r.message).toContain('如实告诉用户');
+  });
+
+  it('三档强度的场景说明写进工具描述（小改只修细节；换姿势/衣服/背景用 strong）', () => {
+    C._drawToolsOn = true;
+    C._hostStatus = { at: Date.now(), ok: true, model: 'm', hint: '', caps: ['img2img', 'hires'] };
+    const props = (C._tools().find((t: any) => t.function.name === 'draw_image') as any).function.parameters.properties;
+    expect(props.strength.description).toContain('只修小毛病');
+    expect(props.strength.description).toContain('换姿势');
+    expect(props.strength.description).toContain('一律用 strong');
+    expect(props.base_image.description).toContain('头像');
+  });
 });
 
 describe('set_avatar（第二段确认）', () => {

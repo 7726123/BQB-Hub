@@ -119,6 +119,9 @@ describe('比奇生图：门控与规则文案', () => {
     expect(String(d.function.description)).toContain('base_image');   // 主机支持改图
     expect(d.function.parameters.required).toEqual(['prompt']);
     expect(Object.keys(d.function.parameters.properties)).toContain('strength');
+    expect(String(d.function.parameters.properties.strength.description)).toContain('只修小毛病');
+    expect(String(d.function.parameters.properties.strength.description)).toContain('换姿势');
+    expect(String(d.function.parameters.properties.base_image.description)).toContain('角色名');
   });
 
   it('老主机（无 caps）：不给 base_image/strength，规则也不提"改图"参数', () => {
@@ -131,9 +134,12 @@ describe('比奇生图：门控与规则文案', () => {
 
   it('_imageRuleMessage：在线=让画就直接画、不反问；离线=明确"没有画图能力"、不许提议', () => {
     BiqiAgent._drawToolsOn = true;
+    BiqiAgent._hostStatus = { at: Date.now(), ok: true, model: 'm', hint: '', caps: ['img2img', 'hires'] };   // 规则里的默认识别角色头像要主机支持改图
     const on = BiqiAgent._imageRuleMessage();
     expect(on).toContain('不要再问');
     expect(on).toContain('别抢着画');
+    expect(on).toContain('默认用 TA 的头像当底图');   // 用户 2026-10-06：画面里有角色时自动拿头像当底图（保脸）
+    expect(on).toContain('strong');
     expect(on).not.toContain('你没有画图工具');
 
     BiqiAgent._drawToolsOn = false;
