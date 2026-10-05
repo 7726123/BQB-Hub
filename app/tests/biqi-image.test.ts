@@ -58,6 +58,7 @@ function seedBook() {
 
 // 迷你 DOM：renderMessages 只写 innerHTML + 读 scrollTop/scrollHeight
 const els: Record<string, any> = {};
+const viewed: string[] = [];   // UIManager.viewAvatar 收到的原图（点缩略图看大图）
 function setupDom() {
   for (const k of Object.keys(els)) delete els[k];
   els['biqiMessages'] = { innerHTML: '', scrollTop: 0, scrollHeight: 0 };
@@ -78,9 +79,10 @@ beforeEach(() => {
   ih.waitResult = { ok: true, meta: { status: 'done', seed: 7, size: '768x768', elapsed: 9000 } };
   ih.image = 'data:image/png;base64,AAA';
   g.App = { toast: () => undefined, collectRecentStoryText: () => ({ recentText: '正文片段：她在雨里站了很久。', fullEditorText: '' }) };
-  g.UIManager = { viewAvatar: () => undefined, renderAgentPage: () => undefined, openAgentPage: () => undefined };
+  g.UIManager = { viewAvatar: (src: any) => { viewed.push(String(src)); }, renderAgentPage: () => undefined, openAgentPage: () => undefined };
   g.htmlEscape = (x: unknown) => String(x == null ? '' : x);
   setupDom();
+  viewed.length = 0;
   BiqiAgent.messages = [];
   BiqiAgent._isSending = false;
   BiqiAgent._steps = [];
@@ -240,9 +242,15 @@ describe('比奇生图：气泡渲染', () => {
     expect(html).toContain('cw-img-meta');
     expect(html).toContain('768x768');
     expect(html).toContain('seed 7');
-    expect(html).toContain('UIManager.viewAvatar');    // 点击看大图
+    expect(html).toContain("BiqiAgent.viewImage('img1')");  // 点开走 id（交给查看器的是原图，不是 420px 缩略图）
     expect(html).toContain('🎨 出图');
     expect(html).not.toContain('as-status');           // 有图 → 不再显示"正在出图…"
+
+    BiqiAgent.viewImage('img1');
+    expect(viewed).toEqual(['data:image/png;base64,AAA']); // full（原图），不是 thumb
+    viewed.length = 0;
+    BiqiAgent.viewImage('没有这个图');
+    expect(viewed).toEqual([]);                        // 句柄没了不炸
 
     BiqiAgent._genImages.clear();                      // 重载后句柄失效
     BiqiAgent.renderMessages();

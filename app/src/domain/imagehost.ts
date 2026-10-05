@@ -183,8 +183,12 @@ export const ImageHost = {
     } catch (e) { return ''; }
   },
 
-  /** 把一张（已压到 512 的）dataURL 写进角色头像：原书条目 → 临时角色 overlay → 都没有则报错。
-   *  不走草稿（草稿没有 avatar 字段，_doWriteToWorldbook 重建时用旧对象的 avatar 覆盖，写不进去）。 */
+  /** 把一张（已压到 512 的）dataURL 写进角色头像。**只认已存在的角色条目**：
+   *    ① 原书「角色」条目 → entry.avatar + saveAll；
+   *    ② 临时世界书里已有的同名「角色」（比奇 / 对话模式登记过）→ 写它自己那一层（原书不动）。
+   *  不认识的 角色名 一律失败——**绝不现造条目**：以前这里会 ensureTempCharacter 造一个临时角色、
+   *  还固定写进**对话模式**那一层（键带 _chat），于是工具回报"成功"、写卡和世界书里却什么都看不到
+   *  （用户 2026-10-06 反馈的正是这个）。草稿里、还没写进世界书的角色，由调用方先落地再设。 */
   applyAvatarToCharacter(name: string, dataUrl512: string): { ok: boolean; message: string } {
     const nm = String(name || '').trim();
     if (!nm) return { ok: false, message: '工具调用参数无效：缺少角色名' };
@@ -199,23 +203,34 @@ export const ImageHost = {
         _refreshAvatarsEverywhere();
         return { ok: true, message: '已把「' + nm + '」的头像设为这张图（已写入世界书）' };
       }
-      // 临时角色（比奇/对话模式登记、还没落到原书）：写 overlay，重置临时设定后会消失
-      let tempId = '';
-      try {
-        const cm: any = (globalThis as any).ChatMode;
-        if (cm && typeof cm.ensureTempCharacter === 'function') tempId = String(cm.ensureTempCharacter(nm) || '');
-      } catch (e) { /* ignore */ }
-      if (tempId && SettingSyncManager && typeof (SettingSyncManager as any).setTempAvatar === 'function') {
-        const set1 = () => (SettingSyncManager as any).setTempAvatar(tempId, dataUrl512);
-        const ok = (typeof (SettingSyncManager as any).withMode === 'function')
-          ? (SettingSyncManager as any).withMode('chat', set1)
-          : set1();
-        if (ok) {
-          _refreshAvatarsEverywhere();
-          return { ok: true, message: '已把「' + nm + '」的头像设为这张图（临时角色：重置临时设定后会消失）' };
+      // 临时层里的同名条目：两种模式各找一遍，谁有就写谁那一层（不能写错层，写错层等于没写）。
+      // 按**名字**找：比奇建的临时角色偶尔类型会被写成「其他」，那种也认（头像照样挂得上），只是提示一句类型。
+      const SS: any = SettingSyncManager;
+      if (SS && typeof SS.getOverlay === 'function' && typeof SS.withMode === 'function' && typeof SS.setTempAvatar === 'function') {
+        const modes: Array<'novel' | 'chat'> = ['novel', 'chat'];
+        for (let i = 0; i < modes.length; i++) {
+          const mode = modes[i];
+          const hit = SS.withMode(mode, () => {
+            const o = SS.getOverlay() || {};
+            const added: any[] = Array.isArray(o.added) ? o.added : [];
+            const same = added.filter((e: any) => String(e.name || '').trim() === nm);
+            return same.find((e: any) => String(e.type || '') === '角色') || same[0] || null;
+          });
+          if (hit && hit.id) {
+            const ok = SS.withMode(mode, () => SS.setTempAvatar(String(hit.id), dataUrl512));
+            if (ok) {
+              const isChar = String(hit.type || '') === '角色';
+              _refreshAvatarsEverywhere();
+              return {
+                ok: true,
+                message: '已把「' + nm + '」的头像设为这张图（它是临时新增条目：头像挂在临时世界书，原书不动、重置临时设定后会消失）'
+                  + (isChar ? '' : '。注意：它在临时世界书里的类型是「' + String(hit.type || '其他') + '」，要进对话模式的角色名单需要把类型改成「角色」')
+              };
+            }
+          }
         }
       }
-      return { ok: false, message: '未找到角色条目：' + nm + '（请先用 apply_character 建立这个角色，再设头像）' };
+      return { ok: false, message: '未找到角色条目：' + nm + '（只能给世界书里已有的角色设头像：名字要与条目名完全一致；还只存在草稿里的新角色要等它写进世界书之后再设）' };
     } catch (e) {
       return { ok: false, message: '失败：写入头像时出错（' + ((e && (e as Error).message) || e) + '）' };
     }

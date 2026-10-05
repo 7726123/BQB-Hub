@@ -118,8 +118,10 @@ export async function drawImageToStore(opts: {
 }
 
 /** 消息里的图片缩略图（消息只存 imageIds；图片数据只在本会话内存里，重载后显示占位）。
- *  点缩略图 → UIManager.viewAvatar 全屏看原图（dataURL 直接当 src 用）。 */
-export function genImagesHtml(store: Map<string, any>, m: any): string {
+ *  点缩略图 → viewCall（调用方的 viewImage(id)，拿**原图**给全屏查看器；不传则退回直接用缩略图 src）。
+ *  注：气泡里显示的始终是 420px 缩略图，所以点开必须换成原图——否则 1024 档和 512 档看起来一模一样
+ *  （用户 2026-10-06 反馈的正是这个）。 */
+export function genImagesHtml(store: Map<string, any>, m: any, viewCall?: string): string {
   const ids = (m && m.imageIds) ? m.imageIds : null;
   if (!ids || !ids.length) return '';
   const cells: string[] = [];
@@ -128,7 +130,9 @@ export function genImagesHtml(store: Map<string, any>, m: any): string {
     const g = store.get(gid);
     const src = g ? String(g.thumb || g.full || '').replace(/"/g, '&quot;') : '';
     if (!src) { cells.push('<div class="cw-img-expired">图片已过期<br>（需要时重新生成）</div>'); continue; }
-    cells.push('<img src="' + src + '" title="点击看大图" onclick="UIManager.viewAvatar(this.src)">');
+    const safeId = String(gid).replace(/[^A-Za-z0-9_]/g, '');
+    const onclick = viewCall ? (viewCall + "('" + safeId + "')") : 'UIManager.viewAvatar(this.src)';
+    cells.push('<img src="' + src + '" title="点击看大图" onclick="' + onclick + '">');
     metas.push(String(g.size || '') + ' · seed ' + ((g.seed == null) ? '?' : g.seed) + ' · ' + g.seconds + 's');
   }
   if (!cells.length) return '';

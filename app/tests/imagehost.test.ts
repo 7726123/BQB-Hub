@@ -7,6 +7,9 @@ const h = vi.hoisted(() => ({
   books: [] as any[],
   saved: 0,
   temp: null as any,
+  fabricated: 0,
+  mode: 'novel',
+  overlays: { novel: { added: [] as any[] }, chat: { added: [] as any[] } },
   uiWB: 0, uiAgent: 0, uiDB: 0, chatRefresh: 0, realRender: 0
 }));
 
@@ -19,8 +22,11 @@ vi.mock('../src/domain/worldbook', () => ({
 }));
 vi.mock('../src/domain/settingsync', () => ({
   SettingSyncManager: {
+    getOverlay: () => (h.overlays as any)[h.mode],
+    withMode: (_m: string, fn: any) => { const prev = h.mode; h.mode = _m; try { return fn(); } finally { h.mode = prev; } },
     setTempAvatar: (id: string, url: string) => { h.temp = { id, url }; return true; },
-    withMode: (_m: string, fn: any) => fn()
+    // 头像"设置成功却哪儿都看不到"的元凶就是这个：现造一个临时角色。现在必须一次都不被调用。
+    addTempEntry: () => { h.fabricated++; return 'tmpX'; }
   }
 }));
 
@@ -54,7 +60,8 @@ beforeAll(async () => {
 
 beforeEach(() => {
   store.clear();
-  h.books = []; h.saved = 0; h.temp = null;
+  h.books = []; h.saved = 0; h.temp = null; h.fabricated = 0; h.mode = 'novel';
+  h.overlays = { novel: { added: [] }, chat: { added: [] } };
   h.uiWB = h.uiAgent = h.uiDB = h.chatRefresh = h.realRender = 0;
   (globalThis as any).fetch = () => Promise.reject(new Error('network disabled in tests'));
 });
@@ -188,19 +195,43 @@ describe('ImageHost.applyAvatarToCharacter', () => {
     expect(h.realRender).toBe(1);
   });
 
-  it('临时角色：走 overlay（ensureTempCharacter 返回 id）', () => {
+  it('临时新增角色：写在它自己那一层（不再现造条目、也不再固定写对话模式那层）', () => {
     h.books = [{ id: 'wb1', entries: [] }];
-    (globalThis as any).ChatMode.ensureTempCharacter = () => 'tmp7';
-    const r = ImageHost.applyAvatarToCharacter('新角色', 'data:image/jpeg;base64,BBB');
+    h.overlays.novel.added = [{ id: 'a1', type: '角色', name: '丙' }];
+    const r = ImageHost.applyAvatarToCharacter('丙', 'data:image/jpeg;base64,BBB');
     expect(r.ok).toBe(true);
-    expect(r.message).toContain('临时角色');
-    expect(h.temp).toEqual({ id: 'tmp7', url: 'data:image/jpeg;base64,BBB' });
+    expect(r.message).toContain('临时新增条目');
+    expect(h.temp).toEqual({ id: 'a1', url: 'data:image/jpeg;base64,BBB' });
+    expect(h.mode).toBe('novel');            // 用完必须把模式还原（写错层 = 用户哪儿都看不到）
+    expect(h.fabricated).toBe(0);
   });
 
-  it('找不到角色时以"未找到"开头（命中写卡失败判据），缺参数以"工具调用参数无效"开头', () => {
+  it('临时条目类型被写成「其他」也认（按名字找），但提示一句类型不对', () => {
     h.books = [{ id: 'wb1', entries: [] }];
-    (globalThis as any).ChatMode.ensureTempCharacter = () => '';
-    expect(ImageHost.applyAvatarToCharacter('张三', 'data:x,1').message).toMatch(/^未找到角色条目/);
+    h.overlays.novel.added = [{ id: 'a2', type: '其他', name: '戊' }];
+    const r = ImageHost.applyAvatarToCharacter('戊', 'data:image/jpeg;base64,DDD');
+    expect(r.ok).toBe(true);
+    expect(h.temp).toEqual({ id: 'a2', url: 'data:image/jpeg;base64,DDD' });
+    expect(r.message).toContain('类型是「其他」');
+  });
+
+  it('只在对话模式临时层里的角色：也能设（写 chat 那一层）', () => {
+    h.books = [{ id: 'wb1', entries: [] }];
+    h.overlays.chat.added = [{ id: 'c1', type: '角色', name: '丁' }];
+    const r = ImageHost.applyAvatarToCharacter('丁', 'data:image/jpeg;base64,CCC');
+    expect(r.ok).toBe(true);
+    expect(h.temp).toEqual({ id: 'c1', url: 'data:image/jpeg;base64,CCC' });
+    expect(h.mode).toBe('novel');
+  });
+
+  it('找不到角色时以"未找到"开头（命中写卡失败判据）且绝不现造角色，缺参数各有前缀', () => {
+    h.books = [{ id: 'wb1', entries: [] }];
+    const r = ImageHost.applyAvatarToCharacter('张三', 'data:x,1');
+    expect(r.ok).toBe(false);                // 关键：不再假装成功
+    expect(r.message).toMatch(/^未找到角色条目/);
+    expect(r.message).toContain('完全一致');
+    expect(h.temp).toBeNull();
+    expect(h.fabricated).toBe(0);            // 绝不 addTempEntry
     expect(ImageHost.applyAvatarToCharacter('', 'data:x,1').message).toMatch(/^工具调用参数无效/);
     expect(ImageHost.applyAvatarToCharacter('林晚', '').message).toMatch(/^失败：/);
   });

@@ -104,6 +104,7 @@ export const BiqiAgent: {
   readWorldbook(): string;
   readStory(): string;
   openWorldbookPage(): void;
+  viewImage(id: any): void;
 } = {
   messages: [],
   _isSending: false,
@@ -348,7 +349,7 @@ export const BiqiAgent: {
       const cls = m.role === 'user' ? 'chat-msg user' : 'chat-msg assistant';
       const thinking = self._isSending && i === self.messages.length - 1 && m.role === 'assistant';
       const raw = String(m.content || '');
-      const imgHtml = genImagesHtml(self._genImages, m); // 生成的图片（有图就不算"空内容"，也不再压状态条）
+      const imgHtml = genImagesHtml(self._genImages, m, 'BiqiAgent.viewImage'); // 生成的图片（有图就不算"空内容"，也不再压状态条）
       const stepsHtml = (m._steps && m._steps.length)
         ? '<div class="as-steps">' + m._steps.map(function (t) { return '<div>' + htmlEscape(t) + '</div>'; }).join('') + '</div>'
         : '';
@@ -792,6 +793,13 @@ export const BiqiAgent: {
     try {
       if (typeof UIManager !== 'undefined' && UIManager.openAgentPage) UIManager.openAgentPage();
     } catch (e) { /* ignore */ }
+  },
+
+  // 点缩略图看大图：给全屏查看器换原图（气泡里是 420px 缩略图）
+  viewImage(id: any): void {
+    const g = this._genImages.get(String(id || ''));
+    const src = (g && (g.full || g.thumb)) || '';
+    if (src) UIManager.viewAvatar(src);
   },
 };
 

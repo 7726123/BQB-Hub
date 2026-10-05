@@ -15,7 +15,9 @@ const ih = vi.hoisted(() => ({
   drawResult: { ok: true, jobId: 'job1' } as any,
   waitResult: { ok: true, meta: { status: 'done', seed: 42, size: '768x768', elapsed: 9800 } } as any,
   image: 'data:image/png;base64,AAA',
-  applies: [] as any[]
+  applies: [] as any[],
+  applyResult: null as any,
+  viewed: [] as string[]
 }));
 
 vi.mock('../src/domain/imagehost', () => ({
@@ -40,6 +42,7 @@ vi.mock('../src/domain/imagehost', () => ({
     imageDataUrl: async () => ih.image,
     applyAvatarToCharacter: (name: string, url: string) => {
       ih.applies.push({ name: name, url: url });
+      if (ih.applyResult) return ih.applyResult;
       return { ok: true, message: '已把「' + name + '」的头像设为这张图（已写入世界书）' };
     }
   },
@@ -52,7 +55,7 @@ wbm.getActiveId = () => 'wb1';
 wbm.getAll = () => WB_BOOKS;
 wbm.getActive = () => WB_BOOKS[0] || null;
 wbm.saveAll = (arr: any[]) => { WB_BOOKS = arr; };
-anyG.UIManager = { renderWBEntries: () => undefined, renderWorldBooks: () => undefined, showConfirm: () => undefined };
+anyG.UIManager = { renderWBEntries: () => undefined, renderWorldBooks: () => undefined, showConfirm: () => undefined, viewAvatar: (src: any) => { ih.viewed.push(String(src)); } };
 anyG.DatabaseManager = { isEnabled: () => false };
 anyG.CharacterManager = { getByWorldBook: () => [] };
 anyG.PresetManager = { getActiveAPIConfig: () => ({ endpoint: 'https://x.test/v1', apiKey: 'k', model: 'm' }) };
@@ -71,7 +74,7 @@ beforeEach(() => {
   ih.statusResult = { ok: true, model: 'miaomiaoRealskin_anima13.safetensors', hint: 'tag 风格，用 danbooru tag' };
   ih.drawCalls = []; ih.drawResult = { ok: true, jobId: 'job1' };
   ih.waitResult = { ok: true, meta: { status: 'done', seed: 42, size: '768x768', elapsed: 9800 } };
-  ih.image = 'data:image/png;base64,AAA'; ih.applies = [];
+  ih.image = 'data:image/png;base64,AAA'; ih.applies = []; ih.applyResult = null; ih.viewed = [];
   WB_BOOKS = [{ id: 'wb1', entries: [{ id: 'e1', type: '角色', name: '林晚', content: '…' }] }];
   C.messages = [];
   C._draft = { characters: [], entries: [], deleted: [] };
@@ -249,5 +252,43 @@ describe('set_avatar（第二段确认）', () => {
     ], '');
     expect(JSON.parse(out[0]).ok).toBe(true);
     expect(ih.applies[0].name).toBe('新角色');
+  });
+
+  // 用户 2026-10-06 反馈："工具调用了，但世界书里没有头像"——根因是没找到角色时以前会现造临时角色、
+  // 还写进对话模式那一层，却回报成功。现在：失败要如实报，并把"下一步该干什么"写进文案里。
+  it('角色还没进世界书（只在草稿里）：如实失败，并点明「还在草稿里」', async () => {
+    C._genImages.set('img1', { full: 'data:image/png;base64,AAA' });
+    C._draft = { characters: [{ name: '新角色', content: 'x' }], entries: [], deleted: [] };
+    ih.applyResult = { ok: false, message: '未找到角色条目：新角色（只能给世界书里已有的角色设头像：…）' };
+    const out = await C._handleTools([{ id: 'c1', name: 'set_avatar', arguments: { character: '新角色', image_id: 'img1' } }], '');
+    const r = JSON.parse(out[0]);
+    expect(r.ok).toBe(false);
+    expect(r.message).toMatch(/^未找到角色条目/);      // 命中写卡失败判据
+    expect(r.message).toContain('只在草稿里');
+    expect(r.message).toContain('写进世界书');
+  });
+
+  it('名字对不上世界书条目：失败文案要求「完全一致」', async () => {
+    C._genImages.set('img1', { full: 'data:image/png;base64,AAA' });
+    C._draft = { characters: [], entries: [], deleted: [] };
+    ih.applyResult = { ok: false, message: '未找到角色条目：小林（…）' };
+    const out = await C._handleTools([{ id: 'c1', name: 'set_avatar', arguments: { character: '小林', image_id: 'img1' } }], '');
+    const r = JSON.parse(out[0]);
+    expect(r.ok).toBe(false);
+    expect(r.message).toContain('完全一致');
+  });
+});
+
+describe('看图：点缩略图给的是原图（1024 档不该看起来和 512 一样）', () => {
+  it('气泡里显示 420px 缩略图，onclick 走 viewImage(id)；viewImage 交给查看器的是 full', () => {
+    C._genImages.set('img1', { full: 'data:image/png;base64,FULL', thumb: 'data:image/png;base64,THUMB', seed: 1, size: '1024x1024', seconds: 30, prompt: 'x' });
+    const html = C._imagesHtml({ imageIds: ['img1'] });
+    expect(html).toContain('data:image/png;base64,THUMB');            // 气泡里是缩略图
+    expect(html).toContain("CardWriterChat.viewImage('img1')");       // 点开走 id（不再把缩略图当大图）
+    C.viewImage('img1');
+    expect(ih.viewed).toEqual(['data:image/png;base64,FULL']);        // 全屏看到的是原图
+    ih.viewed = [];
+    C.viewImage('不存在的id');
+    expect(ih.viewed).toEqual([]);                                    // 句柄没了不炸也不白屏
   });
 });

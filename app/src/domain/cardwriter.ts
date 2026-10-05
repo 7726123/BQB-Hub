@@ -70,8 +70,7 @@ export interface CardWriterChatShape {
   nsfw?: any;
   handgun?: any;
   __version?: any;
-
-
+  viewImage(id: any): void;
 }
 
 // 管线化迁移（源码与 www/modules/cardwriter.js 逐行一致）：
@@ -1091,7 +1090,8 @@ const CardWriterChat: CardWriterChatShape = {
         name: 'set_avatar',
         description: '把一张已生成的图设为某个角色的头像（压到 512 后写进世界书，永久生效）。'
           + '**只在用户看到图之后明确同意时调用**（如「用这张 / 设为头像 / 就它了」）；没得到同意就调用属于越权。'
-          + '如果这个角色是在同一批里刚用 apply_character 新建的，等下一轮再设（那时它才写进世界书）。',
+          + '**角色必须是世界书里已经存在的条目**（character 填条目名，一字不差；外号/简称/昵称都会失败，失败会原样报错）。'
+          + '刚在本轮用 apply_character 新建、还只在草稿里的角色**设不上**：先把设定写进世界书（下一轮再设头像）。',
         parameters: {
           type: 'object',
           properties: {
@@ -1176,7 +1176,14 @@ const CardWriterChat: CardWriterChatShape = {
     // 入库前压到 512（与手动选头像一致）；canvas 不可用时退回原图（功能优先）
     const stored = (await resizeDataUrlLongSide(String(img.full || ''), AVATAR_STORE_SIZE, 0.92)) || String(img.full || '');
     const r = ImageHost.applyAvatarToCharacter(char, stored);
-    if (!r.ok) return r;
+    if (!r.ok) {
+      // 失败要能自己解释清楚：最常见的两种是"角色还只在草稿里"和"名字对不上"（模型据此决定补做哪一步）
+      const inDraft = !!(this._draft && (this._draft.characters || []).some((c: any) => String((c && c.name) || '').trim() === char));
+      const hint = inDraft
+        ? '「' + char + '」现在只在草稿里、还没写进世界书：先把它的设定写进世界书（写入吧 / apply_character 落地），等它真的进书之后再设头像。'
+        : '名字要与世界书里的角色条目标题完全一致（外号、简称、错别字都会失败）；如果它刚在草稿里新建，等写进世界书之后再设。';
+      return { ok: false, message: r.message + ' ' + hint };
+    }
     const said = (a && a.user_said) ? ('（用户原话：' + String(a.user_said).slice(0, 40) + '）') : '';
     return { ok: true, message: r.message + said };
   },
@@ -1564,7 +1571,14 @@ const CardWriterChat: CardWriterChatShape = {
 
   // 生成的图片缩略图（消息里只存 imageIds；图片数据只在本会话内存里，重载后显示占位）。
   _imagesHtml(m: any) {
-    return genImagesHtml(this._genImages, m);
+    return genImagesHtml(this._genImages, m, 'CardWriterChat.viewImage');
+  },
+
+  // 点缩略图看大图：给全屏查看器换**原图**（气泡里是 420px 缩略图，直接用它看 1024 档和 512 档没差别）
+  viewImage(id: any) {
+    const g = this._genImages.get(String(id || ''));
+    const src = (g && (g.full || g.thumb)) || '';
+    if (src) UIManager.viewAvatar(src);
   },
 
   renderMessages(isStreaming: any) {
