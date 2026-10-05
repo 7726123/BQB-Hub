@@ -661,7 +661,7 @@ export const BiqiAgent: {
           this.renderMessages();
         }
       });
-      if (out.host) this._hostStatus = { at: Date.now(), ok: !!out.host.ok, model: out.host.model || '', hint: out.host.hint || '', caps: out.host.caps || [] };
+      if (out.host) this._hostStatus = { at: Date.now(), ok: !!out.host.ok, model: out.host.model || '', hint: out.host.hint || '', caps: out.host.caps || [], tiers: out.host.tiers || {} };
       if (!out.ok) return JSON.stringify({ ok: false, error: out.error });
       const t: any = out.tier;
       const label = imageLabel(out.id);

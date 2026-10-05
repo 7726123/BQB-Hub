@@ -128,6 +128,27 @@ describe('ImageHost.status', () => {
     expect(st.caps).toEqual([]);
   });
 
+  it('档位声明 tiers：合法值透传（steps:null 保留）；非法值 / 未知档丢弃', async () => {
+    fakeFetch(() => jsonRes({
+      ok: true, workflow: {
+        model: 'm', tiers: {
+          normal: { size: 768, steps: 8 },
+          high: { size: 1024, steps: null },   // null = 用工作流自己的步数（必须原样保留）
+          fast: { size: -5, steps: 0 },        // 非法 → 丢
+          draft: 'x',                          // 非对象 → 丢
+          blah: { steps: 9 }                   // 未知档 → 丢
+        }
+      }
+    }));
+    const st = await ImageHost.status();
+    expect(st.tiers).toEqual({ normal: { size: 768, steps: 8 }, high: { size: 1024, steps: null } });
+  });
+
+  it('老主机不带 tiers → 空对象（档位走 App 内置兜底）', async () => {
+    fakeFetch(() => jsonRes({ ok: true, workflow: { model: 'm' } }));
+    expect((await ImageHost.status()).tiers).toEqual({});
+  });
+
   it('401 报"配对 token 不对"，连不上报超时/网络错误', async () => {
     fakeFetch(() => jsonRes({ error: '未授权' }, 401));
     expect((await ImageHost.status()).error).toContain('token');

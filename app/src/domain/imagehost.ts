@@ -1,6 +1,8 @@
 // 画图主机客户端：调用户局域网里的「画图主机」（本机 ComfyUI 的包装服务）。
 // 协议（与 imgtest/serve.mjs 完全一致，将来换成正式 host agent 也不用改这里）：
-//   GET  /api/comfy/status               → { ok, version, device, caps?, workflow:{ model, hint, steps, size } }
+//   GET  /api/comfy/status               → { ok, version, device, caps?,
+//                                            workflow:{ model, hint, steps, size,
+//                                                       tiers?: { fast|draft|normal|high: { size?, steps?|null } } } }
 //   POST /api/comfy/draw                 → { jobId }   body: { prompt, width?, height?, steps?, seed?,
 //                                                                  initImage?, denoise?, hires? }
 //   GET  /api/comfy/jobs/{id}            → { status: running|done|failed, elapsed, seed, size, error? }
@@ -8,6 +10,9 @@
 //
 // caps（主机能力，2026-10-06 加）：'img2img' = 支持以图改图（initImage+denoise）；'hires' = 支持两步放大重修。
 //   老主机不带 caps → 不给「以图改图」参数（会明确报错），hires 也只是退回单次直出。
+// tiers（档位声明，2026-10-06 加）：工作流用 "_tiers"/"_steps" 自己声明每档尺寸/步数——谁配模型/LoRA
+//   谁定步数（turbo LoRA 8 步就够、没 turbo 要 28 步，写死在 App 里换哪边都得改代码）。
+//   声明优先；没声明（老主机）→ 用 QUALITY_TIERS 内置兜底；steps:null = 用工作流自己的步数。
 //
 // 约定（2026-10-05 定，实测于 RTX 4060 Laptop 8G + miaomiaoRealskin_anima13）：
 //   · 头像固定 768×768（1:1）；cfg/步数/精度由主机侧工作流决定（当前 36 步 / cfg 1.0 / fp8）；
@@ -29,10 +34,11 @@ export const FAST_STEPS = 12;
 export const HIGH_SIZE = 1024;    // 更精细档：1024 / 36 步
 export const HIGH_STEPS = 36;
 
-// 质量档位：工具参数 quality → 尺寸/步数（单一事实来源；steps 缺省表示交给工作流自己的步数）
-//   fast   512/12            用户说"快一点"          约 5~8 秒
+// 质量档位**兜底表**：工具参数 quality → 尺寸/步数。主机声明（workflow.tiers）优先——这组常量只在
+// 老主机（不带 tiers）或某档没被声明时生效（steps 缺省表示交给工作流自己的步数）。
+//   fast   512/12            用户说"快一点"          约 5~8 秒（工作流可声明成 512/8，约 2 秒）
 //   draft  512/20            一次出 2~3 张挑构图     约 8~10 秒
-//   normal 768/工作流 28 步（默认头像）              约 14 秒
+//   normal 768/工作流步数（默认头像）                约 14 秒（原 28 步工作流）
 //   high   1024/36           用户说"更精细/更大"     约 30 秒
 // 注：hires（768 起稿 → 放大 → 低强度重画）2026-10-06 实测在这套模型/显卡上是 88 秒 vs 直出 30 秒、
 // 观感也没有更好（还偏软），所以**档位不用它**；主机能力（caps:hires）与协议字段都保留，方便以后换参数再试。
@@ -43,6 +49,27 @@ export const QUALITY_TIERS: Record<string, { size: number; steps?: number; hires
   high: { size: HIGH_SIZE, steps: HIGH_STEPS, label: '精细' }
 };
 export const AVATAR_STORE_SIZE = 512; // 入库头像长边（与手动选头像的 _compressImage(file,512) 一致）
+
+/** 主机声明的档位（workflow.tiers）。只认 fast/draft/normal/high 四档；
+ *  size/steps 都做合法性过滤：size>0；steps>0，或 null = "用工作流自己的步数"（不传 steps）。 */
+export type HostTiers = Record<string, { size?: number; steps?: number | null }>;
+const TIER_KEYS = ['fast', 'draft', 'normal', 'high'];
+export function normHostTiers(d: any): HostTiers {
+  const out: HostTiers = {};
+  if (!d || typeof d !== 'object') return out;
+  for (let i = 0; i < TIER_KEYS.length; i++) {
+    const k = TIER_KEYS[i];
+    const t = (d as any)[k];
+    if (!t || typeof t !== 'object') continue;
+    const o: { size?: number; steps?: number | null } = {};
+    const sz = Number(t.size);
+    if (isFinite(sz) && sz > 0) o.size = Math.round(sz);
+    if (t.steps === null) o.steps = null;
+    else { const st = Number(t.steps); if (isFinite(st) && st > 0) o.steps = Math.round(st); }
+    if (o.size !== undefined || o.steps !== undefined) out[k] = o;
+  }
+  return out;
+}
 
 function _normBase(s: any): string {
   let v = String(s || '').trim().replace(/\/+$/, '');
@@ -129,6 +156,8 @@ export const ImageHost = {
       ok: !!d.ok, version: d.version || '', device: d.device || '',
       // 主机能力（老主机不带 → 空数组：不给"以图改图"参数、hires 退回单次直出）
       caps: Array.isArray(d.caps) ? d.caps.map((x: any) => String(x)) : [],
+      // 档位声明（老主机不带 → 空对象：档位走 QUALITY_TIERS 兜底）
+      tiers: normHostTiers(wf.tiers),
       model: wf.model || '', hint: wf.hint || '', steps: wf.steps, size: wf.size,
       error: d.ok ? '' : (d.error || '画图主机返回异常')
     };

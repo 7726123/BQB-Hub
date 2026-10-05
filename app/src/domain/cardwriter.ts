@@ -1213,7 +1213,7 @@ const CardWriterChat: CardWriterChatShape = {
     } finally {
       this._drawAbort = null;
     }
-    if (out.host) this._hostStatus = { at: Date.now(), ok: !!out.host.ok, model: out.host.model || '', hint: out.host.hint || '', caps: out.host.caps || [] };
+    if (out.host) this._hostStatus = { at: Date.now(), ok: !!out.host.ok, model: out.host.model || '', hint: out.host.hint || '', caps: out.host.caps || [], tiers: out.host.tiers || {} };
     if (!out.ok) return { ok: false, message: out.error };
     const tier: any = out.tier;
     const label = imageLabel(out.id);

@@ -194,10 +194,32 @@ describe('draw_image', () => {
     ih.drawCalls = [];
     await C._handleTools([{ id: 'c2', name: 'draw_image', arguments: { prompt: 'x' } }], '');
     expect(ih.drawCalls[0].width).toBe(768);
-    expect(ih.drawCalls[0].steps).toBeUndefined();     // 标准档交回工作流（28 步）
+    expect(ih.drawCalls[0].steps).toBeUndefined();     // 标准档交回工作流自己的步数
     ih.drawCalls = [];
     await C._handleTools([{ id: 'c3', name: 'draw_image', arguments: { prompt: 'x', quality: '不存在的档' } }], '');
     expect(ih.drawCalls[0].width).toBe(768);           // 认不出的档位回落到标准
+  });
+
+  it('主机声明档位（workflow.tiers）优先：按声明发尺寸/步数；没声明的档仍走内置兜底', async () => {
+    // 2026-10-06：turbo LoRA 让 8 步就够——步数不该写死在 App 里，工作流声明优先（谁配模型谁定步数）
+    ih.statusResult = {
+      ok: true, model: 'm', hint: '', caps: ['img2img'],
+      tiers: { normal: { size: 768, steps: 8 }, high: { size: 1024, steps: 10 }, fast: { size: 512, steps: null } }
+    };
+    ih.drawCalls = [];
+    await C._handleTools([{ id: 'c1', name: 'draw_image', arguments: { prompt: 'x' } }], '');
+    expect(ih.drawCalls[0].width).toBe(768);
+    expect(ih.drawCalls[0].steps).toBe(8);             // 标准档：工作流声明 8 步
+    ih.drawCalls = [];
+    await C._handleTools([{ id: 'c2', name: 'draw_image', arguments: { prompt: 'x', quality: 'high' } }], '');
+    expect(ih.drawCalls[0].width).toBe(1024);
+    expect(ih.drawCalls[0].steps).toBe(10);
+    ih.drawCalls = [];
+    await C._handleTools([{ id: 'c3', name: 'draw_image', arguments: { prompt: 'x', quality: 'fast' } }], '');
+    expect(ih.drawCalls[0].steps).toBeUndefined();     // steps:null = 用工作流自己的步数
+    ih.drawCalls = [];
+    await C._handleTools([{ id: 'c4', name: 'draw_image', arguments: { prompt: 'x', quality: 'draft' } }], '');
+    expect(ih.drawCalls[0].steps).toBe(20);            // draft 没被声明 → 内置兜底
   });
 
   it('未配置 → 失败文案引导去设置；离线 → 提示不要重试', async () => {

@@ -3,16 +3,16 @@
 // 写卡 Agent（cardwriter.ts）与比奇（biqi.ts）两条线共用；「要不要先问用户」这类
 // 交互策略各不一样，由各自的规则文案决定，不进这里。
 // 协议与质量档位见 domain/imagehost.ts（单一事实来源）。
-import { ImageHost, QUALITY_TIERS } from './imagehost';
+import { ImageHost, QUALITY_TIERS, type HostTiers } from './imagehost';
 import { WorldBookManager } from './worldbook';
 import { SettingSyncManager } from './settingsync';
 import { resizeDataUrlLongSide, bytesToDataUrl } from '../lib/imagedata';
 
 /** 主机状态缓存（60 秒）。放在各 Agent 自己身上，字段由 probeHost 原地写回。
- *  caps 可缺省：老缓存/测试桩里没有这个字段时按"主机不支持"处理（空数组）。 */
-export interface HostStatusCache { at: number; ok: boolean; model: string; hint: string; caps?: string[] }
+ *  caps/tiers 可缺省：老缓存/测试桩里没有这些字段时按"主机没声明"处理（空）。 */
+export interface HostStatusCache { at: number; ok: boolean; model: string; hint: string; caps?: string[]; tiers?: HostTiers }
 
-export function emptyHostStatus(): HostStatusCache { return { at: 0, ok: false, model: '', hint: '', caps: [] }; }
+export function emptyHostStatus(): HostStatusCache { return { at: 0, ok: false, model: '', hint: '', caps: [], tiers: {} }; }
 
 /** 消息里那行「图3」编号（与 id 一一对应：img3 → 图3）。没有编号的（空串/异常值）返回 ''。 */
 export function imageLabel(id: any): string {
@@ -29,18 +29,28 @@ export async function probeHost(cache: HostStatusCache, timeoutMs = 1500): Promi
     const st = await ImageHost.status(timeoutMs);
     cache.at = now; cache.ok = !!st.ok; cache.model = st.model || ''; cache.hint = st.hint || '';
     cache.caps = Array.isArray(st.caps) ? st.caps.slice() : [];
+    cache.tiers = (st.tiers && typeof st.tiers === 'object') ? st.tiers : {};
     return !!st.ok;
   } catch (e) { cache.ok = false; return false; }
 }
 
 export interface TierInfo { key: string; size: number; steps?: number; hires?: boolean; label: string }
 
-/** 质量档位解析：认不出的档回落到标准档；旧参数 draft:true 仍然兼容。 */
-export function resolveTier(quality?: unknown, legacyDraft?: boolean): TierInfo {
+/** 质量档位解析：认不出的档回落到标准档；旧参数 draft:true 仍然兼容。
+ *  hostTiers（主机声明）优先，逐字段覆盖：声明了 size/steps 就用声明；steps:null = 用工作流自己的步数；
+ *  没声明（老主机/某档没写）→ 用 QUALITY_TIERS 兜底。 */
+export function resolveTier(quality?: unknown, legacyDraft?: boolean, hostTiers?: HostTiers | null): TierInfo {
   const raw = String(quality || (legacyDraft ? 'draft' : 'normal')).toLowerCase();
   const key = QUALITY_TIERS[raw] ? raw : 'normal';
   const t = QUALITY_TIERS[key];
-  return { key: key, size: t.size, steps: t.steps, hires: !!t.hires, label: t.label };
+  const ht = (hostTiers && hostTiers[key]) || null;
+  const size = (ht && typeof ht.size === 'number') ? ht.size : t.size;
+  let steps: number | undefined = t.steps;
+  if (ht) {
+    if (ht.steps === null) steps = undefined;
+    else if (typeof ht.steps === 'number') steps = ht.steps;
+  }
+  return { key: key, size: size, steps: steps, hires: !!t.hires, label: t.label };
 }
 
 /** 改图幅度（工具参数 strength → denoise）：越小越保构图。
@@ -169,7 +179,7 @@ export interface DrawOutcome {
   /** 失败文案（给模型看：已带「失败：/工具调用参数无效：」前缀，写卡侧靠它判定工具失败） */
   error?: string;
   /** 本次探测结果（调用方写回自己的 60 秒缓存；未配置主机时为 undefined） */
-  host?: { ok: boolean; model: string; hint: string; caps: string[] };
+  host?: { ok: boolean; model: string; hint: string; caps: string[]; tiers?: HostTiers };
   id?: string; tier?: TierInfo; seed?: unknown; size?: string; seconds?: number; prompt?: string;
   // 以图改图时的底图说明（如「图3」「林晚的头像」），没改图则为空
   base?: string;
@@ -213,7 +223,7 @@ export async function drawImageToStore(opts: {
   if (!prompt) return { ok: false, error: '工具调用参数无效：prompt 不能为空' };
 
   const st = await ImageHost.status(2000);
-  const host = { ok: !!st.ok, model: st.model || '', hint: st.hint || '', caps: Array.isArray(st.caps) ? st.caps.slice() : [] };
+  const host = { ok: !!st.ok, model: st.model || '', hint: st.hint || '', caps: Array.isArray(st.caps) ? st.caps.slice() : [], tiers: (st.tiers && typeof st.tiers === 'object') ? st.tiers : {} };
   if (!st.ok) {
     return { ok: false, host: host, error: '失败：画图主机离线（' + (st.error || '') + '）。请告诉用户检查电脑上的 ComfyUI 和画图主机是否在运行，不要重试。' };
   }
@@ -237,7 +247,7 @@ export async function drawImageToStore(opts: {
       baseNote = String(b.error || '');   // 软失败：不带头像照常画，把原因带回给模型
     }
   }
-  const tier = resolveTier(opts.quality, opts.legacyDraft);
+  const tier = resolveTier(opts.quality, opts.legacyDraft, st.tiers);
   const size = tier.size;
   const seed = (opts.seed !== undefined && opts.seed !== null && String(opts.seed) !== '') ? Math.floor(Number(opts.seed)) : undefined;
   // 两步放大重修：只有主机支持才带（老主机静默退回单次直出，图片照样有）

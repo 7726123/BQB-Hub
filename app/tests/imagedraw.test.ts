@@ -57,6 +57,26 @@ describe('imageLabel / strengthDenoise / resolveTier', () => {
   });
 });
 
+describe('档位声明（主机 workflow.tiers）优先', () => {
+  it('声明了就用声明：normal 768/8、high 1024/10', () => {
+    const t = { normal: { size: 768, steps: 8 }, high: { size: 1024, steps: 10 } };
+    expect(m.resolveTier('normal', false, t)).toMatchObject({ key: 'normal', size: 768, steps: 8, label: '标准' });
+    expect(m.resolveTier('high', false, t)).toMatchObject({ size: 1024, steps: 10 });
+  });
+
+  it('逐字段覆盖：只声明步数 → 尺寸仍走兜底；只声明尺寸 → 步数仍走兜底', () => {
+    expect(m.resolveTier('fast', false, { fast: { steps: 8 } })).toMatchObject({ size: 512, steps: 8 });
+    expect(m.resolveTier('draft', false, { draft: { size: 640 } })).toMatchObject({ size: 640, steps: 20 });
+  });
+
+  it('steps:null = 用工作流自己的步数；老主机/空声明与原来完全一致', () => {
+    expect(m.resolveTier('normal', false, { normal: { size: 768, steps: null } }).steps).toBeUndefined();
+    expect(m.resolveTier('normal', false, {})).toMatchObject({ size: 768 });
+    expect(m.resolveTier('high')).toMatchObject({ size: 1024, steps: 36 });                     // 老主机不传 tiers
+    expect(m.resolveTier('不认识', false, { normal: { steps: 8 } })).toMatchObject({ key: 'normal', steps: 8 });
+  });
+});
+
 describe('resolveBaseImage：指名第几张', () => {
   it('"图3" / "img3" / "3" / 大小写 → 都指向同一张（句柄在）', async () => {
     const s = store([['img1', { full: 'data:image/png;base64,ONE' }], ['img3', { full: 'data:image/png;base64,THREE' }]]);
