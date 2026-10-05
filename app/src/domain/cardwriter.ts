@@ -575,6 +575,13 @@ const CardWriterChat: CardWriterChatShape = {
     const historyMsgs = this._recentHistory();
     for (let i = 0; i < historyMsgs.length; i++) messages.push(historyMsgs[i]);
 
+    // 生图规则（文案与条件见 _imageRuleMessage）：在线 → 正向规则；不在线 → 「你没有画图能力」的反向规则。
+    // 位置放在「思考纪律」之前：思考纪律与设计轮说明要贴住生成点（实测结论），不能被我这条挤到中间。
+    {
+      const _imgRule = this._imageRuleMessage();
+      if (_imgRule) messages.push({ role: 'system', content: _imgRule });
+    }
+
     // 思考纪律（预设的「思考纪律」分块，用户可在「写卡 → 预设」里改文案或清空）：作为**贴着生成点**
     // 的一条 system 消息发（紧随历史之后；设计轮说明要压在最末，所以它排在设计轮说明之前）。
     // 位置是实测定的（写作端同款结论：同一段思考要求放 system 前部 → 思考中位约 3689 字，放消息末尾 →
@@ -584,19 +591,6 @@ const CardWriterChat: CardWriterChatShape = {
       const _think = String((this._loadBlocks() || {}).think || '').trim();
       if (_think) messages.push({ role: 'system', content: _think });
     } catch (e) { /* 思考纪律注入失败不影响生成 */ }
-
-    // 生图规则：**只在画图主机这一轮探测到在线时**注入（一条独立的近端 system 消息）。
-    // 不写进用户预设 → 不覆盖用户对预设的自定义，主机没配/离线时这段规则自动消失，
-    // 工具也不给 → 模型据此知道要说明"主机没开"，而不是假装画了。
-    if (this._drawToolsOn) {
-      messages.push({
-        role: 'system', content: '【生图（本机画图主机）】你可以用 draw_image 在用户电脑的 ComfyUI 上画图（约 10 秒一张），用 set_avatar 把某张图设为角色头像：\n'
-          + '- 先问用户要不要画（把你要画的内容摘要说清楚），用户同意后再调用；不要自作主张连续出图。\n'
-          + '- prompt 用英文，按工具说明里的「画风与提示词要求」写；头像一律 1:1（软件固定 768×768，别传尺寸）；用户要"几个候选"时连续调用 2~3 次 draft:true。\n'
-          + '- 出图后把图给用户看，再问要不要设为某角色的头像；**必须等用户明确同意**（"用这张 / 设为头像 / 就它了"）才调用 set_avatar，并把用户的原话填进 user_said。\n'
-          + '- 画图失败（主机离线 / ComfyUI 没开）就把原因如实告诉用户，不要重试超过一次，也不要说"正在画"。'
-      });
-    }
 
     // 设计轮（用户没给写入/操作指令）：**工具照给**（只作兜底），但口头把口径收紧到设计轮。
     // 指令贴在历史之后 = 模型最后看到的话；同时 system 与历史的前缀不动（不拖累缓存命中）。
@@ -1036,6 +1030,24 @@ const CardWriterChat: CardWriterChatShape = {
     // 模型据此知道要说明"主机没开"，而不是假装画了（见 _callAPI 里的 _drawToolsOn）。
     if (this._drawToolsOn) _base.push(this._imageToolDraw(), this._imageToolAvatar());
     return _base;
+  },
+
+  // 生图规则文案（每轮注入一条独立 system 消息；不写进用户预设，避免覆盖用户自定义）：
+  //   · 主机在线（_drawToolsOn）：正向规则——先问再画、头像 1:1、设头像要再确认。
+  //   · 主机没配/没开：**反向规则**——不给工具只能拦住"真去画"，拦不住它嘴上提议"要不要我画一张"；
+  //     用户看到这种提议只会白点一下，所以必须明确告诉模型"你没有画图能力"。
+  _imageRuleMessage() {
+    if (this._drawToolsOn) {
+      return '【生图（本机画图主机）】你可以用 draw_image 在用户电脑的 ComfyUI 上画图（约 10 秒一张），用 set_avatar 把某张图设为角色头像：\n'
+        + '- 先问用户要不要画（把你要画的内容摘要说清楚），用户同意后再调用；不要自作主张连续出图。\n'
+        + '- prompt 用英文，按工具说明里的「画风与提示词要求」写；头像一律 1:1（软件固定 768×768，别传尺寸）；用户要"几个候选"时连续调用 2~3 次 draft:true。\n'
+        + '- 出图后把图给用户看，再问要不要设为某角色的头像；**必须等用户明确同意**（"用这张 / 设为头像 / 就它了"）才调用 set_avatar，并把用户的原话填进 user_said。\n'
+        + '- 画图失败（主机离线 / ComfyUI 没开）就把原因如实告诉用户，不要重试超过一次，也不要说"正在画"。';
+    }
+    return '【生图】本轮你没有画图工具——用户还没配置画图主机，或者画图主机没在运行。因此：\n'
+      + '- **不要提议"要不要我画一张"**，不要说"我可以帮你出图/生成图片/配图"，也不要输出生图提示词或提示词代码块；专注设定本身。\n'
+      + '- 角色卡里的「外貌」照常写详细（那是文字设定，与画图无关）。\n'
+      + '- 只有当用户主动要求画图时才说明：需要先在「设置 → AI 与生成 → 画图主机」填上电脑的地址和配对 token、并让电脑上的画图主机保持运行；配好后就能画。';
   },
 
   // —— 画图工具（本机 ComfyUI，协议见 domain/imagehost.ts）——

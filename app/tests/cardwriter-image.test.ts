@@ -74,6 +74,27 @@ beforeEach(() => {
   C._writeOk = false; C._toolsOk = false;
 });
 
+describe('生图规则注入（_imageRuleMessage）', () => {
+  it('主机在线 → 正向规则（先问再画 / 设头像要再确认）', () => {
+    C._drawToolsOn = true;
+    const t = C._imageRuleMessage();
+    expect(t).toContain('你可以用 draw_image');
+    expect(t).toContain('先问用户要不要画');
+    expect(t).toContain('必须等用户明确同意');
+    expect(t).not.toContain('你没有画图工具');
+  });
+
+  it('主机没配/没开 → 反向规则：明确"没有画图能力"、不许提议生图', () => {
+    C._drawToolsOn = false;
+    const t = C._imageRuleMessage();
+    expect(t).toContain('你没有画图工具');
+    expect(t).toContain('不要提议"要不要我画一张"');
+    expect(t).toContain('不要输出生图提示词');
+    expect(t).toContain('设置 → AI 与生成 → 画图主机');
+    expect(t).not.toContain('你可以用 draw_image');
+  });
+});
+
 describe('门控与主机状态', () => {
   it('_drawToolsOn=false 不给画图工具；=true 时两个工具都在，且描述带模型与画风说明', () => {
     C._drawToolsOn = false;
