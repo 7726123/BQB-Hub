@@ -22,6 +22,7 @@ vi.mock('../src/domain/imagehost', () => ({
   IMAGE_HOST_KEY: 'imageHostConfig',
   AVATAR_SIZE: 768,
   DRAFT_SIZE: 512,
+  DRAFT_STEPS: 20,
   AVATAR_STORE_SIZE: 512,
   ImageHost: {
     ready: () => ih.ready,
@@ -154,10 +155,10 @@ describe('draw_image', () => {
     expect(C._genImages.get('img1').seed).toBe(42);
   });
 
-  it('draft:true 走 512×512 / 8 步', async () => {
+  it('draft:true 走 512×512 / 20 步（8 步在 512² 上会糊，2026-10-05 实测）', async () => {
     await C._handleTools([{ id: 'c1', name: 'draw_image', arguments: { prompt: 'x', draft: true } }], '');
     expect(ih.drawCalls[0].width).toBe(512);
-    expect(ih.drawCalls[0].steps).toBe(8);
+    expect(ih.drawCalls[0].steps).toBe(20);
   });
 
   it('未配置 → 失败文案引导去设置；离线 → 提示不要重试', async () => {

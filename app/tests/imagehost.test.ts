@@ -27,7 +27,7 @@ vi.mock('../src/domain/settingsync', () => ({
 let ImageHost: any;
 let scaleSize: any;
 let bytesToDataUrl: any;
-let AVATAR_SIZE = 0, DRAFT_SIZE = 0, AVATAR_STORE_SIZE = 0;
+let AVATAR_SIZE = 0, DRAFT_SIZE = 0, DRAFT_STEPS = 0, AVATAR_STORE_SIZE = 0;
 
 const store = new Map<string, any>();
 
@@ -47,7 +47,7 @@ beforeAll(async () => {
   const dataMod = await import('../src/lib/imagedata');
   scaleSize = dataMod.scaleSize; bytesToDataUrl = dataMod.bytesToDataUrl;
   const mod = await import('../src/domain/imagehost');
-  ImageHost = mod.ImageHost; AVATAR_SIZE = mod.AVATAR_SIZE; DRAFT_SIZE = mod.DRAFT_SIZE; AVATAR_STORE_SIZE = mod.AVATAR_STORE_SIZE;
+  ImageHost = mod.ImageHost; AVATAR_SIZE = mod.AVATAR_SIZE; DRAFT_SIZE = mod.DRAFT_SIZE; DRAFT_STEPS = mod.DRAFT_STEPS; AVATAR_STORE_SIZE = mod.AVATAR_STORE_SIZE;
 });
 
 beforeEach(() => {
@@ -85,8 +85,9 @@ describe('ImageHost 配置', () => {
     expect(ImageHost.config()).toEqual(saved);
     expect(ImageHost.ready()).toBe(true);
   });
-  it('尺寸常量就是约定值（头像 768 / 草稿 512 / 入库 512）', () => {
+  it('尺寸/步数常量就是约定值（头像 768 / 草稿 512+20 步 / 入库 512）', () => {
     expect([AVATAR_SIZE, DRAFT_SIZE, AVATAR_STORE_SIZE]).toEqual([768, 512, 512]);
+    expect(DRAFT_STEPS).toBe(20);
   });
 });
 

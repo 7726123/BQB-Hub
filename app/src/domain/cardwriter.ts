@@ -5,7 +5,7 @@ import { CharacterManager } from './character';
 import { SettingSyncManager } from './settingsync';
 import { selectedRawText, rawOffsetOf, nodeAtRawOffset, roundIndexOf, collectRoundDeletes } from '../lib/msgslice';
 import { renderMdStrong } from '../lib/mdtext';
-import { ImageHost, AVATAR_SIZE, DRAFT_SIZE, AVATAR_STORE_SIZE } from './imagehost';
+import { ImageHost, AVATAR_SIZE, DRAFT_SIZE, DRAFT_STEPS, AVATAR_STORE_SIZE } from './imagehost';
 import { resizeDataUrlLongSide } from '../lib/imagedata';
 
 // 安全提示：本模块在 app.js 之前加载，加载期（init/_load）触发的兜底提示不能依赖
@@ -1143,7 +1143,7 @@ const CardWriterChat: CardWriterChatShape = {
     const signal = this._drawAbort ? this._drawAbort.signal : undefined;
     const t0 = Date.now();
     try {
-      const d = await ImageHost.draw({ prompt: prompt, width: size, height: size, seed: seed, steps: isDraft ? 8 : undefined }, signal);
+      const d = await ImageHost.draw({ prompt: prompt, width: size, height: size, seed: seed, steps: isDraft ? DRAFT_STEPS : undefined }, signal);
       if (!d.ok) {
         return { ok: false, message: '失败：' + (d.error || '提交失败') + '（检查画图主机上的 ComfyUI 是否在运行）' };
       }

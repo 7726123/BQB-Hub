@@ -19,6 +19,7 @@ export interface ImageHostConfig { enabled: boolean; base: string; token: string
 export const IMAGE_HOST_KEY = 'imageHostConfig';
 export const AVATAR_SIZE = 768;   // 头像生成边长（1:1）
 export const DRAFT_SIZE = 512;    // 草稿试画边长（快，用于挑构图）
+export const DRAFT_STEPS = 20;    // 草稿步数（2026-10-05 实测：8 步在 512² 上必然发糊；20 步手/细节才可辨，16 步手会粘连）
 export const AVATAR_STORE_SIZE = 512; // 入库头像长边（与手动选头像的 _compressImage(file,512) 一致）
 
 function _normBase(s: any): string {
