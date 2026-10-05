@@ -198,28 +198,36 @@ export const ImageHost = {
   },
 
   /** 把一张（已压到 512 的）dataURL 写进角色头像。**只认已存在的角色条目**：
-   *    ① 原书「角色」条目 → entry.avatar + saveAll；
+   *    ① 目标书（bookId，缺省=当前激活书）的原书「角色」条目 → entry.avatar + saveAll；
    *    ② 临时世界书里已有的同名「角色」（比奇 / 对话模式登记过）→ 写它自己那一层（原书不动）。
    *  不认识的 角色名 一律失败——**绝不现造条目**：以前这里会 ensureTempCharacter 造一个临时角色、
    *  还固定写进**对话模式**那一层（键带 _chat），于是工具回报"成功"、写卡和世界书里却什么都看不到
-   *  （用户 2026-10-06 反馈的正是这个）。草稿里、还没写进世界书的角色，由调用方先落地再设。 */
-  applyAvatarToCharacter(name: string, dataUrl512: string): { ok: boolean; message: string } {
+   *  （用户 2026-10-06 反馈的正是这个）。草稿里、还没写进世界书的角色，由调用方先落地再设。
+   *  **bookId 必须跟着"写卡的讨论目标书"走**：写卡换了目标书、而这里读激活书的话，同名的角色会把
+   *  另一本书的头像写到这本书上（用户 2026-10-06 报的串台 bug）。 */
+  applyAvatarToCharacter(name: string, dataUrl512: string, bookId?: string): { ok: boolean; message: string } {
     const nm = String(name || '').trim();
     if (!nm) return { ok: false, message: '工具调用参数无效：缺少角色名' };
     if (!dataUrl512) return { ok: false, message: '失败：图片数据为空（生成结果已过期？）' };
     try {
       const all = WorldBookManager.getAll();
-      const wb = WorldBookManager.getActive();
-      const entry = (wb && wb.entries) ? wb.entries.find((e: any) => e.type === '角色' && e.name === nm) : null;
+      const wantId = String(bookId || '').trim();
+      const wb = wantId ? (all.find((w: any) => w && w.id === wantId) || null) : WorldBookManager.getActive();
+      if (!wb) return { ok: false, message: '失败：找不到这本书的世界书（它可能已被删除）' };
+      const bookTitle = String(wb.name || wb.title || '');
+      const entry = (wb.entries) ? wb.entries.find((e: any) => e.type === '角色' && e.name === nm) : null;
       if (entry) {
         entry.avatar = dataUrl512;
         WorldBookManager.saveAll(all);
         _refreshAvatarsEverywhere();
-        return { ok: true, message: '已把「' + nm + '」的头像设为这张图（已写入世界书）' };
+        return { ok: true, message: '已把「' + nm + '」的头像设为这张图（已写入《' + bookTitle + '》的世界书）' };
       }
       // 临时层里的同名条目：两种模式各找一遍，谁有就写谁那一层（不能写错层，写错层等于没写）。
       // 按**名字**找：比奇建的临时角色偶尔类型会被写成「其他」，那种也认（头像照样挂得上），只是提示一句类型。
-      const SS: any = SettingSyncManager;
+      // 临时层的键按"当前激活书"算——目标书不是激活书时不查，免得又串到别本书的层上。
+      const activeId = String((typeof (WorldBookManager as any).getActiveId === 'function' ? (WorldBookManager as any).getActiveId() : '') || '');
+      const sameBook = !wantId || !activeId || wantId === activeId;
+      const SS: any = sameBook ? SettingSyncManager : null;
       if (SS && typeof SS.getOverlay === 'function' && typeof SS.withMode === 'function' && typeof SS.setTempAvatar === 'function') {
         const modes: Array<'novel' | 'chat'> = ['novel', 'chat'];
         for (let i = 0; i < modes.length; i++) {
@@ -244,7 +252,7 @@ export const ImageHost = {
           }
         }
       }
-      return { ok: false, message: '未找到角色条目：' + nm + '（只能给世界书里已有的角色设头像：名字要与条目名完全一致；还只存在草稿里的新角色要等它写进世界书之后再设）' };
+      return { ok: false, message: '未找到角色条目：' + nm + (bookTitle ? ('（在《' + bookTitle + '》里找过）') : '') + '（只能给世界书里已有的角色设头像：名字要与条目名完全一致；还只存在草稿里的新角色要等它写进世界书之后再设）' };
     } catch (e) {
       return { ok: false, message: '失败：写入头像时出错（' + ((e && (e as Error).message) || e) + '）' };
     }

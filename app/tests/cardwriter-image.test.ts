@@ -40,8 +40,8 @@ vi.mock('../src/domain/imagehost', () => ({
     draw: async (o: any) => { ih.drawCalls.push(o); return ih.drawResult; },
     waitJob: async (id: any, o: any) => { if (o && o.onTick) o.onTick({ elapsed: 3000 }); return ih.waitResult; },
     imageDataUrl: async () => ih.image,
-    applyAvatarToCharacter: (name: string, url: string) => {
-      ih.applies.push({ name: name, url: url });
+    applyAvatarToCharacter: (name: string, url: string, bookId?: string) => {
+      ih.applies.push({ name: name, url: url, bookId: bookId });
       if (ih.applyResult) return ih.applyResult;
       return { ok: true, message: '已把「' + name + '」的头像设为这张图（已写入世界书）' };
     }
@@ -288,6 +288,23 @@ describe('draw_image', () => {
     expect(r.message).toContain('如实告诉用户');
   });
 
+  // 用户 2026-10-06 报的串台：写卡能换"讨论目标书"，而图片/头像那条链路以前只认"当前激活书"
+  it('跨书隔离：目标是乙书时，底图用乙书的头像、设头像也写进乙书', async () => {
+    WB_BOOKS = [
+      { id: 'wb1', name: '甲书', entries: [{ id: 'e1', type: '角色', name: '林晚', content: '…', avatar: 'data:image/jpeg;base64,A' }] },
+      { id: 'wb2', name: '乙书', entries: [{ id: 'e2', type: '角色', name: '林晚', content: '…', avatar: 'data:image/jpeg;base64,B' }] }
+    ];
+    C._getTargetId = () => 'wb2';
+    ih.drawCalls = [];
+    await C._handleTools([{ id: 'c1', name: 'draw_image', arguments: { prompt: 'x', base_image: '林晚' } }], '');
+    expect(ih.drawCalls[0].initImage).toBe('data:image/jpeg;base64,B');   // 不是甲书那张 A
+    ih.applies = [];
+    C._genImages.set('img1', { full: 'data:image/png;base64,AAA' });
+    await C._handleTools([{ id: 'c2', name: 'set_avatar', arguments: { character: '林晚', image_id: 'img1' } }], '');
+    expect(ih.applies[0].bookId).toBe('wb2');                              // 写进乙书
+    C._getTargetId = () => 'wb1';
+  });
+
   it('三档强度的场景说明写进工具描述（小改只修细节；换姿势/衣服/背景用 strong）', () => {
     C._drawToolsOn = true;
     C._hostStatus = { at: Date.now(), ok: true, model: 'm', hint: '', caps: ['img2img', 'hires'] };
@@ -311,7 +328,8 @@ describe('set_avatar（第二段确认）', () => {
     const out = await C._handleTools([{ id: 'c2', name: 'set_avatar', arguments: { character: '林晚', image_id: id, user_said: '用这张' } }], '');
     const r = JSON.parse(out[0]);
     expect(r.ok).toBe(true);
-    expect(ih.applies).toEqual([{ name: '林晚', url: 'data:image/png;base64,AAA' }]);
+    expect(ih.applies[0].name).toBe('林晚');
+    expect(ih.applies[0].url).toBe('data:image/png;base64,AAA');
     expect(r.message).toContain('用户原话');
   });
 

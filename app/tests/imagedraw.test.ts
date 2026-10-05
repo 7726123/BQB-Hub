@@ -107,6 +107,24 @@ describe('resolveBaseImage：指名第几张', () => {
   });
 });
 
+describe('跨书隔离：图号 / 上一张 / 角色头像都跟着"这本书"走', () => {
+  it('同名角色在两本书里：按传进来的书取头像；别本书的图号不许拿来改', async () => {
+    h.books = [
+      { id: 'wbA', name: '甲书', entries: [{ id: 'eA', type: '角色', name: '林晚', avatar: 'data:image/jpeg;base64,A' }] },
+      { id: 'wbB', name: '乙书', entries: [{ id: 'eB', type: '角色', name: '林晚', avatar: 'data:image/jpeg;base64,B' }] }
+    ];
+    expect((await m.resolveBaseImage('林晚', store([]), 'wbB')).dataUrl).toBe('data:image/jpeg;base64,B');
+    expect((await m.resolveBaseImage('林晚', store([]), 'wbA')).dataUrl).toBe('data:image/jpeg;base64,A');
+    const s2 = store([['img1', { full: 'ONE', book: 'wbA' }], ['img2', { full: 'TWO', book: 'wbB' }]]);
+    const r = await m.resolveBaseImage('图1', s2, 'wbB');       // 甲书画的图，不能在乙书里用
+    expect(r.ok).toBe(false);
+    expect(r.error).toContain('另一本书');
+    expect(r.error).toContain('甲书');
+    expect((await m.resolveBaseImage('last', s2, 'wbB')).dataUrl).toBe('TWO');   // "上一张"跳过别本书的
+    expect((await m.resolveBaseImage('图1', s2)).dataUrl).toBe('ONE');           // 不传 bookId 时照旧（比奇/旧调用）
+  });
+});
+
 describe('genImagesHtml：编号徽标 + 改图/重修标注', () => {
   it('缩略图带「图3」、参数行含编号与"改自"/"两步重修"；过期图没有编号', () => {
     const s = store([

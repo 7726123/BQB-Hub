@@ -61,13 +61,33 @@ export interface BaseImageResult {
   soft?: boolean;
 }
 
-function _avatarOf(name: string): string {
-  // 角色当前头像：原书条目 → 临时层（两种模式都找）。返回 dataURL 或 ''。
+function _bookById(bookId?: string): any {
+  // 写卡可以"讨论目标书 ≠ 当前激活书"，所有按角色名找头像的动作都必须跟着目标书走，
+  // 否则同名的角色会把 A 书的头像用到 B 书上（用户 2026-10-06 报的串台就是这么来的）。
   try {
-    const wb = WorldBookManager.getActive();
+    if (bookId) {
+      const b = WorldBookManager.getAll().find((w: any) => w && w.id === bookId);
+      if (b) return b;
+    }
+    return WorldBookManager.getActive();
+  } catch (e) { return null; }
+}
+
+function _bookName(bookId?: string): string {
+  const b = _bookById(bookId);
+  return String((b && (b.name || b.title)) || '');
+}
+
+function _avatarOf(name: string, bookId?: string): string {
+  // 角色当前头像：指定书（缺省=当前书）的原书条目 → 该书的临时层。返回 dataURL 或 ''。
+  try {
+    const wb = _bookById(bookId);
     const e = (wb && wb.entries) ? wb.entries.find((x: any) => x.type === '角色' && String(x.name || '').trim() === name) : null;
     if (e && e.avatar) return String(e.avatar);
   } catch (err) { /* ignore */ }
+  // 临时层只有"当前激活书"的（overlay 键按激活书算）：目标书不是激活书时查不到是正常的，不能拿错层
+  const activeId = (() => { try { const f = (WorldBookManager as any).getActiveId; return (typeof f === 'function' ? f.call(WorldBookManager) : '') || ''; } catch (e) { return ''; } })();
+  if (bookId && activeId && bookId !== activeId) return '';
   try {
     const SS: any = SettingSyncManager;
     if (SS && typeof SS.getOverlay === 'function' && typeof SS.withMode === 'function') {
@@ -88,25 +108,35 @@ function _avatarOf(name: string): string {
 
 /**
  * 解析「底图引用」→ dataURL。引用写法（模型从工具说明里学，用户从界面编号上认）：
- *   'img3' / '图3' / '3'  → 本会话生成过的那张（句柄还在才行）
- *   'last' / '上一张'     → 最近生成的一张
- *   其它（角色名）        → 该角色当前头像（原书条目或临时层）
+ *   'img3' / '图3' / '3'  → 本会话生成过的那张（句柄还在、且属于 bookId 那本书才行）
+ *   'last' / '上一张'     → bookId 这本书最近生成的一张（跳过别的书画的）
+ *   其它（角色名）        → 该角色当前头像（bookId 那本书的原书条目或临时层）
+ * bookId：写卡传"讨论目标书"，比奇传当前激活书；缺省 = 当前激活书。
  */
-export async function resolveBaseImage(ref: unknown, store: Map<string, any>): Promise<BaseImageResult> {
+export async function resolveBaseImage(ref: unknown, store: Map<string, any>, bookId?: string): Promise<BaseImageResult> {
   const raw = String(ref || '').trim();
   if (!raw) return { ok: false, error: '底图引用为空' };
   const low = raw.toLowerCase();
+  const owner = (g: any) => String((g && g.book) || '');        // 老句柄没有 book 字段 → 视作当前书
+  const mine = (g: any) => !bookId || !owner(g) || owner(g) === bookId;
   let id = '';
   if (low === 'last' || raw === '上一张' || raw === '最近一张') {
     const keys = Array.from(store.keys());
-    id = keys.length ? keys[keys.length - 1] : '';
-    if (!id) return { ok: false, error: '本会话还没有生成过图片，没有"上一张"可用' };
+    for (let i = keys.length - 1; i >= 0; i--) {
+      if (mine(store.get(keys[i]))) { id = keys[i]; break; }
+    }
+    if (!id) return { ok: false, error: '这本书还没有生成过图片，没有"上一张"可用' };
   } else {
     const m = /^(?:img\s*|图\s*)?(\d+)$/i.exec(low);
     if (m) {
       id = 'img' + m[1];
       if (!store.has(id)) {
         return { ok: false, error: '找不到' + raw + '（生成的图片只在本会话内存里；重开 App 后旧图只剩"已过期"占位，请重新生成一张，或换一张还在的图）' };
+      }
+      const g = store.get(id);
+      if (!mine(g)) {
+        const name = _bookName(owner(g));
+        return { ok: false, error: raw + '是用另一本书' + (name ? ('《' + name + '》') : '') + '画的，不能拿到这本书里改：切回那本书再改它，或在这本书里重新画一张' };
       }
     }
   }
@@ -117,7 +147,7 @@ export async function resolveBaseImage(ref: unknown, store: Map<string, any>): P
     return { ok: true, dataUrl: url, label: imageLabel(id) || raw };
   }
   // 不是编号 → 当角色名，用它的头像
-  const av = _avatarOf(raw);
+  const av = _avatarOf(raw, bookId);
   if (!av) return { ok: false, soft: true, error: '「' + raw + '」还没有头像（可以照常按描述画，只是脸不会固定；想要 TA 的脸一致就先给这个角色设一张头像）' };
   if (/^data:/i.test(av)) return { ok: true, dataUrl: av, label: raw + '的头像' };
   // 头像可能是外链（导入的卡）：抓成 dataURL 再交给主机（CORS 拦不住就当失败）
@@ -163,6 +193,8 @@ export async function drawImageToStore(opts: {
   baseImage?: unknown;
   /** 改图幅度：slight(0.35) / medium(0.55，默认) / strong(0.75) */
   strength?: unknown;
+  /** 这些图片属于哪本书（写卡传讨论目标书、比奇传激活书）：跨书的图/头像不许混用 */
+  bookId?: string;
   store: Map<string, any>;
   /** 下一个图片 id（调用方自增自己的计数器，如 () => 'img' + (++this._imgSeq)） */
   nextId: () => string;
@@ -196,7 +228,7 @@ export async function drawImageToStore(opts: {
     if (caps.indexOf('img2img') < 0) {
       return { ok: false, host: host, error: '失败：画图主机不支持以图改图（电脑上的画图主机是旧版，请更新后再试）；这次可以不带 base_image 重新出图。' };
     }
-    const b = await resolveBaseImage(baseRef, opts.store);
+    const b = await resolveBaseImage(baseRef, opts.store, opts.bookId);
     if (!b.ok && !b.soft) return { ok: false, host: host, error: '失败：' + (b.error || '底图不可用') };
     if (b.ok) {
       initImage = String(b.dataUrl || '');
@@ -248,7 +280,7 @@ export async function drawImageToStore(opts: {
   const sizeText = meta.size || (size + 'x' + size);
   opts.store.set(id, {
     full: full, thumb: thumb, seed: meta.seed, size: sizeText, seconds: seconds, prompt: prompt,
-    base: baseLabel, hires: hires
+    base: baseLabel, hires: hires, book: String(opts.bookId || '')
   });
   const cap = opts.cap || 12;
   while (opts.store.size > cap) {

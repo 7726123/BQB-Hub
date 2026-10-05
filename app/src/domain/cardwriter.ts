@@ -1153,6 +1153,7 @@ const CardWriterChat: CardWriterChatShape = {
         strength: a && a.strength,
         store: this._genImages,
         nextId: () => 'img' + (++this._imgSeq),
+        bookId: String(this._getTargetId() || '') || undefined,   // 图片按讨论目标书归属：换书不串台
         signal: signal,
         onTick: () => { this._statusText = '正在出图…'; this.renderMessages(true); },
         shouldCancel: () => this._drawCancelled,
@@ -1192,7 +1193,7 @@ const CardWriterChat: CardWriterChatShape = {
     if (!img) return { ok: false, message: '未找到图片：' + id + '（生成的图片只在本会话内有效，请重新画一张再设）' };
     // 入库前压到 512（与手动选头像一致）；canvas 不可用时退回原图（功能优先）
     const stored = (await resizeDataUrlLongSide(String(img.full || ''), AVATAR_STORE_SIZE, 0.92)) || String(img.full || '');
-    const r = ImageHost.applyAvatarToCharacter(char, stored);
+    const r = ImageHost.applyAvatarToCharacter(char, stored, String(this._getTargetId() || '') || undefined);
     if (!r.ok) {
       // 失败要能自己解释清楚：最常见的两种是"角色还只在草稿里"和"名字对不上"（模型据此决定补做哪一步）
       const inDraft = !!(this._draft && (this._draft.characters || []).some((c: any) => String((c && c.name) || '').trim() === char));

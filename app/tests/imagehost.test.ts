@@ -17,6 +17,7 @@ vi.mock('../src/domain/worldbook', () => ({
   WorldBookManager: {
     getAll: () => h.books,
     getActive: () => h.books[0] || null,
+    getActiveId: () => (h.books[0] && h.books[0].id) || null,
     saveAll: () => { h.saved++; }
   }
 }));
@@ -248,6 +249,18 @@ describe('ImageHost.applyAvatarToCharacter', () => {
     expect(r.ok).toBe(true);
     expect(h.temp).toEqual({ id: 'c1', url: 'data:image/jpeg;base64,CCC' });
     expect(h.mode).toBe('novel');
+  });
+
+  it('头像写进"指定的那本书"（写卡换了讨论目标书也不串台）', () => {
+    h.books = [
+      { id: 'wb1', name: '甲书', entries: [{ id: 'e1', type: '角色', name: '林晚', content: '…' }] },
+      { id: 'wb2', name: '乙书', entries: [{ id: 'e2', type: '角色', name: '林晚', content: '…' }] }
+    ];
+    const r = ImageHost.applyAvatarToCharacter('林晚', 'data:image/jpeg;base64,X', 'wb2');
+    expect(r.ok).toBe(true);
+    expect(h.books[1].entries[0].avatar).toBe('data:image/jpeg;base64,X');
+    expect(h.books[0].entries[0].avatar).toBeUndefined();      // 另一本一个字都没动
+    expect(r.message).toContain('乙书');
   });
 
   it('找不到角色时以"未找到"开头（命中写卡失败判据）且绝不现造角色，缺参数各有前缀', () => {

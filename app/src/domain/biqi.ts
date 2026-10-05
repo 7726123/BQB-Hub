@@ -586,8 +586,7 @@ export const BiqiAgent: {
       }
     };
     if (canImg2img) {
-      props.base_image = { type: 'string', description: '以什么为底图。**画到世界书里的角色时默认就填 TA 的角色名**（用 TA 当前头像当底图：换动作/衣服/背景都行、脸会保持是 TA）；也可以填"图3"/"img3"（对话里图片左下角的编号，作者说"第几张"就是它）或 "last"（最近一张）来改某张已出的图。角色还没有头像时会照常按描述画（不报错）。' };
-      props.strength = { type: 'string', enum: ['slight', 'medium', 'strong'], description: '改图幅度（有 base_image 时）：slight=**只修小毛病**（手指/眼睛/局部瑕疵，姿势、服装、背景都不动）；medium=中等（换表情、换衣服颜色、加减小物件、换光线，姿势构图基本不动）；strong=大改（**换姿势/动作、换整套衣服、换背景场景、换机位**，只保住人物和脸）。要换动作/衣服/背景时一律 strong；作者没说时看改的是什么，只有"修瑕疵"才用 slight。' };
+      props.base_image = { type: 'string', description: '以什么为底图。**画到世界书里的角色时默认就填 TA 的角色名**（用 TA 当前头像当底图：换动作/衣服/背景都行、脸会保持是 TA）；也可以填"图3"/"img3"（对话里图片左下角的编号，作者说"第几张"就是它）或 "last"（最近一张）来改某张已出的图。角色还没有头像时会照常按描述画（不报错）。**带底图时一律按"大改"处理**（换姿势动作/衣服/背景，只保住人物和脸）。' };
     }
     return {
       type: 'function',
@@ -598,7 +597,7 @@ export const BiqiAgent: {
           + (hint ? ('画风与提示词要求：' + hint + ' ') : '')
           + '**作者明确让你画时直接调用，不要再问"要不要画/可以吗"**；他只是讨论画面、还没让你画时先讨论，不要抢着画。'
           + 'prompt 用英文；画什么以最近上下文为准（人物外观、当前场景、正在发生的事），拿不准时先 read_story / read_worldbook 看一眼。'
-          + (canImg2img ? '作者要"改某一张"（"把图3改成雪景""照着苏黎的头像画一张"）时传 base_image；**画到世界书里的角色时默认就用 TA 的头像当底图**（换动作/衣服/背景都行、脸保持是 TA）。' : '')
+          + (canImg2img ? '作者要"改某一张"（"把图3改成雪景""给这段配张图"）时传 base_image；**画到世界书里的角色时默认就用 TA 的头像当底图**（一律大改：换动作/衣服/背景都行、脸保持是 TA）。' : '')
           + '档位：不填=标准（768×768，约 14 秒）；作者说"快一点/先看看"用 quality:"fast"（512，约 5~8 秒）；'
           + '一次出 2~3 张让他挑构图用 quality:"draft"（512×512/20 步，可连续调用几次）；说"更精细/更大"用 quality:"high"（1024×1024/36 步，约 30 秒）。',
         parameters: { type: 'object', properties: props, required: ['prompt'] }
@@ -615,14 +614,15 @@ export const BiqiAgent: {
       const caps: string[] = Array.isArray((this._hostStatus || {}).caps) ? (this._hostStatus as any).caps : [];
       const canImg2img = caps.indexOf('img2img') >= 0;
       return '【生图（作者电脑上的画图主机）】你可以用 draw_image 出图，结果会直接显示在对话里（约 10~35 秒）：\n'
-        + '- 作者明确让你画（"画一张…""生图""来张图""就按这个画"）→ **直接调用 draw_image，不要再问"要不要画/可以吗"**，也不要只说"这就画"却不调用；\n'
+        + '- **最常用的用法：作者刚写完一段 / 刚演完一轮，说一句"配张图""来张图""给这段配一张"→ 不要反问他画什么**，自己从最近正文/演出记录里挑最有画面感的那一幕（谁、在哪、正在做什么、什么时间与光线）画出来；\n'
+        + '- 作者明确让你画（"画一张…""生图""就按这个画"）→ 一样**直接调用，不要再问"要不要画/可以吗"**，也不要只说"这就画"却不调用；\n'
         + '- 他只是讨论画面、还没让你画时 → 正常讨论，别抢着画；讨论里他认可了，也一样直接画；\n'
         + '- 出图后图上会有编号（气泡左下角的「图1/图2…」）：作者之后说"把图3改成雪景""基于图2再来一张"时，就用那个编号指代它'
         + (canImg2img
-          ? '（draw_image 的 base_image 填那个编号 / "last"；幅度按"改什么"选 strength——**要换动作、衣服、背景用 strong（只保脸），换表情/衣色用 medium，只有修手指眼睛这类小毛病才用 slight**）'
+          ? '（draw_image 的 base_image 填那个编号 / "last"）'
           : '（本机画图主机是旧版、暂时不支持改图；他真要改就按新的描述重新画一张）') + '；\n'
         + (canImg2img
-          ? '- **画面里有世界书里的角色时：默认用 TA 的头像当底图**（base_image 填角色名、strength:"strong"）——这样动作/衣服/背景都能换、脸始终是 TA；多人在场用作者点名的那个人，他没点名就用画面里最主要的那个。角色还没头像就照常按描述画（别报错，末尾可以补一句"给它设张头像，以后脸就能固定"）。\n'
+          ? '- **画面里有世界书里的角色时：默认用 TA 的头像当底图**（base_image 填角色名）——这样动作/衣服/背景都能换、脸始终是 TA；多人在场用作者点名的那个人，他没点名就用画面里最主要的那个。**带底图时一律按"大改"处理**（换姿势动作/整套衣服/背景场景，只保住人物和脸），不要做"只改一点"的小修——作者要的是新鲜感。角色还没头像就照常按描述画（别报错，末尾可以补一句"给它设张头像，以后脸就能固定"）。\n'
           : '')
         + '- 提示词落在最近上下文里能确定的东西上（人物外观、当前场景、正在发生的事）；他没说的细节按上下文最合理的样子补，别自己另起一个故事；\n'
         + '- 出图后用一两句中文说明画的是什么，问他要不要换一张或调整；失败（主机离线/超时/主机不支持改图）就如实说原因，不要重试超过一次，也不要假装画了。';
@@ -646,9 +646,11 @@ export const BiqiAgent: {
         legacyDraft: !!(a && a.draft),
         seed: a && a.seed,
         baseImage: a && a.base_image,
-        strength: a && a.strength,
+        // 比奇只做大改（用户 2026-10-06）：换动作/衣服/背景、只保脸——不做"只改一点"的小修，作者要新鲜感
+        strength: 'strong',
         store: this._genImages,
         nextId: () => 'img' + (++this._imgSeq),
+        bookId: (typeof WorldBookManager !== 'undefined' && WorldBookManager.getActiveId && WorldBookManager.getActiveId()) || undefined,
         onTick: () => { this._status = '正在出图…'; this.renderMessages(); },
         onImage: (id: string) => {
           const last: any = this.messages[this.messages.length - 1];

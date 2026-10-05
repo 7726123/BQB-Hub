@@ -118,9 +118,7 @@ describe('比奇生图：门控与规则文案', () => {
     expect(String(d.function.description)).toContain('不要再问');
     expect(String(d.function.description)).toContain('base_image');   // 主机支持改图
     expect(d.function.parameters.required).toEqual(['prompt']);
-    expect(Object.keys(d.function.parameters.properties)).toContain('strength');
-    expect(String(d.function.parameters.properties.strength.description)).toContain('只修小毛病');
-    expect(String(d.function.parameters.properties.strength.description)).toContain('换姿势');
+    expect(Object.keys(d.function.parameters.properties)).not.toContain('strength');   // 比奇只做大改，不给幅度选项
     expect(String(d.function.parameters.properties.base_image.description)).toContain('角色名');
   });
 
@@ -132,6 +130,16 @@ describe('比奇生图：门控与规则文案', () => {
     expect(props).not.toContain('strength');
   });
 
+  it('比奇强制大改：带底图出图时 denoise=0.75（不给"小改"这个选项）', async () => {
+    BiqiAgent.messages = [{ role: 'assistant', content: '' }];
+    BiqiAgent._genImages.set('img1', { full: 'data:image/png;base64,SRC', thumb: 'data:image/png;base64,T', seed: 1, size: '768x768', seconds: 9, book: '' });
+    BiqiAgent._imgSeq = 1;
+    ih.drawCalls = [];
+    await BiqiAgent._executeTool({ id: 'c1', name: 'draw_image', arguments: { prompt: 'x', base_image: '图1', strength: 'slight' } } as any);
+    expect(ih.drawCalls[0].initImage).toBe('data:image/png;base64,SRC');
+    expect(ih.drawCalls[0].denoise).toBe(0.75);   // 就算模型传了 slight，也按大改走
+  });
+
   it('_imageRuleMessage：在线=让画就直接画、不反问；离线=明确"没有画图能力"、不许提议', () => {
     BiqiAgent._drawToolsOn = true;
     BiqiAgent._hostStatus = { at: Date.now(), ok: true, model: 'm', hint: '', caps: ['img2img', 'hires'] };   // 规则里的默认识别角色头像要主机支持改图
@@ -139,7 +147,8 @@ describe('比奇生图：门控与规则文案', () => {
     expect(on).toContain('不要再问');
     expect(on).toContain('别抢着画');
     expect(on).toContain('默认用 TA 的头像当底图');   // 用户 2026-10-06：画面里有角色时自动拿头像当底图（保脸）
-    expect(on).toContain('strong');
+    expect(on).toContain('大改');                 // 比奇只做大改（不暴露小改/中改）
+    expect(on).toContain('配张图');               // 主场景：续写后直接配图，不问画什么
     expect(on).not.toContain('你没有画图工具');
 
     BiqiAgent._drawToolsOn = false;
