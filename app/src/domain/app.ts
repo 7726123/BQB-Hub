@@ -625,7 +625,7 @@ const App: AppShape = {
     if (base) base.value = cfg.base;
     if (tok) tok.value = cfg.token;
     App._syncImageHostUI();
-    App.toast(cfg.base ? ('画图主机已保存' + (cfg.enabled ? '' : '（未启用）')) : '画图主机地址已清空');
+    App.toast(cfg.base ? (cfg.enabled ? '画图主机已保存并启用' : '画图主机已保存，未启用') : '画图主机地址已清空');
     return cfg;
   },
 
@@ -633,8 +633,8 @@ const App: AppShape = {
     const st = await ImageHost.status(4000);
     App._syncImageHostUI(st);
     App.toast(st.ok
-      ? ('画图主机在线 · ' + (st.model || '未知模型') + (st.steps ? ('（' + st.steps + ' 步）') : ''))
-      : ('画图主机连接失败：' + (st.error || '未知错误')));
+      ? ('画图主机在线 · ' + (st.model || '未知模型'))
+      : ('画图主机连接失败 · ' + (st.error || '未知错误')));
     return st;
   },
 
@@ -657,10 +657,10 @@ const App: AppShape = {
       if (state0) {
         if (st) {
           state0.textContent = st.ok
-            ? ('在线 · ' + (st.model || '未知模型') + (st.steps ? ('（' + st.steps + ' 步' + (st.size ? '，' + st.size : '') + '）') : ''))
-            : ('连接失败：' + (st.error || '未知错误'));
+            ? ('在线 · ' + (st.model || '未知模型') + (st.steps ? (' · ' + st.steps + ' 步') : ''))
+            : ('连接失败 · ' + (st.error || '未知错误'));
         } else {
-          state0.textContent = (c.enabled && c.base) ? '已配置（点「测试连接」看是否在线）' : (c.base ? '已填地址（未启用）' : '未配置 · 在电脑上跑 node serve.mjs --lan，把地址和 token 填这里');
+          state0.textContent = (c.enabled && c.base) ? '已配置' : (c.base ? '未启用' : '未配置');
         }
       }
     } catch (e) { /* 设置页没打开也不影响 */ }

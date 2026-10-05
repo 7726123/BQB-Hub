@@ -2415,7 +2415,7 @@ const UIManager: UIManagerShape = {
         if (elBase && document.activeElement !== elBase) elBase.value = base;
         if (elTok && document.activeElement !== elTok) elTok.value = String(c.token || '');
         if (badge) { badge.textContent = on ? 'ON' : 'OFF'; badge.style.background = on ? '#10b981' : '#6b7280'; }
-        if (state0) state0.textContent = (on && base) ? '已配置（点「测试连接」看是否在线）' : (base ? '已填地址（未启用）' : '未配置 · 在电脑上跑 node serve.mjs --lan，把地址和 token 填这里');
+        if (state0) state0.textContent = (on && base) ? '已配置' : (base ? '未启用' : '未配置');
       }
     } catch (e) { /* ignore */ }
   },
