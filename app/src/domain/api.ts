@@ -274,7 +274,11 @@ export function normalizeOutgoingMessages(messages: any[], compat: any): any[] {
       if (needsBridge && lastHadToolResult) {
         out.push({ role: 'assistant', content: _toolBridgeAssistantText() });
       }
-      out.push({ role: 'user', content: typeof m.content === 'string' ? m.content : String(m.content || '') });
+      // 数组原样放行（2026-10-06）：看图能力要把 user 消息发成
+      // [{type:'text'},{type:'image_url'}]——以前这里会 String(content) 成 "[object Object]"，
+      // 图片根本传不出去。
+      const content: any = (typeof m.content === 'string' || Array.isArray(m.content)) ? m.content : String(m.content || '');
+      out.push({ role: 'user', content: content });
       lastHadToolResult = false;
       continue;
     }

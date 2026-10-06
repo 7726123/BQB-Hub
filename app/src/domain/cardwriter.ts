@@ -6,8 +6,9 @@ import { SettingSyncManager } from './settingsync';
 import { selectedRawText, rawOffsetOf, nodeAtRawOffset, roundIndexOf, collectRoundDeletes } from '../lib/msgslice';
 import { renderMdStrong } from '../lib/mdtext';
 import { ImageHost, AVATAR_STORE_SIZE } from './imagehost';
-import { probeHost, drawImageToStore, genImagesHtml, imageLabel, hydrateImages, type HostStatusCache } from './imagedraw';
+import { probeHost, drawImageToStore, genImagesHtml, imageLabel, hydrateImages, lookAtImageTool, type HostStatusCache } from './imagedraw';
 import { ImageCache } from '../lib/imagecache';
+import { visionState, lookAtImageTracked } from '../lib/vision';
 import { resizeDataUrlLongSide } from '../lib/imagedata';
 
 // 安全提示：本模块在 app.js 之前加载，加载期（init/_load）触发的兜底提示不能依赖
@@ -110,6 +111,7 @@ const CardWriterChat: CardWriterChatShape = {
   _imgSeq: 0,
   _imgGone: new Set<string>(), // 确认取不到的 id（存档里没有 / 别的书的）→ 渲染成「已过期」，不再反复查
   _hydrating: false, // 水合进行中（防 renderMessages → 水合 → renderMessages 递归）
+  _visionNoToast: false, // 「当前模型看不了图」只提示一次（每个实例一次）
   _drawCancelled: false, // 用户点了「暂停」：中断出图轮询
   _drawAbort: null as any, // 当前出图请求的 AbortController（停止时 abort）
   _drawToolsOn: false, // 本轮是否给 draw_image/set_avatar（= 主机已启用且在线的探测结果）
@@ -905,6 +907,19 @@ const CardWriterChat: CardWriterChatShape = {
                   tools.forEach((t: any, i: any) => {
                     msgs.push({ role: 'tool', tool_call_id: t.id || ('call_' + i), content: results[i] || 'ok' });
                   });
+                  // A：出图轮 → **软件替模型核对一眼**刚生成的图（一次独立的看图子调用），
+                  // 结论作为软件记录注入下一轮，让它如实汇报（模型自己看不到图片）。
+                  // 看不了图的模型整段跳过（visionCaps=no）；子调用失败也只是这次不注入，主对话不受影响。
+                  try {
+                    const _ids = results.map(function (r: any) {
+                      try { return String((JSON.parse(r) || {}).image_id || ''); } catch (e) { return ''; }
+                    }).filter(Boolean);
+                    if (_ids.length) {
+                      const _g: any = this._genImages.get(_ids[0]);
+                      const _note = await this._visionCheckNote(_ids, String((_g && _g.prompt) || ''));
+                      if (_note) msgs.push({ role: 'system', content: _note });
+                    }
+                  } catch (e) { /* 核对失败不影响本轮 */ }
                   if (repeatReminder) msgs.push({ role: 'system', content: repeatReminder });
                   // 设计轮的软收尾：工具已经提交过一轮了，下一轮只该输出文字（工具还在，但别再多轮循环）
                   if (this._designTurn && this._toolRounds >= _DESIGN_TOOL_ROUNDS) {
@@ -1112,7 +1127,11 @@ const CardWriterChat: CardWriterChatShape = {
     ];
     // 画图工具只在「画图主机已启用且这一轮探测到在线」时提供；不给工具时生图规则也会消失，
     // 模型据此知道要说明"主机没开"，而不是假装画了（见 _callAPI 里的 _drawToolsOn）。
-    if (this._drawToolsOn) _base.push(this._imageToolDraw(), this._imageToolAvatar());
+    if (this._drawToolsOn) {
+      _base.push(this._imageToolDraw(), this._imageToolAvatar());
+      // 看图工具：只在"没确认看不了图"时给（模型看不了图就不让它看——用户 2026-10-06 要求）
+      if (visionState() !== 'no') _base.push(this._imageToolLook());
+    }
     return _base;
   },
 
@@ -1179,6 +1198,71 @@ const CardWriterChat: CardWriterChatShape = {
       }
     };
   },
+  // 看图工具：模型自己看不到图片，靠**一次单独的看图子调用**回答"这张画得怎么样"这类问题。
+  // 传的图是 420px 缩略图（便宜、够判断明显问题）；看不了图的模型（visionCaps=no）不给这个工具。
+  _imageToolLook() {
+    return {
+      type: 'function',
+      function: {
+        name: 'look_at_image',
+        description: '看一眼已经生成的那张图（单独的看图调用，约 3~6 秒）。可以问"手有没有画坏""背景是不是夜晚""这张和图4比哪张更像林晚"。'
+          + '**什么时候用**：你要判断画得对不对、有没有崩坏，或作者问起某张图的细节，而你自己看不到图片。'
+          + '拿到的是文字回答——请据此向作者说明，但不要把它说成"我亲眼看到的"。',
+        parameters: {
+          type: 'object',
+          properties: {
+            image_id: { type: 'string', description: '要看的那张图：界面编号「图3」或 "img3"；也可以填 "last" 或角色名（用 TA 的头像）' },
+            question: { type: 'string', description: '你想让它看什么（一句话，越具体越好，如"她手里的书有没有糊""这张和图4比哪个构图更稳"）' },
+            image_id2: { type: 'string', description: '可选：对比用的第二张（填编号）' }
+          },
+          required: ['image_id', 'question']
+        }
+      }
+    };
+  },
+  async _toolLookImage(a: any) {
+    const r = await lookAtImageTool({
+      imageRef: a && a.image_id,
+      imageRef2: a && a.image_id2,
+      question: a && a.question,
+      store: this._genImages,
+      bookId: String(this._getTargetId() || '') || undefined,
+      onStatus: () => { this._statusText = '正在看图…'; this.renderMessages(true); }
+    });
+    if (!r.ok && r.message.indexOf('看不了图片') >= 0 && !(this as any)._visionNoToast) {
+      (this as any)._visionNoToast = true;
+      try { if (!_cwHidden()) cwToast('当前模型看不了图片：已关闭"看图/图核对"（不影响出图与改图）'); } catch (e) { /* ignore */ }
+    }
+    return r;
+  },
+
+  // A（出图后自动核对一眼）：软件替模型看一次刚生成的图，把结论作为**软件记录**注入下一轮。
+  // 看不了图的模型（已确认看不了）直接跳过；试失败但不像能力问题（超时等）也只是这次不注入，主对话照常。
+  async _visionCheckNote(imgIds: string[], prompt: string): Promise<string> {
+    const id = String((imgIds && imgIds[0]) || '');
+    if (!id || visionState() === 'no') return '';
+    const g: any = this._genImages.get(id);
+    const img = String((g && (g.thumb || g.full)) || '');
+    if (!img) return '';
+    this._statusText = '正在核对刚生成的图…';
+    this.renderMessages(true);
+    const ask = '这是刚刚生成的一张插图（缩略图）。请核对两点：① 画面主要内容是否与描述相符；'
+      + '② 有没有**明显**的崩坏（手指畸形、乱码文字、结构错误、明显模糊）。两三句话直接说结论。'
+      + (prompt ? ('\n（生成时用的描述：' + String(prompt).slice(0, 300) + '）') : '');
+    const r = await lookAtImageTracked({ images: [img], question: ask, callLabel: 'vision' });
+    if (r.state === 'no') {
+      if (!(this as any)._visionNoToast) {
+        (this as any)._visionNoToast = true;
+        try { if (!_cwHidden()) cwToast('当前模型看不了图片：已关闭"看图/图核对"（不影响出图与改图）'); } catch (e) { /* ignore */ }
+      }
+      return '';
+    }
+    const ans = String(r.answer || '').trim();
+    if (!r.ok || !ans) return '';
+    return '【软件替你看过刚生成的那张图（既不是作者说的，也不是你自己看到的）】' + ans
+      + '\n请据此如实向作者说明这张图；与你刚才的预期不符时以这段为准，不要硬说达成了。若确实有明显崩坏，可以主动问一句「要不要我重画一张」。';
+  },
+
   _imageToolAvatar() {
     return {
       type: 'function',
@@ -1215,6 +1299,7 @@ const CardWriterChat: CardWriterChatShape = {
       const a = t.arguments || {};
       if (t.name === 'draw_image') return await this._toolDrawImage(a);
       if (t.name === 'set_avatar') return await this._toolSetAvatar(a);
+      if (t.name === 'look_at_image') return await this._toolLookImage(a);
       return { ok: false, message: '工具不存在：' + t.name };
     } catch (e) {
       return { ok: false, message: '失败：图片工具执行出错（' + ((e && (e as Error).message) || e) + '）' };
@@ -1259,6 +1344,7 @@ const CardWriterChat: CardWriterChatShape = {
     const label = imageLabel(out.id);
     return {
       ok: true,
+      image_id: String(out.id || ''),
       message: '图片已生成并显示给用户（图片 id：' + out.id + (label ? ('，界面编号：' + label) : '') + '，' + tier.label + '档 ' + tier.size + '×' + tier.size
         + (tier.steps ? ('/' + tier.steps + ' 步') : '') + '，seed ' + (out.seed == null ? '?' : out.seed)
         + '，耗时 ' + out.seconds + ' 秒' + (out.base ? ('，基于' + out.base + '改的' + (out.hires ? '，两步放大重修' : '')) : '') + '）。'
@@ -1610,11 +1696,13 @@ const CardWriterChat: CardWriterChatShape = {
         continue;
       }
       // 图片类工具：异步执行（10 秒级），先渲染状态条再 await
-      if (t.name === 'draw_image' || t.name === 'set_avatar') {
-        this._statusText = (t.name === 'draw_image') ? '正在出图…' : '正在写入头像…';
+      if (t.name === 'draw_image' || t.name === 'set_avatar' || t.name === 'look_at_image') {
+        this._statusText = (t.name === 'draw_image') ? '正在出图…' : (t.name === 'look_at_image' ? '正在看图…' : '正在写入头像…');
         this.renderMessages(true);
         const ir = await this._executeImageTool(t);
-        results.push(JSON.stringify({ ok: !!ir.ok, message: ir.message }));
+        if (ir.ok && _WRITE_TOOLS.indexOf(String(t.name)) >= 0) writeOk = true;
+        // image_id 一并回传（也让"出图后自动核对"知道刚生成的是哪张）
+        results.push(JSON.stringify({ ok: !!ir.ok, message: ir.message, image_id: String((ir as any).image_id || '') }));
         continue;
       }
       const r = this._executeToolResult(t);

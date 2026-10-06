@@ -9,6 +9,7 @@ import { SettingSyncManager } from '../src/domain/settingsync';
 import { WorldBookManager } from '../src/domain/worldbook';
 import { BiqiAgent } from '../src/domain/biqi';
 import { ImageCache } from '../src/lib/imagecache';
+import { markVision, __resetVisionForTest } from '../src/lib/vision';
 
 const g = globalThis as unknown as Record<string, any>;
 const SM = () => (globalThis as unknown as { StorageManager: { get: (k: string, d?: unknown) => any; set: (k: string, v: unknown) => void; remove: (k: string) => void } }).StorageManager;
@@ -328,7 +329,10 @@ describe('比奇生图：_runLoop 注入与全链路', () => {
     const calls: any[] = [];
     g.APIHandler = {
       fetchCompletions: (msgs: any[], _onData: any, onDone: any, onErr: any, opts: any) => {
-        calls.push({ msgs, tools: (opts && opts.tools) || [] });
+        // 出图后会插一次"看图核对"子调用（system 是看图助手）：它不消耗脚本，直接给个固定回答
+        const isVision = String(((msgs[0] || {}).content) || '').indexOf('图片核对助手') >= 0;
+        calls.push({ msgs, tools: (opts && opts.tools) || [], vision: isVision });
+        if (isVision) { onDone('（看图子调用的回答）画面正常，没有明显崩坏。'); return; }
         const step = script.shift() || { text: '（默认回答）' };
         if (step.err) { onErr(step.err); return; }
         if (step.tools) { opts.onTools(step.tools); return; }
@@ -347,13 +351,19 @@ describe('比奇生图：_runLoop 注入与全链路', () => {
     BiqiAgent._isSending = true;
     await BiqiAgent._runLoop('画一张她在雨里的图');
 
+    // 调用分两类：主对话轮与出图后的**自动核对子调用**（看图助手 system + content 数组里带图）
+    const visionCalls = calls.filter((c: any) => c.vision);
+    const mainCalls = calls.filter((c: any) => !c.vision);
+    expect(mainCalls.length).toBe(2);                       // 出图轮 + 收尾轮
+    expect(visionCalls.length).toBe(1);                     // 出图后自动核对：一次独立子调用
+    expect(Array.isArray(visionCalls[0].msgs[1].content)).toBe(true);
     // 第一轮：系统消息 = 比奇人设 + 生图规则（正向），工具有 draw_image
-    expect(calls.length).toBe(2);
-    expect(calls[0].msgs[0].role).toBe('system');
-    expect(String(calls[0].msgs[1].content)).toContain('不要再问');
-    expect((calls[0].tools as any[]).map((t: any) => t.function.name)).toContain('draw_image');
+    expect(mainCalls[0].msgs[0].role).toBe('system');
+    expect(String(mainCalls[0].msgs[1].content)).toContain('不要再问');
+    expect((mainCalls[0].tools as any[]).map((t: any) => t.function.name)).toContain('draw_image');
+    expect((mainCalls[0].tools as any[]).map((t: any) => t.function.name)).toContain('look_at_image');
     // 工具结果回给模型：带 image_id
-    const toolMsg = calls[1].msgs.find((m: any) => m.role === 'tool');
+    const toolMsg = mainCalls[1].msgs.find((m: any) => m.role === 'tool');
     expect(toolMsg).toBeTruthy();
     expect(JSON.parse(toolMsg.content).image_id).toBe('img1');
     // 最终：图片挂在最后一条 assistant 消息上、文字是第二轮的回答、历史落盘
@@ -376,6 +386,37 @@ describe('比奇生图：_runLoop 注入与全链路', () => {
     expect(String(calls[0].msgs[1].content)).toContain('你没有画图工具');
     expect((calls[0].tools as any[]).map((t: any) => t.function.name)).not.toContain('draw_image');
     expect(BiqiAgent._isSending).toBe(false);
+  });
+});
+
+describe('看图（视觉子调用）：工具门控 + 调用', () => {
+  it('能给 look_at_image 时：调用走独立子调用（缩略图 + 问题），回答回给模型', async () => {
+    BiqiAgent._drawToolsOn = true;
+    expect(toolNames()).toContain('look_at_image');
+    BiqiAgent._genImages.set('img1', { full: 'data:image/png;base64,F', thumb: 'data:image/jpeg;base64,THUMB', book: BOOK_ID });
+    const calls: any[] = [];
+    g.APIHandler = { fetchCompletions: (msgs: any[], _c: any, onDone: any) => { calls.push(msgs); onDone('画面里是一只黑猫趴在窗台上。'); } };
+    try {
+      const out = JSON.parse(await BiqiAgent._executeTool({ id: 'c1', name: 'look_at_image', arguments: { image_id: '图1', question: '画了什么' } } as any));
+      expect(out.ok).toBe(true);
+      expect(String(out.result)).toContain('黑猫');
+      expect(String(calls[0][1].content[1].image_url.url)).toContain('data:image/jpeg;base64,THUMB');
+    } finally { delete g.APIHandler; __resetVisionForTest(); }
+  });
+
+  it('看不了图的模型：不给工具；真调了也明确失败（不浪费请求）', async () => {
+    BiqiAgent._drawToolsOn = true;
+    BiqiAgent._genImages.set('img1', { full: 'F', thumb: 'data:image/jpeg;base64,T', book: BOOK_ID });
+    markVision('no');
+    const calls: any[] = [];
+    g.APIHandler = { fetchCompletions: () => { calls.push(1); } };
+    try {
+      expect(toolNames()).not.toContain('look_at_image');
+      const out = JSON.parse(await BiqiAgent._executeTool({ id: 'c1', name: 'look_at_image', arguments: { image_id: '图1', question: 'q' } } as any));
+      expect(out.ok).toBe(false);
+      expect(String(out.error)).toContain('看不了图片');
+      expect(calls.length).toBe(0);
+    } finally { delete g.APIHandler; __resetVisionForTest(); }
   });
 });
 

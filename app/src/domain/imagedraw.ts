@@ -8,6 +8,7 @@ import { WorldBookManager } from './worldbook';
 import { SettingSyncManager } from './settingsync';
 import { resizeDataUrlLongSide, bytesToDataUrl } from '../lib/imagedata';
 import { ImageCache } from '../lib/imagecache';
+import { visionState, lookAtImageTracked } from '../lib/vision';
 
 /** 主机状态缓存（60 秒）。放在各 Agent 自己身上，字段由 probeHost 原地写回。
  *  caps/tiers 可缺省：老缓存/测试桩里没有这些字段时按"主机没声明"处理（空）。 */
@@ -124,7 +125,7 @@ function _avatarOf(name: string, bookId?: string): string {
  *   其它（角色名）        → 该角色当前头像（bookId 那本书的原书条目或临时层）
  * bookId：写卡传"讨论目标书"，比奇传当前激活书；缺省 = 当前激活书。
  */
-export async function resolveBaseImage(ref: unknown, store: Map<string, any>, bookId?: string): Promise<BaseImageResult> {
+export async function resolveBaseImage(ref: unknown, store: Map<string, any>, bookId?: string, opt?: { prefer?: 'thumb' }): Promise<BaseImageResult> {
   const raw = String(ref || '').trim();
   if (!raw) return { ok: false, error: '底图引用为空' };
   const low = raw.toLowerCase();
@@ -151,9 +152,10 @@ export async function resolveBaseImage(ref: unknown, store: Map<string, any>, bo
     }
   }
   if (id) {
+    const wantThumb = !!(opt && opt.prefer === 'thumb');   // 看图子调用只要缩略图（便宜 8 倍 + 够判断）
     let url = '';
     const g: any = store.get(id);
-    url = String((g && (g.full || g.thumb)) || '');
+    url = String((g && (wantThumb ? (g.thumb || g.full) : (g.full || g.thumb))) || '');
     if (!url) {
       // 内存里没有（多半是重开过 App）→ 从本地存档取回，并放回句柄表（看图 / 保存 / 基于它改都能用）
       let rec: any = null;
@@ -163,7 +165,7 @@ export async function resolveBaseImage(ref: unknown, store: Map<string, any>, bo
           full: rec.full || rec.thumb, thumb: rec.thumb || rec.full, seed: rec.seed, size: rec.size,
           seconds: rec.seconds, prompt: rec.prompt, base: rec.base, hires: rec.hires, book: rec.book
         });
-        url = String(rec.full || rec.thumb);
+        url = String(wantThumb ? (rec.thumb || rec.full) : (rec.full || rec.thumb));
       } else {
         // 存档里也没有：可能是"另一本书"画的（给准确的跨书提示），也可能真的清掉了/太旧了
         let owner = '';
@@ -221,6 +223,52 @@ export async function hydrateImages(store: Map<string, any>, bookId: string | un
     }
   }
   return { loaded: loaded, gone: gone };
+}
+
+/**
+ * 看图工具（写卡 / 比奇共用）：模型问"这张画得怎么样 / 和图4比哪张更像"，我们**单独发一次带图的子调用**，
+ * 把它的文字回答当工具结果回给模型（主对话请求里永远不出现图片字段——模型看不了图也不会把主对话搞挂）。
+ * 传的 store / bookId 与出图时一致（写卡=讨论目标书、比奇=激活书），跨书隔离照旧生效。
+ * 能力兜底：visionState()==='no'（试过一次、确认看不了）时直接失败并让模型用文字说清楚；unknown 允许试一次。
+ */
+export async function lookAtImageTool(opts: {
+  imageRef: unknown;
+  imageRef2?: unknown;
+  question: unknown;
+  store: Map<string, any>;
+  bookId?: string;
+  onStatus?: () => void;
+}): Promise<{ ok: boolean; message: string }> {
+  const ref = String((opts && opts.imageRef) || '').trim();
+  const q = String((opts && opts.question) || '').trim();
+  if (!ref) return { ok: false, message: '工具调用参数无效：缺少 image_id（用界面上的编号，如「图3」；也可以填角色名用 TA 的头像）' };
+  if (!q) return { ok: false, message: '工具调用参数无效：缺少 question（你想让它看什么 / 回答什么）' };
+  if (visionState() === 'no') {
+    return { ok: false, message: '失败：当前模型看不了图片（看图能力已关闭）。不要猜图里有什么——请用文字与作者确认，或请作者自己看图后告诉你。' };
+  }
+  const imgs: string[] = [];
+  const labels: string[] = [];
+  const refs = [ref, String((opts && opts.imageRef2) || '').trim()];
+  for (const r of refs) {
+    if (!r) continue;
+    const b = await resolveBaseImage(r, opts.store, opts.bookId, { prefer: 'thumb' });
+    if (!b.ok) return { ok: false, message: '失败：' + (b.error || ('取不到' + r)) };
+    if (b.dataUrl) { imgs.push(String(b.dataUrl)); labels.push(String(b.label || r)); }
+  }
+  try { if (opts.onStatus) opts.onStatus(); } catch (e) { /* ignore */ }
+  const res = await lookAtImageTracked({ images: imgs, question: q, callLabel: 'vision' });
+  if (!res.ok) {
+    return {
+      ok: false,
+      message: '失败：看图调用没成功（' + String(res.error || '').slice(0, 80) + '）'
+        + (res.state === 'no' ? '——已记下"当前模型看不了图"，之后不再尝试看图' : '，可以稍后再试')
+    };
+  }
+  return {
+    ok: true,
+    message: '（下面是**另一次看图调用**的回答，它看的是' + labels.join(' 和 ') + '；不是你亲眼所见）'
+      + String(res.answer || '').slice(0, 800)
+  };
 }
 
 export interface DrawOutcome {

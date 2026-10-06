@@ -5,6 +5,7 @@
 import { describe, it, expect, beforeEach, beforeAll, vi } from 'vitest';
 import { WorldBookManager as WBM } from '../src/domain/worldbook';
 import { ImageCache } from '../src/lib/imagecache';
+import { visionState, markVision, __resetVisionForTest } from '../src/lib/vision';
 
 const anyG = globalThis as unknown as Record<string, unknown>;
 
@@ -429,6 +430,79 @@ describe('看图：点缩略图给的是原图（1024 档不该看起来和 512 
     ih.viewed = [];
     C.viewImage('不存在的id');
     expect(ih.viewed).toEqual([]);                                    // 句柄没了不炸也不白屏
+  });
+});
+
+describe('看图（视觉子调用）：工具门控 + 出图后自动核对', () => {
+  function stubVision(answer: string, calls: any[]) {
+    anyG.APIHandler = {
+      fetchCompletions: (msgs: any[], _c: any, onDone: any, _e: any, opts: any) => { calls.push({ msgs: msgs, opts: opts }); onDone(answer); }
+    };
+  }
+
+  it('看不了图的模型（visionCaps=no）：不给 look_at_image 工具；真调了也明确失败（不浪费请求）', async () => {
+    C._drawToolsOn = true;
+    C._hostStatus = { at: Date.now(), ok: true, model: 'm', hint: '', caps: ['img2img'] };
+    C._genImages.set('img1', { full: 'F', thumb: 'data:image/jpeg;base64,T' });
+    markVision('no');
+    expect(C._tools().map((t: any) => t.function.name)).not.toContain('look_at_image');
+    const calls: any[] = [];
+    stubVision('不该被调用', calls);
+    try {
+      const out = await C._handleTools([{ id: 'c1', name: 'look_at_image', arguments: { image_id: '图1', question: '手有问题吗' } }], '');
+      const r = JSON.parse(out[0]);
+      expect(r.ok).toBe(false);
+      expect(r.message).toContain('看不了图片');
+      expect(calls.length).toBe(0);
+    } finally { delete anyG.APIHandler; __resetVisionForTest(); }
+  });
+
+  it('能给工具时：调用走**一次独立子调用**（发缩略图 + 问题），回答作为工具结果回给模型；能力记为 yes', async () => {
+    C._drawToolsOn = true;
+    C._hostStatus = { at: Date.now(), ok: true, model: 'm', hint: '', caps: ['img2img'] };
+    expect(C._tools().map((t: any) => t.function.name)).toContain('look_at_image');
+    C._genImages.set('img1', { full: 'data:image/png;base64,FULL', thumb: 'data:image/jpeg;base64,THUMB', seed: 1, size: '512x512', prompt: 'a girl sitting' });
+    const calls: any[] = [];
+    stubVision('她坐着看书，手指没有明显问题。', calls);
+    try {
+      const out = await C._handleTools([{ id: 'c1', name: 'look_at_image', arguments: { image_id: '图1', question: '手指有没有问题？' } }], '');
+      const r = JSON.parse(out[0]);
+      expect(r.ok).toBe(true);
+      expect(r.message).toContain('手指没有明显问题');
+      expect(calls.length).toBe(1);                       // 只发了一次
+      expect(Array.isArray(calls[0].msgs[1].content)).toBe(true);
+      expect(String(calls[0].msgs[1].content[1].image_url.url)).toContain('THUMB');   // 发的是缩略图（便宜）
+      expect(String(calls[0].msgs[1].content[0].text)).toContain('手指有没有问题');
+      expect(calls[0].opts.callLabel).toBe('vision');
+      expect(visionState()).toBe('yes');                  // 成功一次就记住"这个模型能看图"
+    } finally { delete anyG.APIHandler; __resetVisionForTest(); }
+  });
+
+  it('出图轮的 result 里带 image_id（供"自动核对"定位那张图）', async () => {
+    const out = await C._handleTools([{ id: 'c1', name: 'draw_image', arguments: { prompt: 'x' } }], '');
+    expect(JSON.parse(out[0]).image_id).toBe('img1');
+  });
+
+  it('_visionCheckNote：出图后自动核对 → 返回"软件替你看过"的软件记录；no 时返回空串且不调接口', async () => {
+    C._genImages.set('img1', { full: 'F', thumb: 'data:image/jpeg;base64,T', prompt: 'a girl sitting' });
+    const calls: any[] = [];
+    stubVision('画面是一位少女坐在窗边看书；书上的文字是乱码。', calls);
+    try {
+      const note = String(await C._visionCheckNote(['img1'], 'a girl sitting'));
+      expect(note).toContain('软件替你看过');
+      expect(note).toContain('乱码');
+      expect(note).toContain('不要硬说达成了');
+      expect(calls.length).toBe(1);
+      expect(String(calls[0].msgs[1].content[0].text)).toContain('a girl sitting');   // 带上生成时的描述让它核对
+    } finally { delete anyG.APIHandler; __resetVisionForTest(); }
+
+    markVision('no');
+    const calls2: any[] = [];
+    stubVision('不该被调用', calls2);
+    try {
+      expect(await C._visionCheckNote(['img1'], 'x')).toBe('');
+      expect(calls2.length).toBe(0);
+    } finally { delete anyG.APIHandler; __resetVisionForTest(); }
   });
 });
 

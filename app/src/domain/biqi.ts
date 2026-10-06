@@ -11,8 +11,9 @@ import { PluginManager } from './plugins';
 import { SettingSyncManager } from './settingsync';
 import { WorldBookManager } from './worldbook';
 import { renderMdStrong } from '../lib/mdtext';
-import { probeHost, drawImageToStore, genImagesHtml, imageLabel, hydrateImages, type HostStatusCache } from './imagedraw';
+import { probeHost, drawImageToStore, genImagesHtml, imageLabel, hydrateImages, lookAtImageTool, type HostStatusCache } from './imagedraw';
 import { ImageCache } from '../lib/imagecache';
+import { visionState, lookAtImageTracked } from '../lib/vision';
 
 export interface BiqiMessage { role: 'user' | 'assistant'; content: string; _steps?: string[]; imageIds?: string[] }
 
@@ -98,6 +99,10 @@ export const BiqiAgent: {
   _executeTool(t: ToolCall): Promise<string>;
   _stepLine(t: ToolCall, out: string): string;
   _imageToolDraw(): unknown;
+  _imageToolLook(): unknown;
+  _toolLookImage(a: any): Promise<string>;
+  _visionCheckNote(imgIds: string[], prompt: string): Promise<string>;
+  _visionNoToast: boolean;
   _imageRuleMessage(): string;
   _refreshHostStatus(): Promise<void>;
   _toolDrawImage(a: any): Promise<string>;
@@ -133,6 +138,7 @@ export const BiqiAgent: {
   _imgSeq: 0,
   _imgGone: new Set<string>(), // 确认取不到的 id → 渲染成「已过期」，不再反复查
   _hydrating: false, // 水合进行中（防 renderMessages → 水合 → renderMessages 递归）
+  _visionNoToast: false, // 「当前模型看不了图」只提示一次（每个实例一次）
   _drawToolsOn: false, // 本轮是否给 draw_image（= 主机已启用且在线的探测结果）
   _hostStatus: { at: 0, ok: false, model: '', hint: '' } as HostStatusCache, // 画图主机状态缓存（60 秒）
   _ratio: BIQI_DEFAULT_RATIO,
@@ -541,18 +547,32 @@ export const BiqiAgent: {
           content: r.text || '',
           tool_calls: r.tools.map((t, i) => ({ id: t.id || ('biqi_' + i), type: 'function', function: { name: t.name, arguments: JSON.stringify(t.arguments || {}) } })),
         });
+        const outs: string[] = [];
         for (let i = 0; i < r.tools.length; i++) {
           const t = r.tools[i];
           if (t.name === 'read_worldbook') setStatus('正在看世界书…');
           else if (t.name === 'read_story') setStatus('正在读最近正文…');
           else if (t.name === 'draw_image') setStatus('正在出图…');
+          else if (t.name === 'look_at_image') setStatus('正在看图…');
           else setStatus('正在修改临时世界书…');
           let out = '';
           try { out = await this._executeTool(t); } catch (e: any) { out = JSON.stringify({ ok: false, error: String((e && e.message) || e) }); }
+          outs.push(out);
           const line = this._stepLine(t, out);
           if (line) pushStep(line);
           msgs.push({ role: 'tool', tool_call_id: t.id || ('biqi_' + i), content: out });
         }
+        // A：出图轮 → 软件替模型核对一眼（一次独立的看图子调用），结论作为软件记录注入下一轮
+        try {
+          const ids: string[] = [];
+          for (const o of outs) {
+            try { const j = JSON.parse(String(o || '{}')); if (j && j.image_id) ids.push(String(j.image_id)); } catch (e) { /* ignore */ }
+          }
+          if (ids.length) {
+            const note = await this._visionCheckNote(ids, String((((this._genImages.get(ids[0]) || {}) as any).prompt) || ''));
+            if (note) msgs.push({ role: 'system', content: note });
+          }
+        } catch (e) { /* 核对失败不影响本轮 */ }
         if (round === BIQI_MAX_ROUNDS - 1) finalText = r.text || '（这轮改完了，接着说下一步要动哪里？）';
       }
     } catch (e: any) {
@@ -663,8 +683,35 @@ export const BiqiAgent: {
     ];
     // 画图工具只在「画图主机已启用且这一轮探测到在线」时提供；不给工具时规则也会切换成
     // "你没有画图能力"（见 _imageRuleMessage），避免它嘴上提议"要不要我画一张"（用户看不到能点的东西）。
-    if (this._drawToolsOn) base.push(this._imageToolDraw());
+    if (this._drawToolsOn) {
+      base.push(this._imageToolDraw());
+      // 看图工具：只在"没确认看不了图"时给（模型看不了图就不让它看——用户 2026-10-06 要求）
+      if (visionState() !== 'no') base.push(this._imageToolLook());
+    }
     return base;
+  },
+
+  // 看图工具：模型自己看不到图片，靠**一次单独的看图子调用**回答"这张画得怎么样"这类问题。
+  // 传 420px 缩略图（便宜、够判断明显问题）；看不了图的模型不给这个工具。
+  _imageToolLook(): unknown {
+    return {
+      type: 'function',
+      function: {
+        name: 'look_at_image',
+        description: '看一眼已经生成的图（单独的看图调用，约 3~6 秒）：可以问"手有没有画坏""背景是不是夜晚""这张和图4比哪张更像苏黎"。'
+          + '**什么时候用**：你要判断画得对不对、有没有崩坏，或作者问起某张图的细节，而你自己看不到图片。'
+          + '拿到的是文字回答——据此向作者说明，但不要说成"我亲眼看到的"。',
+        parameters: {
+          type: 'object',
+          properties: {
+            image_id: { type: 'string', description: '要看的那张图：界面编号「图3」或 "img3"；也可以填 "last" 或角色名（用 TA 的头像）' },
+            question: { type: 'string', description: '你想让它看什么（一句话，越具体越好）' },
+            image_id2: { type: 'string', description: '可选：对比用的第二张（填编号）' }
+          },
+          required: ['image_id', 'question']
+        }
+      }
+    };
   },
 
   // —— 生图（本机 ComfyUI，协议见 domain/imagedraw.ts / imagehost.ts）——
@@ -782,11 +829,55 @@ export const BiqiAgent: {
     }
   },
 
+  async _toolLookImage(a: any): Promise<string> {
+    const r = await lookAtImageTool({
+      imageRef: a && a.image_id,
+      imageRef2: a && a.image_id2,
+      question: a && a.question,
+      store: this._genImages,
+      bookId: (typeof WorldBookManager !== 'undefined' && WorldBookManager.getActiveId && WorldBookManager.getActiveId()) || undefined,
+      onStatus: () => { this._status = '正在看图…'; this.renderMessages(); }
+    });
+    if (!r.ok && r.message.indexOf('看不了图片') >= 0 && !this._visionNoToast) {
+      this._visionNoToast = true;
+      try { App.toast('当前模型看不了图片：已关闭"看图/图核对"（不影响出图与改图）'); } catch (e) { /* ignore */ }
+    }
+    return JSON.stringify(r.ok ? { ok: true, result: r.message } : { ok: false, error: r.message });
+  },
+
+  // A（出图后自动核对一眼）：软件替模型看一次刚生成的图，结论作为**软件记录**注入下一轮。
+  // 看不了图的模型（已确认）直接跳过；试失败但不像能力问题（超时等）也只是这次不注入。
+  async _visionCheckNote(imgIds: string[], prompt: string): Promise<string> {
+    const id = String((imgIds && imgIds[0]) || '');
+    if (!id || visionState() === 'no') return '';
+    const g: any = this._genImages.get(id);
+    const img = String((g && (g.thumb || g.full)) || '');
+    if (!img) return '';
+    this._status = '正在核对刚生成的图…';
+    this.renderMessages();
+    const ask = '这是刚刚生成的一张插图（缩略图）。请核对两点：① 画面主要内容是否与描述相符；'
+      + '② 有没有**明显**的崩坏（手指畸形、乱码文字、结构错误、明显模糊）。两三句话直接说结论。'
+      + (prompt ? ('\n（生成时用的描述：' + String(prompt).slice(0, 300) + '）') : '');
+    const r = await lookAtImageTracked({ images: [img], question: ask, callLabel: 'vision' });
+    if (r.state === 'no') {
+      if (!this._visionNoToast) {
+        this._visionNoToast = true;
+        try { App.toast('当前模型看不了图片：已关闭"看图/图核对"（不影响出图与改图）'); } catch (e) { /* ignore */ }
+      }
+      return '';
+    }
+    const ans = String(r.answer || '').trim();
+    if (!r.ok || !ans) return '';
+    return '【软件替你看过刚生成的那张图（既不是作者说的，也不是你自己看到的）】' + ans
+      + '\n请据此如实向作者说明这张图；与你刚才的预期不符时以这段为准，不要硬说达成了。若确实有明显崩坏，可以主动问一句「要不要我重画一张」。';
+  },
+
   async _executeTool(t: ToolCall): Promise<string> {
     const a = (t.arguments || {}) as Record<string, string>;
     if (t.name === 'read_worldbook') return this.readWorldbook();
     if (t.name === 'read_story') return this.readStory();
     if (t.name === 'draw_image') return await this._toolDrawImage(a);
+    if (t.name === 'look_at_image') return await this._toolLookImage(a);
     if (t.name === 'add_entry' || t.name === 'update_entry' || t.name === 'delete_entry') {
       const name = String(a.name || '').trim();
       if (!name) return JSON.stringify({ ok: false, error: 'name 不能为空' });
