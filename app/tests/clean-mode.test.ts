@@ -133,6 +133,10 @@ describe('干净版：助手手册与工具', () => {
     // 完整版手册本身没有被改动
     expect(USAGE_MANUAL).toContain('也可从社区下载他人分享的世界书');
     expect(USAGE_MANUAL).toContain('网页包热更新');
+    // 生图（画图主机）是与联机无关的能力：两版共用手册都带这一节，不做替换
+    expect(USAGE_MANUAL).toContain('十八、生图（画图主机）');
+    expect(clean).toContain('十八、生图（画图主机）');
+    expect(clean).toContain('设置 → AI 与生成 → 画图主机');
   });
 
   it('完整版下 system 仍是老样子（含找卡能力与完整手册）', () => {

@@ -141,6 +141,21 @@ describe('门控与主机状态', () => {
     expect(C._imageRuleMessage()).not.toContain('base_image');
   });
 
+  it('改图时机规则（用户 2026-10-06 校准）：默认画新图；只有"改现有画面/保留现有形象做局部调整"才改图；改角色主体也要新图', () => {
+    C._drawToolsOn = true;
+    C._hostStatus = { at: Date.now(), ok: true, model: 'm', hint: '', caps: ['img2img'] };
+    const rule = C._imageRuleMessage();
+    expect(rule).toContain('**默认画新图**');
+    expect(rule).toContain('给她带上围巾');       // 局部增减 → 改图
+    expect(rule).toContain('这张有点糊了');       // 修瑕疵 → 改图
+    expect(rule).toContain('这个角色不够成熟');   // 改角色主体 → 新图（不许带底图）
+    expect(rule).toContain('**要改角色主体 → 仍然画新图**');
+    const draw = C._tools().find((t: any) => t.function.name === 'draw_image');
+    expect(draw.function.description).toContain('**默认画新图**');
+    expect(draw.function.parameters.properties.base_image.description).toContain('默认不填');
+    expect(draw.function.parameters.properties.base_image.description).toContain('不够成熟');
+  });
+
   it('_refreshHostStatus：未启用不发请求；在线置 true；60 秒内复用缓存；失败置 false', async () => {
     ih.ready = false;
     await C._refreshHostStatus();
