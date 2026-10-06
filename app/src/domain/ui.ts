@@ -1699,9 +1699,24 @@ const UIManager: UIManagerShape = {
     if (Date.now() - (v.gestureAt || 0) < 500) return;   // 刚做过手势/刚缩放 → 不当成"点空白关闭"
     this.closeViewer();
   },
+  /** 这次触摸是不是落在看图工具条里（保存到相册这类按钮）。
+   *  落在里面就**完全交给浏览器的原生点击**：绝不能 preventDefault——那会吃掉随后合成的 click，
+   *  按钮就"点了没反应"（2026-10-06 真机反馈：手机上保存到相册没用；桌面鼠标不产生 touchstart，所以测不出来）。 */
+  _vInBar(e: any): boolean {
+    try {
+      const t: any = e && e.target;
+      if (!t) return false;
+      if (typeof t.closest === 'function') return !!t.closest('#imgViewerBar');
+      let n: any = t;
+      while (n) { if (n.id === 'imgViewerBar') return true; n = n.parentNode; }
+      return false;
+    } catch (err) { return false; }
+  },
   viewerTouchStart(e: any) {
     const v: any = (this as any)._viewerZoom || ((this as any)._viewerZoom = { s: 1, tx: 0, ty: 0 });
     v.gestureAt = Date.now();
+    if (this._vInBar(e)) { v.inBar = true; v.drag = null; v.pinch = null; return; }   // 工具条：不拦、不接管手势
+    v.inBar = false;
     try { if (e && e.preventDefault) e.preventDefault(); } catch (err) { /* ignore */ }
     const ts = (e && e.touches) || [];
     if (ts.length >= 2) {
@@ -1719,6 +1734,7 @@ const UIManager: UIManagerShape = {
   },
   viewerTouchMove(e: any) {
     const v: any = (this as any)._viewerZoom || {};
+    if (v.inBar) return;   // 工具条上的触摸：连 touchmove 也不能 preventDefault（同样会吃掉合成的 click）
     const ts = (e && e.touches) || [];
     const m = this._vMetrics();
     try { if (e && e.preventDefault) e.preventDefault(); } catch (err) { /* ignore */ }
@@ -1746,6 +1762,7 @@ const UIManager: UIManagerShape = {
   viewerTouchEnd(e: any) {
     const v: any = (this as any)._viewerZoom || {};
     const ts = (e && e.touches) || [];
+    if (v.inBar) { v.inBar = false; v.drag = null; v.pinch = null; return; }   // 工具条上的抬手：不当"点画面"（不然会顺带关窗）
     v.gestureAt = Date.now();
     if (ts.length > 0) { v.drag = null; v.pinch = null; return; }   // 还有手指按着（双指抬起一根）
     const drag = v.drag;

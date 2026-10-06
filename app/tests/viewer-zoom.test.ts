@@ -138,6 +138,30 @@ describe('看图缩放：手势接线', () => {
     expect(btnNoId.length).toBe(0);                                     // 也不许有空 id 的按钮（关闭按钮已删）
   });
 
+  it('工具条上的触摸：一次都不 preventDefault、也不当"点画面"（手机上"保存到相册"点得动的前提）', async () => {
+    // 真机 bug（2026-10-06 用户反馈）：以前 touchstart/touchmove 无条件 preventDefault，
+    // 手机的按钮点击因此被吃掉 → "保存到相册点了没反应"；桌面鼠标不产生 touchstart，所以测不出来。
+    const bar = { id: 'imgViewerBar' };
+    const btn: any = { id: 'imgViewerSave', closest: (sel: string) => (sel === '#imgViewerBar' ? bar : null) };
+    let prevented = 0;
+    const evWith = (extra: any) => Object.assign({ preventDefault: () => { prevented++; }, touches: [touch(200, 400)], changedTouches: [touch(200, 400)], target: btn }, extra || {});
+    UIManager.viewerTouchStart(evWith({}));
+    UIManager.viewerTouchMove(evWith({}));
+    UIManager.viewerTouchEnd(evWith({ touches: [] }));
+    expect(prevented).toBe(0);                                   // 一次都没拦 → 浏览器才能合成 click
+    expect((UIManager as any)._viewerZoom.inBar).toBe(false);     // 状态已复位
+    await tick(400);
+    expect(els['imgViewer'].style.display).toBeUndefined();       // 也没被当成"点画面"把查看器关掉
+
+    // 对照：点在图片上照旧要拦（不然会触发系统手势/滚动）
+    let p2 = 0;
+    UIManager.viewerTouchStart({ preventDefault: () => { p2++; }, touches: [touch(200, 400)] });
+    expect(p2).toBe(1);
+    UIManager.viewerTouchEnd({ touches: [], changedTouches: [touch(200, 400)] });
+    await tick(400);
+    expect(els['imgViewer'].style.display).toBe('none');          // 图上单击仍然是关窗
+  });
+
   it('单击（没拖动）→ 关闭；刚做过手势后的 click 不会误关', async () => {
     UIManager.viewerTouchStart(ev({ touches: [touch(200, 400)] }));
     UIManager.viewerTouchEnd(ev({ touches: [], changedTouches: [touch(200, 400)] }));
