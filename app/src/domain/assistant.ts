@@ -8,9 +8,15 @@ import { isClean } from '../lib/buildflags';
 import { buildSetupSkillMd, SETUP_SKILL_FILE_NAME, SETUP_SKILL_MIME } from './setup-skill';
 
 export interface AssistantMessage { role: 'user' | 'assistant'; content: string }
-/** 助手把技能包发给用户时挂在消息上的载荷（渲染成卡片：保存为 .md / 复制 / 预览）。 */
+/** 助手把技能包发给用户时挂在消息上的载荷（渲染成一行：文件名 + 下载/转发两个图标）。 */
 export interface AssistantSkill { name: string; markdown: string; bytes: number }
-export interface AssistantMessageExt extends AssistantMessage { skill?: AssistantSkill; _skillOpen?: boolean }
+export interface AssistantMessageExt extends AssistantMessage { skill?: AssistantSkill }
+
+// 卡片上的两个图标（内联 SVG，跟着主题色走）：
+//   ⬇ 下载：向下箭头（替代「保存」）
+//   ↪ 转发：弧线然后向右的箭头
+const _DL_ICON = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v13"/><path d="M6 11l6 6 6-6"/></svg>';
+const _FWD_ICON = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 19c1-8 6-11 13-11"/><path d="M13 3l5 5-5 5"/></svg>';
 
 /** 文本 → base64（走原生桥存文件用）。按块拼二进制串，避免大数组 spread/apply 爆栈。 */
 function _utf8ToBase64(s: string): string {
@@ -154,7 +160,7 @@ const MANUAL_FULL = ['【BQB Hub 使用手册】',
 '11. 出图档位：默认标准（768）；说「快一点/先看看」用快（512）；「更精细/更大」用精细（1024）；要挑构图说「出两张草稿」。每档的实际步数由画图主机的**工作流自己决定**（主机换模型、加加速 LoRA 只改工作流，App 不用更新）。',
 '12. 没配画图主机时：写卡和比奇**不会**提议"要不要我画一张"，也不会假装画了；你问起来它会告诉你去哪配。',
 '13. AI 能"看图"了（2026-10-06 起，**自己看**）：出完图软件会把这张图**直接附给它**（连同角色卡、你的要求一起看），所以它会如实讲画面内容、有没有明显崩坏（手指/文字/结构），必要时主动问你要不要重画；你也可以直接问「图3 里她的手有没有问题」「图2 和图4 哪张更像某角色」「林晚现在的头像什么样」，比奇/写卡会"看一眼"再答。给 AI 看的还是**缩略图**、只在这一次请求里附、**不进对话记录**（所以不会越来越慢）。**如果当前模型看不了图，这项能力会自动关闭**（不会因此影响出图、改图、设头像）；新换的模型第一次会先用一次单独的小调用试一下，试成了以后就一直"自己看"。',
-'14. 嫌上面太麻烦？可以让 AI 帮你配：跟我说一句「**给我一份配置技能**」——我会把一份 **.md 技能文件**发给你（聊天里会出现一张卡片，点「💾 保存为 .md」存到手机「下载」目录、或「📋 复制全文」）。把它交给**你电脑上的 AI 编程助手**（Claude Code / WorkBuddy / Cursor 等），那个助手就会照着在电脑上装 ComfyUI、放模型、导入工作流、起画图主机，最后把「手机要填的地址 + 配对 token」打印出来给你。技能包里**自带**主机程序与工作流（不用另外下载别的东西）；**唯一要你自己做的一步是下载模型**——包里给了 Civitai 上的模型页面（<https://civitai.com/models/2026594/miaomiao-realskin> 与 <https://civitai.com/models/2619830/turbo-for-anima-less-steps>）、要下哪几个文件、精确字节数和工作流认的文件名；**那两页需要注册登录才能下载**（登录是模型作者的要求，AI 代你下不了）。注意这些模型**仅限个人非商用、要署名、不可转发模型文件**——自己写小说配图没问题，别拿生成的图去卖。'
+'14. 嫌上面太麻烦？可以让 AI 帮你配：跟我说一句「**给我一份配置技能**」——我会把一份 **.md 技能文件**发给你（聊天里会出现一行文件条，右边两个图标：**⬇ 下载**＝存到手机「下载」目录；**↪ 转发**＝直接弹分享面板，发给微信/QQ 再传到电脑）。把它交给**你电脑上的 AI 编程助手**（Claude Code / WorkBuddy / Cursor 等），那个助手就会照着在电脑上装 ComfyUI、放模型、导入工作流、起画图主机，最后把「手机要填的地址 + 配对 token」打印出来给你。技能包里**自带**主机程序与工作流（不用另外下载别的东西）；**唯一要你自己做的一步是下载模型**——包里给了 Civitai 上的模型页面（<https://civitai.com/models/2026594/miaomiao-realskin> 与 <https://civitai.com/models/2619830/turbo-for-anima-less-steps>）、要下哪几个文件、精确字节数和工作流认的文件名；**那两页需要注册登录才能下载**（登录是模型作者的要求，AI 代你下不了）。注意这些模型**仅限个人非商用、要署名、不可转发模型文件**——自己写小说配图没问题，别拿生成的图去卖。'
 ].join('\n');
 
 /** 完整版手册。干净版（离线版）不直接用这份，见 manualForClean()。 */
@@ -346,8 +352,7 @@ export const UsageAssistant: {
   _skillCardHtml(m: AssistantMessageExt): string;
   _lastSkill(): AssistantSkill | null;
   saveSkill(): void;
-  copySkill(): void;
-  toggleSkillPreview(): void;
+  shareSkill(): void;
   openCard(id: any): Promise<void>;
   closeCard(): void;
   downloadCard(): Promise<void>;
@@ -403,26 +408,22 @@ export const UsageAssistant: {
     box.scrollTop = box.scrollHeight;
   },
 
-  // 「画图主机配置技能」卡片：一份 .md，交给电脑上的 AI 编程助手照着配（保存到「下载」/ 复制 / 预览全文）。
+  // 技能包一行条（2026-10-06 用户要求精简）：只有文件名 + 「⬇ 下载」「↪ 转发」两个图标按钮。
+  // 不放标题图标、不放说明文字——用户要的就是"把文件拿出来"。
   _skillCardHtml(m: AssistantMessageExt): string {
     const s = m.skill as AssistantSkill;
     const kb = Math.max(1, Math.round((s.bytes || 0) / 1024));
-    const open = !!m._skillOpen;
-    const pre = open
-      ? '<pre style="margin:8px 0 0;padding:8px;max-height:44vh;overflow:auto;font-size:11px;line-height:1.45;white-space:pre-wrap;word-break:break-word;background:var(--bg-secondary);border:1px solid var(--border);border-radius:8px;-webkit-user-select:text;user-select:text;">'
-        + htmlEscape(String(s.markdown || '').slice(0, 60000)) + '</pre>'
-      : '';
-    return '<div style="margin-top:8px;padding:10px;border:1px solid var(--border);border-left:3px solid var(--primary);border-radius:8px;background:var(--bg-secondary);">'
-      + '<div style="font-weight:600;font-size:13px;">🧩 ' + htmlEscape(s.name || SETUP_SKILL_FILE_NAME) + '</div>'
-      + '<div style="margin-top:4px;font-size:12px;color:var(--text-secondary);line-height:1.6;">约 ' + kb + 'KB。把它交给电脑上的 AI 编程助手（Claude Code / WorkBuddy / Cursor 等），它就会帮你装 ComfyUI、放模型、起画图主机，最后给你手机上要填的地址和 token。<b>模型要你自己先登录 Civitai 下载</b>（作者要求登录，AI 下不了）。</div>'
-      + '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:8px;">'
-      + '<button class="small" onclick="UsageAssistant.saveSkill()">💾 保存为 .md</button>'
-      + '<button class="small" onclick="UsageAssistant.copySkill()">📋 复制全文</button>'
-      + '<button class="small" onclick="UsageAssistant.toggleSkillPreview()">' + (open ? '收起' : '👁 预览') + '</button>'
-      + '</div>' + pre + '</div>';
+    const btn = 'width:34px;height:34px;display:inline-flex;align-items:center;justify-content:center;padding:0;flex:0 0 auto;';
+    // 只显示文件名（大小放 title 里）——文件名本身较长，多一段"· 45KB"会把名字挤成省略号
+    return '<div style="margin-top:8px;display:flex;align-items:center;gap:8px;padding:7px 9px;border:1px solid var(--border);border-radius:8px;background:var(--bg-secondary);">'
+      + '<span title="' + htmlEscape((s.name || SETUP_SKILL_FILE_NAME) + ' · ' + kb + 'KB') + '" style="flex:1;min-width:0;font-size:12px;color:var(--text-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'
+      + htmlEscape(s.name || SETUP_SKILL_FILE_NAME) + '</span>'
+      + '<button class="icon-btn" style="' + btn + '" title="下载" aria-label="下载" onclick="UsageAssistant.saveSkill()">' + _DL_ICON + '</button>'
+      + '<button class="icon-btn" style="' + btn + '" title="转发" aria-label="转发" onclick="UsageAssistant.shareSkill()">' + _FWD_ICON + '</button>'
+      + '</div>';
   },
 
-  /** 当前这条消息上的技能包（卡片就在最后一条上）。 */
+  /** 当前这条消息上的技能包（一行条就在最后一条上）。 */
   _lastSkill(): AssistantSkill | null {
     for (let i = this.messages.length - 1; i >= 0; i--) {
       const m = this.messages[i] as AssistantMessageExt;
@@ -431,47 +432,39 @@ export const UsageAssistant: {
     return null;
   },
 
-  /** 存成 .md 文件：走原生桥 saveFileBase64（非图片 → Android 10+ 落在「下载」目录）。 */
+  /** ⬇ 下载：走原生桥 saveFileBase64（非图片 → Android 10+ 落在系统「下载」目录）。 */
   saveSkill(): void {
     const s = this._lastSkill();
-    if (!s) { App.toast('技能包不在了，再让助手发一次'); return; }
+    if (!s) { App.toast('文件不在了，再让助手发一次'); return; }
     const bridge = (globalThis as any).HttpBridge;
     if (!bridge || typeof bridge.saveFileBase64 !== 'function') {
-      App.toast('当前 App 版本不支持保存文件——用「复制全文」吧（或更新 App）');
+      App.toast('当前 App 版本不支持下载文件——请更新 App');
       return;
     }
     try {
       const b64 = _utf8ToBase64(s.markdown);
       const r = JSON.parse(String(bridge.saveFileBase64(SETUP_SKILL_FILE_NAME, b64, SETUP_SKILL_MIME)));
-      if (r && r.ok) App.toast('已保存：' + String(r.path || SETUP_SKILL_FILE_NAME) + '（用手机的文件管理或分享发到电脑）');
-      else App.toast('保存失败：' + String((r && r.error) || '未知错误'));
-    } catch (e: any) { App.toast('保存失败：' + String((e && e.message) || e)); }
+      if (r && r.ok) App.toast('已下载到「' + String(r.path || SETUP_SKILL_FILE_NAME) + '」');
+      else App.toast('下载失败：' + String((r && r.error) || '未知错误'));
+    } catch (e: any) { App.toast('下载失败：' + String((e && e.message) || e)); }
   },
 
-  /** 复制全文（复制不出来就提示去预览里长按选中）。 */
-  copySkill(): void {
+  /** ↪ 转发：走原生桥 shareFileBase64 弹系统分享面板（微信/QQ/邮件…发到电脑）。
+   *  mime 用 text/plain 而不是 text/markdown：分享目标的筛选按 mime 走，text/plain 在所有 Android 版本上
+   *  都能列出全部目标（微信/QQ/邮件都认），文件名里带着 .md，收端仍按 Markdown 处理。 */
+  shareSkill(): void {
     const s = this._lastSkill();
-    if (!s) { App.toast('技能包不在了，再让助手发一次'); return; }
-    const md = s.markdown;
-    const done = () => App.toast('已复制全文——粘到一个 .md / .txt 文件里交给电脑上的 AI 助手');
-    const fail = () => App.toast('复制没成功：点「预览」后长按选中全文复制');
-    try {
-      const nav: any = (globalThis as any).navigator;
-      if (nav && nav.clipboard && nav.clipboard.writeText) { nav.clipboard.writeText(md).then(done).catch(fail); return; }
-      const ta = document.createElement('textarea');
-      ta.value = md; ta.style.position = 'fixed'; ta.style.opacity = '0';
-      document.body.appendChild(ta); ta.select();
-      const ok = document.execCommand && document.execCommand('copy');
-      document.body.removeChild(ta);
-      if (ok) done(); else fail();
-    } catch (e) { fail(); }
-  },
-
-  toggleSkillPreview(): void {
-    for (let i = this.messages.length - 1; i >= 0; i--) {
-      const m = this.messages[i] as AssistantMessageExt;
-      if (m && m.skill) { m._skillOpen = !m._skillOpen; this.renderMessages(); return; }
+    if (!s) { App.toast('文件不在了，再让助手发一次'); return; }
+    const bridge = (globalThis as any).HttpBridge;
+    if (!bridge || typeof bridge.shareFileBase64 !== 'function') {
+      App.toast('当前 App 版本不支持直接转发——先用「⬇ 下载」，再从手机文件里发出去');
+      return;
     }
+    try {
+      const b64 = _utf8ToBase64(s.markdown);
+      const r = JSON.parse(String(bridge.shareFileBase64(SETUP_SKILL_FILE_NAME, b64, 'text/plain')));
+      if (!(r && r.ok)) App.toast('转发失败：' + String((r && r.error) || '未知错误') + '（可以改用「⬇ 下载」再手动发送）');
+    } catch (e: any) { App.toast('转发失败：' + String((e && e.message) || e)); }
   },
 
   quickAsk(q: string): void {
@@ -697,8 +690,8 @@ export const UsageAssistant: {
     this._pendingSkill = { name: SETUP_SKILL_FILE_NAME, markdown: String(r.markdown), bytes: r.bytes || 0 };
     return JSON.stringify({
       ok: true,
-      result: '已把《' + SETUP_SKILL_FILE_NAME + '》（约 ' + kb + 'KB）发给用户：聊天里出现一张卡片，用户点「保存为 .md」存到手机「下载」目录（再用手机的文件/分享发到电脑），或点「复制全文」粘成文件。',
-      hint: '只用一两句告诉用户：这份 .md 是给电脑上的 AI 编程助手（Claude Code / WorkBuddy / Cursor 等）看的；把它交给那个助手，它会负责装 ComfyUI、放模型、起画图主机，最后给出手机要填的地址与 token。**模型文件需要用户自己登录 Civitai 下载（技能里写了链接与校验值），AI 下不了**。不要复述技能内容本身。'
+      result: '已把《' + SETUP_SKILL_FILE_NAME + '》（约 ' + kb + 'KB）发给用户：聊天里出现一行文件条，右边两个图标——「⬇ 下载」存到手机「下载」目录，「↪ 转发」直接弹分享（发给微信/QQ 再传到电脑）。',
+      hint: '只用一两句告诉用户：这份 .md 是给电脑上的 AI 编程助手（Claude Code / WorkBuddy / Cursor 等）看的；用文件条右边的「⬇ 下载」或「↪ 转发」把它弄到电脑上，交给那个助手，它会负责装 ComfyUI、放模型、起画图主机，最后给出手机要填的地址与 token。**模型文件需要用户自己登录 Civitai 下载（技能里写了链接与校验值），AI 下不了**。不要复述技能内容本身。'
     });
   },
 
@@ -747,7 +740,7 @@ export const UsageAssistant: {
       }
       if (t.name === 'get_card_detail') return j.ok ? '📖 查看《' + String(j.title || '').slice(0, 20) + '》→ ' + (j.entryCount || 0) + ' 条' : '📖 查看失败';
       if (t.name === 'import_card') return j.ok ? '⬇ 已导入《' + String(j.name || '').slice(0, 20) + '》' : '⬇ 导入失败';
-      if (t.name === 'send_setup_skill') return j.ok ? '🧩 已生成《画图主机配置技能》' : '🧩 技能包生成失败';
+      if (t.name === 'send_setup_skill') return j.ok ? '已生成《画图主机配置技能》' : '技能包生成失败';
     } catch (e) { /* 结果不是 JSON 就不留痕 */ }
     return '';
   },

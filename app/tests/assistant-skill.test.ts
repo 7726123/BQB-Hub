@@ -121,8 +121,8 @@ describe('工具挂牌与执行', () => {
   });
 });
 
-describe('气泡卡片与操作按钮', () => {
-  it('渲染成卡片：标题 + 三个按钮 + 引导文案（含"模型要你自己下载"）', async () => {
+describe('文件条与两个图标按钮', () => {
+  it('渲染成一行文件条：文件名 + 下载/转发两个图标（没有标题图标、没有说明文字、没有复制/预览）', async () => {
     stubAssetFetch();
     await UsageAssistant._executeTool({ name: 'send_setup_skill', arguments: {} });
     UsageAssistant.messages = [{ role: 'assistant', content: '这份文件交给电脑上的 AI 助手用 👇', skill: UsageAssistant._pendingSkill! } as unknown as any];
@@ -130,15 +130,22 @@ describe('气泡卡片与操作按钮', () => {
 
     const box = g.document.getElementById('assistantMessages');
     UsageAssistant.renderMessages();
-    expect(box.innerHTML).toContain(SETUP_SKILL_FILE_NAME);
-    expect(box.innerHTML).toContain('UsageAssistant.saveSkill()');
-    expect(box.innerHTML).toContain('UsageAssistant.copySkill()');
-    expect(box.innerHTML).toContain('UsageAssistant.toggleSkillPreview()');
-    expect(box.innerHTML).toContain('模型要你自己先登录 Civitai 下载');
-    expect(box.innerHTML).toContain('👁 预览');   // 折叠状态
-    UsageAssistant.toggleSkillPreview();
-    expect(box.innerHTML).toContain('bqb-image-host-setup');   // 展开后能看到全文（含 frontmatter）
-    expect(box.innerHTML).toContain('收起');
+    const h = box.innerHTML;
+    expect(h).toContain(SETUP_SKILL_FILE_NAME);          // 文件名 + 大小
+    expect(h).toContain('KB');
+    expect(h).toContain('UsageAssistant.saveSkill()');   // ⬇ 下载
+    expect(h).toContain('UsageAssistant.shareSkill()');  // ↪ 转发
+    expect(h).toContain('aria-label="下载"');
+    expect(h).toContain('aria-label="转发"');
+    expect(h).toContain('<svg');                          // 图标是内联 SVG
+    // 用户明确不要的东西：标题小图标、说明文字、复制/预览
+    expect(h).not.toContain('🧩');
+    expect(h).not.toContain('复制');
+    expect(h).not.toContain('预览');
+    expect(h).not.toContain('模型要你自己先登录 Civitai 下载');
+    expect(h).not.toContain('<pre');
+    expect(typeof UsageAssistant.copySkill).not.toBe('function');
+    expect(typeof UsageAssistant.toggleSkillPreview).not.toBe('function');
   });
 
   it('保存：走原生桥 saveFileBase64，文件名/mime 正确，base64 能解回同一份 UTF-8 文本', async () => {
@@ -164,30 +171,49 @@ describe('气泡卡片与操作按钮', () => {
     const bin = Buffer.from(calls[0].b64, 'base64');
     expect(bin.toString('utf8')).toBe(md);
     expect(g.App.toast).toHaveBeenCalled();
-    expect(String((g.App.toast as Any).mock.calls[0][0])).toContain('已保存');
+    expect(String((g.App.toast as Any).mock.calls[0][0])).toContain('已下载到');
   });
 
-  it('保存：老 APK 没有原生方法 → 明确提示改用「复制全文」', async () => {
+  it('下载：老 APK 没有原生方法 → 明确提示更新 App', async () => {
     stubAssetFetch();
     await UsageAssistant._executeTool({ name: 'send_setup_skill', arguments: {} });
     UsageAssistant.messages = [{ role: 'assistant', content: 'x', skill: UsageAssistant._pendingSkill! } as unknown as any];
     UsageAssistant._pendingSkill = null;
     g.HttpBridge = {};
     UsageAssistant.saveSkill();
-    expect(String((g.App.toast as Any).mock.calls[0][0])).toContain('复制全文');
+    expect(String((g.App.toast as Any).mock.calls[0][0])).toContain('更新 App');
   });
 
-  it('复制：优先 clipboard.writeText，拿到的是同一份全文', async () => {
+  it('转发：走原生桥 shareFileBase64（弹分享面板），文件名/字节与下载完全一致', async () => {
     stubAssetFetch();
     await UsageAssistant._executeTool({ name: 'send_setup_skill', arguments: {} });
     UsageAssistant.messages = [{ role: 'assistant', content: 'x', skill: UsageAssistant._pendingSkill! } as unknown as any];
     const md = UsageAssistant._pendingSkill!.markdown;
     UsageAssistant._pendingSkill = null;
-    const writes: string[] = [];
-    Object.defineProperty(g, 'navigator', { value: { clipboard: { writeText: (t: string) => { writes.push(t); return Promise.resolve(); } } }, configurable: true, writable: true });
-    UsageAssistant.copySkill();
-    await new Promise((r) => setTimeout(r, 0));
-    expect(writes).toEqual([md]);
+    const shares: Any[] = [];
+    g.HttpBridge = {
+      shareFileBase64: (name: string, b64: string, mime: string) => {
+        shares.push({ name, b64, mime });
+        return JSON.stringify({ ok: true });
+      },
+    };
+    UsageAssistant.shareSkill();
+    expect(shares.length).toBe(1);
+    expect(shares[0].name).toBe(SETUP_SKILL_FILE_NAME);
+    // 分享用 text/plain（所有 Android 版本都能列全分享目标；文件名仍带 .md）
+    expect(shares[0].mime).toBe('text/plain');
+    expect(Buffer.from(shares[0].b64, 'base64').toString('utf8')).toBe(md);
+    expect((g.App.toast as Any).mock.calls.length).toBe(0);   // 成功不打扰
+  });
+
+  it('转发失败（老 APK / 无分享目标）→ 提示可以改用「⬇ 下载」', async () => {
+    stubAssetFetch();
+    await UsageAssistant._executeTool({ name: 'send_setup_skill', arguments: {} });
+    UsageAssistant.messages = [{ role: 'assistant', content: 'x', skill: UsageAssistant._pendingSkill! } as unknown as any];
+    UsageAssistant._pendingSkill = null;
+    g.HttpBridge = { shareFileBase64: () => JSON.stringify({ ok: false, error: 'no target' }) };
+    UsageAssistant.shareSkill();
+    expect(String((g.App.toast as Any).mock.calls[0][0])).toContain('下载');
   });
 });
 
