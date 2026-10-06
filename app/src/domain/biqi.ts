@@ -16,6 +16,10 @@ import { ImageCache } from '../lib/imagecache';
 
 export interface BiqiMessage { role: 'user' | 'assistant'; content: string; _steps?: string[]; imageIds?: string[] }
 
+// 比奇预设的存储键：**小说模式与对话模式共用一份**（键里不带模式）——
+// 用户改过就用改的、没改过用内置默认 BIQI_SYSTEM（跟着软件更新走）。
+export const BIQI_PRESET_KEY = 'biqiPresetText';
+
 export const BIQI_SYSTEM =
   '你是「比奇」，这本书的设定管家。作者会和你讨论剧情接下来怎么走，你负责据此维护**临时世界书**。\n' +
   '临时世界书是叠在原书之上的设定层：可以改条目内容、停用条目、新增条目，原书永远不动，改动随时可回滚。\n\n' +
@@ -105,6 +109,11 @@ export const BiqiAgent: {
   _hostStatus: HostStatusCache;
   _applyOp(op: 'add' | 'mod' | 'del', target: string, content: string, reason: string, type?: string): { ok: boolean; text: string };
   readWorldbook(): string;
+  _presetText(): string;
+  openPresetModal(): void;
+  closePresetModal(): void;
+  savePreset(): void;
+  resetPreset(): void;
   readStory(): string;
   openWorldbookPage(): void;
   _hydrateImages(): Promise<void>;
@@ -380,6 +389,53 @@ export const BiqiAgent: {
 
   // 水合：把消息里引用的、内存里没有的图从本地存档（IndexedDB）取回；取不到的进 _imgGone（渲染成「已过期」）。
   // 顺带把图号续上（重开 App 后 _imgSeq 归零，直接递增会盖掉旧记录 → 旧气泡会显示成新图）。
+  // ===== 比奇预设（用户 2026-10-06：「直接显示在比奇里，两个模式共用一套、可编辑」）=====
+  // 只放**人设与工作方式**这类用户可改的内容；生图规则、工具协议这些由软件每轮另行注入，
+  // 不写进预设（否则用户一改就丢，也容易被改坏）。
+  _presetText(): string {
+    try {
+      const t = SM().get<any>(BIQI_PRESET_KEY, null);
+      if (typeof t === 'string' && t.trim()) return t;
+    } catch (e) { /* ignore */ }
+    return BIQI_SYSTEM;
+  },
+  openPresetModal(): void {
+    const m = document.getElementById('biqiPresetModal');
+    if (!m) return;
+    const ta = document.getElementById('biqiPresetText') as HTMLTextAreaElement | null;
+    if (ta) ta.value = this._presetText();
+    m.classList.add('show');
+  },
+  closePresetModal(): void {
+    const m = document.getElementById('biqiPresetModal');
+    if (m) m.classList.remove('show');
+  },
+  /** 保存：清空、或与内置默认一致 → 视为"用默认"（删掉自定义，之后软件更新预设会跟着更新）。 */
+  savePreset(): void {
+    const ta = document.getElementById('biqiPresetText') as HTMLTextAreaElement | null;
+    const t = String((ta && ta.value) || '').trim();
+    try {
+      if (!t || t === String(BIQI_SYSTEM).trim()) {
+        SM().remove(BIQI_PRESET_KEY);
+        App.toast('已用回默认预设（会跟随软件更新）');
+      } else {
+        SM().set(BIQI_PRESET_KEY, t);
+        App.toast('比奇预设已保存（小说 / 对话共用这一份，下次发送生效）');
+      }
+    } catch (e) {
+      try { App.toast('保存失败：' + ((e && (e as Error).message) || e)); } catch (e2) { /* ignore */ }
+      return;
+    }
+    this.closePresetModal();
+  },
+  /** 恢复默认：立即生效（清掉自定义并回填默认文本，点「保存」可把当前文本再存回去）。 */
+  resetPreset(): void {
+    try { SM().remove(BIQI_PRESET_KEY); } catch (e) { /* ignore */ }
+    const ta = document.getElementById('biqiPresetText') as HTMLTextAreaElement | null;
+    if (ta) ta.value = BIQI_SYSTEM;
+    try { App.toast('已恢复默认预设（立即生效）'); } catch (e) { /* ignore */ }
+  },
+
   async _hydrateImages() {
     if (this._hydrating) return;
     const ids: string[] = [];
@@ -453,7 +509,7 @@ export const BiqiAgent: {
       return { role: m.role, content: text };
     });
     const msgs: any[] = [
-      { role: 'system', content: BIQI_SYSTEM },
+      { role: 'system', content: this._presetText() },   // 用户可编辑的预设（两模式共用一份）
       { role: 'system', content: this._imageRuleMessage() },
     ].concat(hist);
     let finalText = '';

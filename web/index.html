@@ -1309,6 +1309,7 @@ label{font-size:13px;color:var(--text-secondary);display:block;margin-bottom:4px
         <div id="biqiHead">
           <span class="biqi-title"><svg class="ic-16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="color:var(--primary);flex:none;"><path d="M4.75 6.25A2.75 2.75 0 0 1 7.5 3.5h9a2.75 2.75 0 0 1 2.75 2.75v7A2.75 2.75 0 0 1 16.5 16h-3.2l-4.05 3.75V16H7.5a2.75 2.75 0 0 1-2.75-2.75Z"/><path d="M13.6 3.7v5.2l1.6-1.35 1.6 1.35V3.7"/></svg> 比奇 <span class="biqi-sub">临时世界书管家</span></span>
           <div class="biqi-actions">
+            <button class="ghost-btn" onclick="BiqiAgent.openPresetModal()" title="编辑比奇的系统预设（小说模式与对话模式共用这一份）">预设</button>
             <button class="ghost-btn" onclick="BiqiAgent.openWorldbookPage()" title="查看当前生效的临时世界书">临时世界书</button>
             <button class="ghost-btn" onclick="BiqiAgent.clear()" title="清空对话（不动设定）">清空</button>
             <button class="icon-btn" onclick="BiqiAgent.close()" aria-label="关闭" title="关闭">✕</button>
@@ -1320,6 +1321,25 @@ label{font-size:13px;color:var(--text-secondary);display:block;margin-bottom:4px
           <button class="primary small" onclick="BiqiAgent.send()">发送</button>
         </div>
         <div id="biqiGrip" title="拖动调整高度（拖到底变整屏）" aria-label="拖动调整高度"><span></span></div>
+      </div>
+      <!-- 比奇预设弹层（2026-10-06，用户要求）：小说模式与对话模式**共用这一份**，可编辑、可恢复默认。
+           这里只放"比奇是谁、怎么干活"这类人设与工作方式；生图规则、工具协议、临时世界书机制由软件每轮另行注入，
+           不写进预设——用户改了不会丢，也不会被改坏。 -->
+      <div class="modal-overlay" id="biqiPresetModal">
+        <div class="modal" style="max-width:680px;width:94%;">
+          <div class="modal-header"><h3>⚙️ 比奇预设（可编辑）</h3><button class="icon-btn" onclick="BiqiAgent.closePresetModal()" title="关闭">✕</button></div>
+          <div class="modal-body">
+            <div class="cw-preset-block">
+              <div class="cw-preset-block-title">📌 比奇的系统预设 <span class="cw-muted">（小说 / 对话共用一份；清空或与默认一致＝继续跟随软件更新）</span></div>
+              <textarea id="biqiPresetText" rows="14" spellcheck="false" placeholder="比奇的人设与工作方式…"></textarea>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button onclick="BiqiAgent.closePresetModal()">取消</button>
+            <button onclick="BiqiAgent.resetPreset()" title="清除自定义，恢复系统默认（立即生效）">恢复默认</button>
+            <button class="primary" onclick="BiqiAgent.savePreset()">💾 保存预设</button>
+          </div>
+        </div>
       </div>
         <button id="editorScrollBottom" onclick="EditorManager.scrollEditorToBottom()" title="回到最底部" aria-label="回到最底部">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
