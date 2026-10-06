@@ -1,0 +1,14 @@
+{
+  "port": 8123,
+  "llm": {
+    "base": "",
+    "key": "",
+    "model": ""
+  },
+  "comfy": {
+    "base": "http://127.0.0.1:8188",
+    "workflow": "comfy/workflow.json",
+    "weight_dtype": "fp8_e4m3fn",
+    "nodes": {}
+  }
+}

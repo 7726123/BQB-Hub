@@ -1,0 +1,124 @@
+{
+  "1": {
+    "class_type": "UNETLoader",
+    "inputs": {
+      "unet_name": "miaomiaoRealskin_anima13.safetensors",
+      "weight_dtype": "default"
+    }
+  },
+  "2": {
+    "class_type": "CLIPLoader",
+    "inputs": {
+      "clip_name": "qwen_3_06b_base.safetensors",
+      "type": "stable_diffusion"
+    }
+  },
+  "3": {
+    "class_type": "VAELoader",
+    "inputs": {
+      "vae_name": "qwen_image_vae.safetensors"
+    }
+  },
+  "105": {
+    "class_type": "LoraLoader",
+    "inputs": {
+      "model": [
+        "1",
+        0
+      ],
+      "clip": [
+        "2",
+        0
+      ],
+      "lora_name": "anima-turbo-lora-v0.2.safetensors",
+      "strength_model": 1,
+      "strength_clip": 1
+    }
+  },
+  "6": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "text": "",
+      "clip": [
+        "105",
+        1
+      ]
+    }
+  },
+  "7": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "text": "worst quality, low quality, score_1, score_2, score_3, blurry, soft focus, low contrast, washed out, smudged, jpeg artifacts, sepia, bad anatomy, bad hands",
+      "clip": [
+        "105",
+        1
+      ]
+    }
+  },
+  "8": {
+    "class_type": "EmptyLatentImage",
+    "inputs": {
+      "width": 896,
+      "height": 1344,
+      "batch_size": 1
+    }
+  },
+  "9": {
+    "class_type": "KSampler",
+    "inputs": {
+      "model": [
+        "105",
+        0
+      ],
+      "seed": 0,
+      "steps": 8,
+      "cfg": 1,
+      "sampler_name": "euler",
+      "scheduler": "simple",
+      "positive": [
+        "6",
+        0
+      ],
+      "negative": [
+        "7",
+        0
+      ],
+      "latent_image": [
+        "8",
+        0
+      ],
+      "denoise": 1
+    }
+  },
+  "10": {
+    "class_type": "VAEDecode",
+    "inputs": {
+      "samples": [
+        "9",
+        0
+      ],
+      "vae": [
+        "3",
+        0
+      ]
+    }
+  },
+  "11": {
+    "class_type": "SaveImage",
+    "inputs": {
+      "images": [
+        "10",
+        0
+      ],
+      "filename_prefix": "anima_miaomiao"
+    }
+  },
+  "_tiers": {
+    "fast": { "size": 512, "steps": 8 },
+    "draft": { "size": 512, "steps": 10 },
+    "normal": { "size": 768, "steps": 8 },
+    "high": { "size": 1024, "steps": 10 }
+  },
+  "_note": "anima 微调版 miaomiaoRealskin_anima13 + 只挂 anima-turbo LoRA（strength 1.0；2026-10-06 定：试过 6 个 LoRA 全叠观感不好，只留 turbo；无 LoRA 版备份在 workflow.anima.miaomiao.nolora.json）。**自身步数 8 / cfg 1.0 / euler / simple**（无 turbo 时代曾定 28 步：12~16 步会糊、28 步才干净；2026-10-06 turbo 实测 8 步与 12/36 步画质肉眼无差，故改 8；每档步数走上面的 _tiers 声明，App 声明优先）。cfg 1.0 比 1.1 快约 9 秒且画质持平（负面词在 cfg 1.0 下不生效，防糊靠正面画质词）。turbo 每步略慢（768 约 +0.13s/步）、首次加载多 1~3s。",
+  "_hint": "anima 系 tag 模型：正向提示词用英文 danbooru tag、逗号分隔，结尾带 masterpiece, best quality, sharp focus, crisp lines, high contrast, detailed eyes；人物默认半身、看镜头、构图居中，别让手入画（近景手容易糊）；头像类需求用 1:1（768x768），整身立绘用 896x1344；负面提示词沿用工作流里那一串（cfg 1.1 下生效）。工作流已内置风格/加速 LoRA，提示词里不要写 <lora:…> 语法（ComfyUI 不解析，只会当普通文字）。"
+}

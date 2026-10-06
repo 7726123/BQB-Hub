@@ -5,11 +5,25 @@
 import { SM } from '../infra/gate';
 import { renderMdStrong } from '../lib/mdtext';
 import { isClean } from '../lib/buildflags';
+import { buildSetupSkillMd, SETUP_SKILL_FILE_NAME, SETUP_SKILL_MIME } from './setup-skill';
 
 export interface AssistantMessage { role: 'user' | 'assistant'; content: string }
+/** 助手把技能包发给用户时挂在消息上的载荷（渲染成卡片：保存为 .md / 复制 / 预览）。 */
+export interface AssistantSkill { name: string; markdown: string; bytes: number }
+export interface AssistantMessageExt extends AssistantMessage { skill?: AssistantSkill; _skillOpen?: boolean }
 
-const MANUAL_FULL = [
-'【BQB Hub 使用手册】',
+/** 文本 → base64（走原生桥存文件用）。按块拼二进制串，避免大数组 spread/apply 爆栈。 */
+function _utf8ToBase64(s: string): string {
+  const bytes = new TextEncoder().encode(String(s == null ? '' : s));
+  let bin = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) {
+    const end = Math.min(i + 0x8000, bytes.length);
+    for (let j = i; j < end; j++) bin += String.fromCharCode(bytes[j]);
+  }
+  return btoa(bin);
+}
+
+const MANUAL_FULL = ['【BQB Hub 使用手册】',
 '一、开始写作',
 '1. 默认进入写作页。底部输入栏输入续写指示（如"她推门而入"），按发送或回车即可让 AI 续写；留空直接发送=自动续写。',
 '2. 输入框内 Shift+回车换行；输入行**左侧的 ↩** 撤回上一次续写（会把你上次发的那句指示放回输入框）；正文滚上去以后右下角会出现圆形箭头，点一下回到最下面。',
@@ -111,17 +125,36 @@ const MANUAL_FULL = [
 '9. 给角色写资料记住一条：真实模式的"谁知道什么"一共四条通道，按**多少人知道**分——①世界书「角色」条目 = **别人都看得到的公开人设**（外貌、身份、表层性格）；②「初始记忆」条目 = **只有一个人**知道（一个角色一条、1 对 1 绑定，只发给 TA 本人）；③「部分人知道」条目 = **一个小组**知道、别人不知道（名称=标题、内容=这件事、知情者=列出所有知道的人；只有名单里的角色拿得到内容，场记和名单外的人一点都看不到）；④「大家都知道的事」= 公开的通知/传闻，由场记自己维护。**秘密、隐情、"谁知道什么"绝对不要写在角色条目里**。写卡 agent 也按这条来，拿不准它会先问你一句。',
 '十八、生图（画图主机）',
 '1. 能干什么：写卡和比奇都能出图——写卡里直接说「给林晚画一张头像」，或续写/演出完让比奇「配张图」；也可以先和它讨论画什么，聊完说「就画这个」。图会直接显示在对话里（点开可看大图），左下角有编号（图1、图2…）。',
-'2. 改图还是画新图：说「把图3改成雪夜」「基于图2再来一张」「这张有点糊了」这种**在现有画面上改动/修饰**的，就是改图（保留现有形象，只改你说的那处）；而「这个角色不够成熟」这类**要改角色本身**（人设、年龄、气质）的，会直接画一张新图、不拿旧图当底子。看图页有「基于这张改」按钮，点了会自动把「把图N改成：」填进输入框。',
+'2. 改图还是画新图：说「把图3改成雪夜」「基于图2再来一张」「这张有点糊了」这种**在现有画面上改动/修饰**的，就是改图（保留现有形象，只改你说的那处）；而「这个角色不够成熟」这类**要改角色本身**（人设、年龄、气质）的，会直接画一张新图、不拿旧图当底子。想改哪张直说编号就行（「把图N改成：…」），不用点按钮。',
 '3. 比奇画图默认会拿世界书里该角色**现有的头像当底图**（换姿势/换衣服/换背景、保住脸），适合"续写之后配张图"；角色还没有头像时就照常按描述画。',
-'4. 图存哪儿：生成的图只在本会话内存里——重开 App 后旧图会变成"已过期"占位（重新生成一次即可）。要留下的，点开图后按「保存到相册」（存到手机相册的 BQB Hub 文件夹）或「分享」发出去。',
-'5. 前置条件（重点）：需要你自己电脑上跑着「画图主机」——App 只连它，它再去调 ComfyUI（出图引擎）。**这两个程序都要开着、缺一不可**；手机和电脑要在同一个 Wi-Fi 下。',
-'6. 电脑上的一次性准备：① 装 ComfyUI（官方 Desktop 包最省事），放好模型（扩散模型、文本编码器、VAE，可选 LoRA），导入一份 **API 格式**的工作流、先在 ComfyUI 里手动跑通一张图；② 装 Node.js，把「画图主机」这套文件放任意位置，核对 config.json 里的 ComfyUI 地址与工作流文件名；③ 双击「启动.cmd」——窗口会打印「手机/其他设备：http://192.168.x.x:8123/」和「配对 token」，**抄下来**（要用 WLAN/以太网那一行，别抄 VMware、VPN 这类虚拟网卡的地址）；第一次启动 Windows 防火墙弹窗要选「允许（专用网络）」。',
-'7. 手机上连接：设置 → AI 与生成 → 画图主机：填地址（如 192.168.1.101:8123，可以不写 http://）和配对 token → 打开开关 → 点「测试连接」，显示在线就成了。',
-'8. 日常：用之前先开 ComfyUI、再双击「启动.cmd」，两个都别关。电脑 IP 可能变（路由器重新分配）——变了就改 App 里的地址（或让路由器给这台电脑绑定固定 IP）。主机端口固定 8123（ComfyUI 默认 8188），token 不会自己变。',
-'9. 连不上怎么查（看报错是哪一句）：①「连不上画图主机 / 超时」=手机没到 8123：先用电脑浏览器打开 http://127.0.0.1:8123/ 看主机在不在，再查地址对不对、是否同一 Wi-Fi、防火墙有没有拦；②「连不上 ComfyUI（http://127.0.0.1:8188）」=手机到主机已经通了，是电脑上 ComfyUI 没开（打开它、等它起来再试）；③「配对 token 不对（401）」=token 抄错，看启动窗口打印的那串。',
-'10. 出图档位：默认标准（768）；说「快一点/先看看」用快（512）；「更精细/更大」用精细（1024）；要挑构图说「出两张草稿」。每档的实际步数由画图主机的**工作流自己决定**（主机换模型、加加速 LoRA 只改工作流，App 不用更新）。',
-'11. 没配画图主机时：写卡和比奇**不会**提议"要不要我画一张"，也不会假装画了；你问起来它会告诉你去哪配。',
-'12. AI 能"看图"了（2026-10-06 起，**自己看**）：出完图软件会把这张图**直接附给它**（连同角色卡、你的要求一起看），所以它会如实讲画面内容、有没有明显崩坏（手指/文字/结构），必要时主动问你要不要重画；你也可以直接问「图3 里她的手有没有问题」「图2 和图4 哪张更像某角色」「林晚现在的头像什么样」，比奇/写卡会"看一眼"再答。给 AI 看的还是**缩略图**、只在这一次请求里附、**不进对话记录**（所以不会越来越慢）。**如果当前模型看不了图，这项能力会自动关闭**（不会因此影响出图、改图、设头像）；新换的模型第一次会先用一次单独的小调用试一下，试成了以后就一直"自己看"。'
+'4. 图存在哪里：生成的图会**存在你手机本机**（每本书保留最近 12 张、总量约 120MB 以内，超出自动删最旧的）——重开 App 还能看到、点开还是原图、还能"基于这张改"；**「清空对话」或删掉这本书时，这本书的图会一起删掉**。要长期留存的，点开图按右下角「**保存到相册**」（存到手机相册的 BQB Hub 文件夹）。',
+'5. 出图是怎么跑起来的（先看懂这张"分工图"，后面就不会懵）：**手机不画图**。你对着 App 说"画一张…"→ App 把「画什么」发给**你自己电脑上的「画图主机」**→ 画图主机指挥电脑上的 **ComfyUI**（出图引擎，真正吃显卡的那个）画出来 → 再把图传回手机。所以三件事必须同时成立：① **你自己的电脑开着**（不能关机、不能睡眠）；② 电脑上**两个程序都在跑**（ComfyUI + 画图主机）；③ **手机和电脑在同一个路由器下**（手机连的 Wi-Fi 和电脑——Wi-Fi 或网线都行——是同一个局域网）。',
+'6. 电脑上要准备的东西（一次性，照做即可；第一次大约 1~2 小时，大半时间花在下载上）：',
+'- **电脑要求**：Windows 10/11 + **NVIDIA 独立显卡**（显存 6GB 起能跑、8GB 更顺；核显和 A 卡不建议，要么跑不动要么很慢）＋ **30GB 以上空闲硬盘**（模型本身约 7~10GB，ComfyUI 与运行库约 5GB）。',
+'- **① ComfyUI（出图引擎）**：去 ComfyUI 官网下载 **Windows 桌面版**，像装普通软件一样一路"下一步"装好，能打开看到画布界面就算成功；里面的设置先不用动。',
+'- **② 模型文件**：一般 3~4 个文件（主模型 3~4GB、文本编码器、VAE，还有一个加速 LoRA）。**下哪几个、去哪下，按你拿到的「画图主机」包里的说明来**。下完放进 ComfyUI 的 models 目录、按类型分文件夹：主模型 → `models\\diffusion_models`、文本编码器 → `models\\text_encoders`、VAE → `models\\vae`、LoRA → `models\\loras`（桌面版默认在「文档 → ComfyUI → models」，装的时候改过位置就以实际为准）。**文件名要和包里的工作流一致**：对不上会报"找不到 xxx"。',
+'- **③ Node.js**：去 Node.js 官网下载 **LTS 版**的 Windows 安装包，一路"下一步"装完（它是「画图主机」的运行环境，装完不需要打开它）。',
+'- **④「画图主机」文件包**：解压到一个固定文件夹（例如 `D:\\bqb-host`；放桌面、文档也行，但**别放到需要管理员权限的目录**，路径里**尽量别有空格和中文**）。解压后里面有 `serve.mjs`、`config.json`、`启动.cmd`、`comfy` 文件夹（工作流）等，还带一份更详细的图文指南——具体的文件名以那份指南和你实际看到的为准。',
+'7. 装完先自测三件事，三件都过了再去配手机（不然手机上只会一直连不上，还要回头查）：',
+'- **① ComfyUI 能出图**：打开 ComfyUI → 把「画图主机」包里 `comfy` 文件夹里那份**工作流 JSON** 拖进窗口（或菜单 Workflow → Open 选它）→ 点一下 **Run / Queue** → 等它画出一张图。出来了＝显卡、模型、工作流都就位（**这是唯一能证明"这台电脑真的能画"的检查**）；出不来就看它红字报什么：**缺模型**它会写出文件名（回去补一个同名的）、**显存不足**就换小模型或换个档位再试。',
+'- **② 画图主机能连上 ComfyUI**：双击 `启动.cmd` → 会弹出一个**黑窗口**（命令提示符窗口，正常现象、不是病毒；**最小化就行，千万别关**）→ 看它打印的内容里有没有认到 ComfyUI（版本/在线之类）。**第一次运行时 Windows 会弹防火墙提示 → 必须勾上「专用网络」并点「允许访问」**（点了"取消"手机就连不上，得去防火墙设置里补）。',
+'- **③ 抄下两样东西**：窗口里会打印一行 `http://192.168.1.23:8123` 这样的地址——**要"WLAN / 以太网"那一行；列了好几行时，别抄 VMware / VirtualBox / VPN / vEthernet 这种虚拟网卡的**；以及一行「**配对 token**」（一长串字母数字）。建议拍照或复制到便签。token 会自动存进同目录的 `host.json`，以后不变（想换一串：关掉窗口、删掉 `host.json`、再启动就有了）。',
+'8. 手机上连接（4 步）：设置 → AI 与生成 → 画图主机 → ① 地址栏填「窗口里那个 IP**:8123**」（照着窗口里抄，别抄上面的例子；不用写 `http://`）② token 栏粘贴刚才那串 ③ 打开右边的开关（显示 ON）④ 点「**测试连接**」→ 弹出「**画图主机在线 · 模型名**」就成了。然后回写卡/比奇说一句「给林晚画一张头像」试试（第一次出图约 5~35 秒）。',
+'9. 平时怎么用（记住顺序）：① 先开 **ComfyUI**（它启动慢，先开它）② 再双击 **启动.cmd** ③ 手机连同一个 Wi-Fi 打开 App 用。两个窗口都**别关**（关掉 ComfyUI → 图出不来；关掉画图主机 → 手机连不上）。**电脑睡眠/休眠＝断线**：把 Windows 的「电源和睡眠」设成"从不"，或至少出图时别合盖。出图时手机可以切出去做别的，回来图还在（算图的是电脑，手机只负责收图）。不用的时候，在设置里把画图主机的开关关掉即可（不影响其它功能）。',
+'10. 连不上 / 出图失败：对着屏幕上那句话找原因：',
+'- 「**连不上画图主机 / 请求超时**」＝手机没连到电脑。按顺序查：① 电脑浏览器打开 `http://127.0.0.1:8123/` 有没有反应（没反应＝画图主机没开或黑窗口被关了，重新双击启动）；② 手机 Wi-Fi 和电脑是不是**同一个路由器**（手机是不是连了别的 Wi-Fi / 访客网络 / 用流量 / 开着 VPN——**VPN 一定要关**，它会把局域网地址绕走）；③ 地址抄错（要抄窗口里"WLAN/以太网"那行的 IP，不是 127.0.0.1、也不是虚拟网卡的）；④ 防火墙：第一次弹窗点了"取消"就会一直连不上——到「Windows 安全中心 → 防火墙和网络保护 → 允许应用通过防火墙」里，把 **Node.js** 在**专用网络**上打勾。',
+'- 「**连不上 ComfyUI（127.0.0.1:8188）**」＝手机**已经**连上电脑了，是**电脑上的 ComfyUI 没开**（或还在启动）→ 打开它、等界面完全出来，再点一次发送。',
+'- 「**配对 token 不对 / 401**」＝token 抄错或漏字符 → 回黑窗口重新抄；拿不准就删掉 `host.json` 重启主机，用新 token 在手机上重填一次。',
+'- 「**昨天还能用，今天连不上**」＝路由器重开机后给电脑换了 IP → 重新看黑窗口打印的地址，在 App 里改一下。想一劳永逸：进路由器管理页把这台电脑设成「**地址保留 / 静态 DHCP**」（各品牌叫法不同）。',
+'- 「**出门 / 用流量能不能用**」＝不能。这条通道是局域网直连，手机和电脑必须在同一个 Wi-Fi 下（想远程用要自己做内网穿透，涉及安全，本软件不提供也不建议）。',
+'- 「**出图慢 / 电脑风扇狂转 / 报显存不足**」＝正常，出图就是吃显卡；说"快一点"用小档位（512）、关掉其它吃显存的程序（游戏、浏览器视频）；小档位跑得动再往上试大图。',
+'- 「**画得不对 / 手崩了**」＝把要求说具体、或说"再来一张"换一版；也可以直接问「图3 的手有没有问题」，AI 能看图（见第 13 条）。',
+'- 「**黑窗口一片红字 / 一闪就没了**」＝多半是 Node.js 没装好（重装一次 LTS 版），或 `config.json` 被改坏了（用包里原版覆盖回去）。',
+'- 「**两台手机能用吗**」＝能。同一个 Wi-Fi 下每台手机填**同一个地址 + 同一个 token**，主机不用改；同一时刻只有一台在出图，另一台会稍等。',
+'11. 出图档位：默认标准（768）；说「快一点/先看看」用快（512）；「更精细/更大」用精细（1024）；要挑构图说「出两张草稿」。每档的实际步数由画图主机的**工作流自己决定**（主机换模型、加加速 LoRA 只改工作流，App 不用更新）。',
+'12. 没配画图主机时：写卡和比奇**不会**提议"要不要我画一张"，也不会假装画了；你问起来它会告诉你去哪配。',
+'13. AI 能"看图"了（2026-10-06 起，**自己看**）：出完图软件会把这张图**直接附给它**（连同角色卡、你的要求一起看），所以它会如实讲画面内容、有没有明显崩坏（手指/文字/结构），必要时主动问你要不要重画；你也可以直接问「图3 里她的手有没有问题」「图2 和图4 哪张更像某角色」「林晚现在的头像什么样」，比奇/写卡会"看一眼"再答。给 AI 看的还是**缩略图**、只在这一次请求里附、**不进对话记录**（所以不会越来越慢）。**如果当前模型看不了图，这项能力会自动关闭**（不会因此影响出图、改图、设头像）；新换的模型第一次会先用一次单独的小调用试一下，试成了以后就一直"自己看"。',
+'14. 嫌上面太麻烦？可以让 AI 帮你配：跟我说一句「**给我一份配置技能**」——我会把一份 **.md 技能文件**发给你（聊天里会出现一张卡片，点「💾 保存为 .md」存到手机「下载」目录、或「📋 复制全文」）。把它交给**你电脑上的 AI 编程助手**（Claude Code / WorkBuddy / Cursor 等），那个助手就会照着在电脑上装 ComfyUI、放模型、导入工作流、起画图主机，最后把「手机要填的地址 + 配对 token」打印出来给你。技能包里**自带**主机程序与工作流（不用另外下载别的东西）；**唯一要你自己做的一步是下载模型**——包里给了 Civitai 上的模型页面（<https://civitai.com/models/2026594/miaomiao-realskin> 与 <https://civitai.com/models/2619830/turbo-for-anima-less-steps>）、要下哪几个文件、精确字节数和工作流认的文件名；**那两页需要注册登录才能下载**（登录是模型作者的要求，AI 代你下不了）。注意这些模型**仅限个人非商用、要署名、不可转发模型文件**——自己写小说配图没问题，别拿生成的图去卖。'
 ].join('\n');
 
 /** 完整版手册。干净版（离线版）不直接用这份，见 manualForClean()。 */
@@ -294,6 +327,7 @@ export const UsageAssistant: {
   _needLogin: boolean;
   _status: string;
   _steps: string[];
+  _pendingSkill: AssistantSkill | null;
   init(): void;
   renderMessages(): void;
   quickAsk(q: string): void;
@@ -308,6 +342,12 @@ export const UsageAssistant: {
   _executeTool(t: any): Promise<string>;
   _communityTool(t: any, a: any, C: any): Promise<string>;
   _loginRequired(reason: string): string;
+  _sendSetupSkill(): Promise<string>;
+  _skillCardHtml(m: AssistantMessageExt): string;
+  _lastSkill(): AssistantSkill | null;
+  saveSkill(): void;
+  copySkill(): void;
+  toggleSkillPreview(): void;
   openCard(id: any): Promise<void>;
   closeCard(): void;
   downloadCard(): Promise<void>;
@@ -323,6 +363,7 @@ export const UsageAssistant: {
   _needLogin: false, // 本轮回答里出现过"未登录社区"（最终回答会兜底追加登录提示）
   _status: '',       // 发送中的进度文案（渲染成 spinner 行，替代「…」）
   _steps: [],        // 本轮工具调用留痕（🔍 检索「…」→ 9 条）
+  _pendingSkill: null, // 本轮已生成、等最终气泡一起渲染的「画图主机配置技能」
 
   init(): void {
     try {
@@ -356,9 +397,81 @@ export const UsageAssistant: {
       const body = raw.trim()
         ? renderCardRefs(renderMdStrong(htmlEscape(raw))) + (thinking ? '<span class="as-caret"></span>' : '')
         : (thinking ? '<div class="as-status"><span class="cw-spinner"></span>' + htmlEscape(self._status || '正在处理…') + '</div>' : '');
-      return '<div class="' + cls + '">' + body + stepsHtml + '</div>';
+      const skillHtml = (m as AssistantMessageExt).skill ? self._skillCardHtml(m as AssistantMessageExt) : '';
+      return '<div class="' + cls + '">' + body + skillHtml + stepsHtml + '</div>';
     }).join('');
     box.scrollTop = box.scrollHeight;
+  },
+
+  // 「画图主机配置技能」卡片：一份 .md，交给电脑上的 AI 编程助手照着配（保存到「下载」/ 复制 / 预览全文）。
+  _skillCardHtml(m: AssistantMessageExt): string {
+    const s = m.skill as AssistantSkill;
+    const kb = Math.max(1, Math.round((s.bytes || 0) / 1024));
+    const open = !!m._skillOpen;
+    const pre = open
+      ? '<pre style="margin:8px 0 0;padding:8px;max-height:44vh;overflow:auto;font-size:11px;line-height:1.45;white-space:pre-wrap;word-break:break-word;background:var(--bg-secondary);border:1px solid var(--border);border-radius:8px;-webkit-user-select:text;user-select:text;">'
+        + htmlEscape(String(s.markdown || '').slice(0, 60000)) + '</pre>'
+      : '';
+    return '<div style="margin-top:8px;padding:10px;border:1px solid var(--border);border-left:3px solid var(--primary);border-radius:8px;background:var(--bg-secondary);">'
+      + '<div style="font-weight:600;font-size:13px;">🧩 ' + htmlEscape(s.name || SETUP_SKILL_FILE_NAME) + '</div>'
+      + '<div style="margin-top:4px;font-size:12px;color:var(--text-secondary);line-height:1.6;">约 ' + kb + 'KB。把它交给电脑上的 AI 编程助手（Claude Code / WorkBuddy / Cursor 等），它就会帮你装 ComfyUI、放模型、起画图主机，最后给你手机上要填的地址和 token。<b>模型要你自己先登录 Civitai 下载</b>（作者要求登录，AI 下不了）。</div>'
+      + '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:8px;">'
+      + '<button class="small" onclick="UsageAssistant.saveSkill()">💾 保存为 .md</button>'
+      + '<button class="small" onclick="UsageAssistant.copySkill()">📋 复制全文</button>'
+      + '<button class="small" onclick="UsageAssistant.toggleSkillPreview()">' + (open ? '收起' : '👁 预览') + '</button>'
+      + '</div>' + pre + '</div>';
+  },
+
+  /** 当前这条消息上的技能包（卡片就在最后一条上）。 */
+  _lastSkill(): AssistantSkill | null {
+    for (let i = this.messages.length - 1; i >= 0; i--) {
+      const m = this.messages[i] as AssistantMessageExt;
+      if (m && m.skill) return m.skill;
+    }
+    return null;
+  },
+
+  /** 存成 .md 文件：走原生桥 saveFileBase64（非图片 → Android 10+ 落在「下载」目录）。 */
+  saveSkill(): void {
+    const s = this._lastSkill();
+    if (!s) { App.toast('技能包不在了，再让助手发一次'); return; }
+    const bridge = (globalThis as any).HttpBridge;
+    if (!bridge || typeof bridge.saveFileBase64 !== 'function') {
+      App.toast('当前 App 版本不支持保存文件——用「复制全文」吧（或更新 App）');
+      return;
+    }
+    try {
+      const b64 = _utf8ToBase64(s.markdown);
+      const r = JSON.parse(String(bridge.saveFileBase64(SETUP_SKILL_FILE_NAME, b64, SETUP_SKILL_MIME)));
+      if (r && r.ok) App.toast('已保存：' + String(r.path || SETUP_SKILL_FILE_NAME) + '（用手机的文件管理或分享发到电脑）');
+      else App.toast('保存失败：' + String((r && r.error) || '未知错误'));
+    } catch (e: any) { App.toast('保存失败：' + String((e && e.message) || e)); }
+  },
+
+  /** 复制全文（复制不出来就提示去预览里长按选中）。 */
+  copySkill(): void {
+    const s = this._lastSkill();
+    if (!s) { App.toast('技能包不在了，再让助手发一次'); return; }
+    const md = s.markdown;
+    const done = () => App.toast('已复制全文——粘到一个 .md / .txt 文件里交给电脑上的 AI 助手');
+    const fail = () => App.toast('复制没成功：点「预览」后长按选中全文复制');
+    try {
+      const nav: any = (globalThis as any).navigator;
+      if (nav && nav.clipboard && nav.clipboard.writeText) { nav.clipboard.writeText(md).then(done).catch(fail); return; }
+      const ta = document.createElement('textarea');
+      ta.value = md; ta.style.position = 'fixed'; ta.style.opacity = '0';
+      document.body.appendChild(ta); ta.select();
+      const ok = document.execCommand && document.execCommand('copy');
+      document.body.removeChild(ta);
+      if (ok) done(); else fail();
+    } catch (e) { fail(); }
+  },
+
+  toggleSkillPreview(): void {
+    for (let i = this.messages.length - 1; i >= 0; i--) {
+      const m = this.messages[i] as AssistantMessageExt;
+      if (m && m.skill) { m._skillOpen = !m._skillOpen; this.renderMessages(); return; }
+    }
   },
 
   quickAsk(q: string): void {
@@ -384,6 +497,7 @@ export const UsageAssistant: {
     this._status = '正在理解你的问题…';
     this._steps = [];
     this._needLogin = false;
+    this._pendingSkill = null;
     this.messages.push({ role: 'assistant', content: '' });
     this.renderMessages();
     void this._runLoop(text);
@@ -460,6 +574,12 @@ export const UsageAssistant: {
         last.content = stripMissMarker(text, self._missMarker);
         self._uploadMissed();
       }
+      // 本轮发过「画图主机配置技能」→ 把技能包挂在这条气泡上（渲染成卡片；正文由 App 给，模型不复述）
+      if (self._pendingSkill) {
+        (last as AssistantMessageExt).skill = self._pendingSkill;
+        self._pendingSkill = null;
+        if (!last.content) last.content = '这份文件交给电脑上的 AI 编程助手用（见下面的卡片）👇';
+      }
       if (!last.content) last.content = '（没有拿到结果，请再说一次或换个说法）';
     }
     this._isSending = false;
@@ -493,6 +613,16 @@ export const UsageAssistant: {
   _tools(): unknown[] {
     if (isClean()) return [];   // 干净版：没有社区可检索，一个工具都不给
     return [
+      {
+        // 「画图主机」AI 配置技能包（2026-10-06 用户要求：放助手里，由助手直接发一份 .md 给用户）。
+        // 内容由 App 内置素材拼装（见 setup-skill.ts），模型只负责"在合适的时候把它发出去"，不看内容。
+        type: 'function',
+        function: {
+          name: 'send_setup_skill',
+          description: '把《BQB Hub 画图主机配置技能》这份 .md 发给用户：用户把它交给电脑上的 AI 编程助手（Claude Code / WorkBuddy / Cursor 等），那个助手就会照着在电脑上装好 ComfyUI、放好模型、起好画图主机，最后给出手机要填的地址与配对 token。**用户问「怎么配置画图主机 / 怎么让手机能出图 / 电脑怎么装 ComfyUI / 有没有能自动配的教程 / 给我那份 skill」时调用**。调用后不要复述内容（很长），只需一两句说明这文件是给谁用的、怎么用（保存到手机或复制后发到电脑）。',
+          parameters: { type: 'object', properties: {}, required: [] },
+        },
+      },
       {
         type: 'function',
         function: {
@@ -529,6 +659,8 @@ export const UsageAssistant: {
   },
 
   async _executeTool(t: any): Promise<string> {
+    // 「画图主机配置技能」与社区无关（本机出图能力），干净版也照发——所以放在社区检查之前
+    if (t && t.name === 'send_setup_skill') return await this._sendSetupSkill();
     if (isClean()) return JSON.stringify({ ok: false, error: '本版本不含社区检索' });
     const a = t.arguments || {};
     const C = (globalThis as any).CommunityChat;
@@ -550,6 +682,24 @@ export const UsageAssistant: {
   _loginRequired(reason: string): string {
     this._needLogin = true;
     return JSON.stringify({ ok: false, needLogin: true, error: reason, hint: COMMUNITY_LOGIN_HINT });
+  },
+
+  /**
+   * 「画图主机配置技能」：把内置素材拼成一份完整 .md，挂到本轮最终气泡上（渲染成卡片）。
+   * 返回给模型的是**结果形状**（不返回正文）：正文由 App 直接给用户，模型不许复述（很长）。
+   */
+  async _sendSetupSkill(): Promise<string> {
+    const r = await buildSetupSkillMd();
+    if (!r.ok || !r.markdown) {
+      return JSON.stringify({ ok: false, error: '技能包没取到：' + String(r.error || '未知错误') + '（让用户更新到最新版本再试，或用「画图主机」设置里的地址+token 手工配置）' });
+    }
+    const kb = Math.max(1, Math.round((r.bytes || 0) / 1024));
+    this._pendingSkill = { name: SETUP_SKILL_FILE_NAME, markdown: String(r.markdown), bytes: r.bytes || 0 };
+    return JSON.stringify({
+      ok: true,
+      result: '已把《' + SETUP_SKILL_FILE_NAME + '》（约 ' + kb + 'KB）发给用户：聊天里出现一张卡片，用户点「保存为 .md」存到手机「下载」目录（再用手机的文件/分享发到电脑），或点「复制全文」粘成文件。',
+      hint: '只用一两句告诉用户：这份 .md 是给电脑上的 AI 编程助手（Claude Code / WorkBuddy / Cursor 等）看的；把它交给那个助手，它会负责装 ComfyUI、放模型、起画图主机，最后给出手机要填的地址与 token。**模型文件需要用户自己登录 Civitai 下载（技能里写了链接与校验值），AI 下不了**。不要复述技能内容本身。'
+    });
   },
 
   async _communityTool(t: any, a: any, C: any): Promise<string> {
@@ -597,6 +747,7 @@ export const UsageAssistant: {
       }
       if (t.name === 'get_card_detail') return j.ok ? '📖 查看《' + String(j.title || '').slice(0, 20) + '》→ ' + (j.entryCount || 0) + ' 条' : '📖 查看失败';
       if (t.name === 'import_card') return j.ok ? '⬇ 已导入《' + String(j.name || '').slice(0, 20) + '》' : '⬇ 导入失败';
+      if (t.name === 'send_setup_skill') return j.ok ? '🧩 已生成《画图主机配置技能》' : '🧩 技能包生成失败';
     } catch (e) { /* 结果不是 JSON 就不留痕 */ }
     return '';
   },
