@@ -1,13 +1,20 @@
 @echo off
-chcp 65001 >nul
 cd /d %~dp0
 echo ============================================================
-echo  正在启动「画图主机」（App 要连的那一层，端口 8123）
-echo  它**不会**启动 ComfyUI —— 请先自己把 ComfyUI 打开
-echo  （出图引擎，端口 8188）。两个都要开着，缺一不可。
+echo  BQB Hub image host  (port 8123)
+echo.
+echo  This starts ONLY the image host layer.
+echo  Start ComfyUI first (the drawing engine, port 8188).
+echo  Both must be running, and this window must stay open.
+echo.
+echo  The phone needs the two lines printed below:
+echo    - the address line with WLAN / Ethernet
+echo    - the pairing token
 echo ============================================================
 echo.
+chcp 65001 >nul
 node serve.mjs --lan
+chcp 936 >nul
 echo.
-echo 主机已退出。若是意外退出，看上面的报错原文；按任意键关闭本窗口。
+echo The host has exited. Press any key to close this window.
 pause

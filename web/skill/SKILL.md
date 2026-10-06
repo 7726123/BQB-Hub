@@ -166,6 +166,18 @@ token：<窗口里那串>
 手机：设置 → AI 与生成 → 画图主机 → 填地址（不用写 http://）和 token → 打开开关 → 点「测试连接」
 ```
 
+### 顺手做件好事：给用户一个「一键启动」的桌面图标（推荐）
+
+用户一定会嫌"每次开两个东西"麻烦。可以再写一个 `启动全部.cmd`（与本目录的 `启动.cmd` 并列）+ 桌面快捷方式：
+
+1. 用 `netstat -ano | findstr ":8188" | findstr "LISTENING"` 判断 ComfyUI 是否已在跑；没跑就 `start "" "<ComfyUI 的 exe 路径>"`（在用户机器上找：桌面快捷方式 `Comfy Desktop.lnk` 的目标，或 `%LOCALAPPDATA%\Programs\` 下）——找不到 exe 就提示用户手动打开，别报错退出。
+2. 轮询端口 8188（`timeout /t 3` 循环，最多 ~3 分钟；超时也继续，只提示"出图若报连不上 ComfyUI 就等它起来再试"）。
+3. 最后 `node serve.mjs --lan`；并先检查 8123 是否已被占用——占用说明主机已经在跑，提示用户别重复启动即可。
+4. 桌面快捷方式（PowerShell）：
+   `$s=New-Object -ComObject WScript.Shell; $l=$s.CreateShortcut("$env:USERPROFILE\Desktop\BQB 画图主机.lnk"); $l.TargetPath="<启动全部.cmd 的完整路径>"; $l.WorkingDirectory="<host 目录>"; $l.IconLocation="<ComfyUI exe>,0"; $l.Save()`
+
+⚠️ 写 Windows 批处理的两个坑（都踩过）：① **别用 UTF-8 存带中文的 .cmd**——cmd 按控制台代码页解析，UTF-8 的中文常被拆成乱码命令（`'xxx' 不是内部或外部命令`）；要用中文就存成 **GBK/ANSI**，并在 `node` 之前 `chcp 65001`、node 结束后 `chcp 936` 切回来（node 的输出是 UTF-8）。本技能自带的 `启动.cmd` 因此**故意只用英文**，在任何语言的 Windows 上都不会乱码。② 别存成 UTF-8 **BOM**——BOM 会让第一行 `@echo off` 变成 `锘緻echo off` 而报错。
+
 ## 7. 收尾：给用户说清三件事
 
 1. **平时顺序**：先开 ComfyUI（慢）→ 再双击 `C:\bqb-host\启动.cmd`；两个窗口都别关（关了手机就连不上 / 出不了图）。
