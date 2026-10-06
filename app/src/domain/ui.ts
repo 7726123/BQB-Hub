@@ -64,6 +64,31 @@ function fmtVarTime(at: number): string {
   } catch (e) { return ''; }
 }
 
+// ===== 看图缩放（2026-10-06）：点开大图后能放大看细节（双指捏合 / 双击 / 滚轮 + 拖动平移）=====
+// 约定：**CSS 的适应尺寸是基准（scale=1 = "适应屏幕"）**，缩放/平移都走 transform；
+// 这样打开时不用等图片 decode 完就能定住初始状态。数学部分做成纯函数，便于单测。
+/** 初始比例：把 W×H 的图放进 vw×vh 视口（留边；基准态用）。 */
+export function viewerFitScale(W: number, H: number, vw: number, vh: number): number {
+  if (!(W > 0) || !(H > 0) || !(vw > 0) || !(vh > 0)) return 1;
+  return Math.min((vw * 0.92) / W, (vh * 0.86) / H);
+}
+/** 平移夹取：图比视口大时不许拖出边界；比视口小的时候居中（0）。 */
+export function viewerClampPan(s: number, W: number, H: number, vw: number, vh: number, tx: number, ty: number): { x: number; y: number } {
+  const mx = Math.max(0, (W * s - vw) / 2);
+  const my = Math.max(0, (H * s - vh) / 2);
+  // +0：把 -0 规整成 0（否则会拼出 "translate(-0px,…)" 这种字符串，且单测里 -0 与 0 不等）
+  return {
+    x: Math.max(-mx, Math.min(mx, Number(tx) || 0)) + 0,
+    y: Math.max(-my, Math.min(my, Number(ty) || 0)) + 0
+  };
+}
+/** 以屏幕点 (px,py)（相对视口中心）为锚，把比例从 s0 变到 s1 后的新平移量（锚点下的像素不动）。 */
+export function viewerZoomAt(s0: number, s1: number, tx: number, ty: number, px: number, py: number): { x: number; y: number } {
+  if (!(s0 > 0)) return { x: Number(tx) || 0, y: Number(ty) || 0 };
+  const k = s1 / s0;
+  return { x: px - (px - (Number(tx) || 0)) * k, y: py - (py - (Number(ty) || 0)) * k };
+}
+
 const UIManager: UIManagerShape = {
   confirmCallback: null,
   _wbPage: 1,
@@ -1582,6 +1607,7 @@ const UIManager: UIManagerShape = {
     var viewer = document.getElementById('imgViewer');
     document.getElementById('imgViewerImg')!.src = src;
     viewer!.style.display = 'flex';
+    this._vReset();   // 每次打开都回到"适应屏幕"（上一张的缩放/平移不带过来）
     this._viewerImg = (opt && opt.id) ? { id: String(opt.id), label: String(opt.label || ''), ctx: String(opt.ctx || '') } : null;
     var bar = document.getElementById('imgViewerBar');
     if (bar) bar.style.display = 'flex';
@@ -1595,6 +1621,159 @@ const UIManager: UIManagerShape = {
   },
 
   closeViewer() { var v = document.getElementById('imgViewer'); if (v) v.style.display = 'none'; },
+
+  // ===== 看图缩放：状态 + 手势（DOM 粘连都在这里；纯数学见文件顶部的 viewerFitScale/ClampPan/ZoomAt）=====
+  // s：相对"适应屏幕"的比例（1 = 适应）；tx/ty：像素平移；pinch/drag：手势起始快照。
+  _viewerZoom: { s: 1, tx: 0, ty: 0, pinch: null as any, drag: null as any, lastTap: 0, tapX: 0, tapY: 0, gestureAt: 0 },
+
+  /** 打开/关闭时重置（每次 viewAvatar 调一次） */
+  _vReset() {
+    (this as any)._viewerZoom = { s: 1, tx: 0, ty: 0, pinch: null, drag: null, lastTap: 0, tapX: 0, tapY: 0, gestureAt: 0 };
+    this._vApply();
+  },
+  /** 当前几何：基准渲染尺寸、原图/渲染比（=1:1 需要的比例，≥1）、最大比例、视口、视口中心 */
+  _vMetrics() {
+    const img = document.getElementById('imgViewerImg') as any;
+    const rect = (img && img.getBoundingClientRect) ? img.getBoundingClientRect() : null;
+    // 基准尺寸必须用**不受 transform 影响**的布局尺寸（offsetWidth）：用 getBoundingClientRect
+    // 会把当前缩放也算进去 → 放大后 natScale/夹取范围/徽标自我循环（实测踩到：1:1 时徽标显示 165%）。
+    const cw = (img && Number(img.offsetWidth)) || (rect && rect.width) || 1;
+    const ch = (img && Number(img.offsetHeight)) || (rect && rect.height) || 1;
+    const nat = (img && img.naturalWidth) || 0;
+    const natScale = nat > 0 ? Math.max(1, nat / cw) : 1;   // 点开是缩小显示的 → ≥1
+    const vw = (typeof window !== 'undefined' && window.innerWidth) || 360;
+    const vh = (typeof window !== 'undefined' && window.innerHeight) || 640;
+    return { cw: cw, ch: ch, natScale: natScale, maxS: Math.max(4, natScale * 2), vw: vw, vh: vh };
+  },
+  /** 把当前 s/tx/ty 写进 style，并更新工具条上那个缩放徽标（"适应" / "NNN%"） */
+  _vApply() {
+    const img = document.getElementById('imgViewerImg') as any;
+    const v: any = (this as any)._viewerZoom || {};
+    const s = Number(v.s) || 1;
+    if (img && img.style) {
+      img.style.transform = (s === 1 && !v.tx && !v.ty) ? '' : ('translate(' + v.tx + 'px,' + v.ty + 'px) scale(' + s + ')');
+      img.style.transformOrigin = 'center center';
+    }
+    const tag = document.getElementById('imgViewerZoom');
+    if (tag) {
+      // 徽标显示"相对原图"的百分比（100% = 1:1 原图像素）：s 是相对"适应"的比例，除以 natScale 才是原图比
+      const m = this._vMetrics();
+      tag.textContent = (s > 1.02) ? (Math.round(s / m.natScale * 100) + '%') : '适应';
+    }
+  },
+  /** 设成比例 s（以屏幕点 px/py 为锚，缺省=视口中心），并夹取平移 */
+  _vSetScale(s: number, px?: number, py?: number) {
+    const v: any = (this as any)._viewerZoom || ((this as any)._viewerZoom = {});
+    const m = this._vMetrics();
+    const s1 = Math.max(1, Math.min(m.maxS, Number(s) || 1));
+    const cx = (px == null) ? 0 : (px - m.vw / 2);
+    const cy = (py == null) ? 0 : (py - m.vh / 2);
+    const t = viewerZoomAt(Number(v.s) || 1, s1, v.tx, v.ty, cx, cy);
+    const c = viewerClampPan(s1, m.cw, m.ch, m.vw, m.vh, t.x, t.y);
+    v.s = s1; v.tx = c.x; v.ty = c.y;
+    this._vApply();
+  },
+  _vPanBy(dx: number, dy: number) {
+    const v: any = (this as any)._viewerZoom || {};
+    const m = this._vMetrics();
+    const c = viewerClampPan(v.s, m.cw, m.ch, m.vw, m.vh, (v.tx || 0) + dx, (v.ty || 0) + dy);
+    v.tx = c.x; v.ty = c.y;
+    this._vApply();
+  },
+  /** 徽标按钮 / 双击：适应 ⇄ 放大（点在哪就缩到哪）。
+   *  放大目标＝原图 1:1；但图本来就按原始像素显示时（大屏 + 小图，natScale≈1）1:1 等于没变，
+   *  这时退而求其次放大到 2×，免得按钮点了没反应。 */
+  toggleViewerZoom(e?: any) {
+    const v: any = (this as any)._viewerZoom || {};
+    const m = this._vMetrics();
+    const px = (e && e.clientX != null) ? e.clientX : m.vw / 2;
+    const py = (e && e.clientY != null) ? e.clientY : m.vh / 2;
+    if ((Number(v.s) || 1) > 1.02) { this._vReset(); return; }
+    const target = (m.natScale > 1.02) ? m.natScale : 2;
+    this._vSetScale(Math.min(m.maxS, target), px, py);
+  },
+  /** 单击：关掉（鼠标走的这条；触摸的"单击关闭"在 touchend 里自己判，双击不会误关） */
+  viewerClick() {
+    const v: any = (this as any)._viewerZoom || {};
+    if (Date.now() - (v.gestureAt || 0) < 500) return;   // 刚做过手势/刚缩放 → 不当成"点空白关闭"
+    this.closeViewer();
+  },
+  viewerTouchStart(e: any) {
+    const v: any = (this as any)._viewerZoom || ((this as any)._viewerZoom = { s: 1, tx: 0, ty: 0 });
+    v.gestureAt = Date.now();
+    try { if (e && e.preventDefault) e.preventDefault(); } catch (err) { /* ignore */ }
+    const ts = (e && e.touches) || [];
+    if (ts.length >= 2) {
+      const a = ts[0], b = ts[1];
+      v.pinch = {
+        d: Math.max(1, Math.hypot(b.clientX - a.clientX, b.clientY - a.clientY)),
+        s: Number(v.s) || 1, tx: v.tx || 0, ty: v.ty || 0,
+        cx: (a.clientX + b.clientX) / 2, cy: (a.clientY + b.clientY) / 2
+      };
+      v.drag = null;
+    } else if (ts.length === 1) {
+      v.pinch = null;
+      v.drag = { x: ts[0].clientX, y: ts[0].clientY, tx: v.tx || 0, ty: v.ty || 0, moved: false };
+    }
+  },
+  viewerTouchMove(e: any) {
+    const v: any = (this as any)._viewerZoom || {};
+    const ts = (e && e.touches) || [];
+    const m = this._vMetrics();
+    try { if (e && e.preventDefault) e.preventDefault(); } catch (err) { /* ignore */ }
+    if (v.pinch && ts.length >= 2) {
+      const a = ts[0], b = ts[1];
+      const d = Math.max(1, Math.hypot(b.clientX - a.clientX, b.clientY - a.clientY));
+      const s1 = Math.max(1, Math.min(m.maxS, v.pinch.s * (d / v.pinch.d)));
+      const t = viewerZoomAt(v.pinch.s, s1, v.pinch.tx, v.pinch.ty, v.pinch.cx - m.vw / 2, v.pinch.cy - m.vh / 2);
+      const c = viewerClampPan(s1, m.cw, m.ch, m.vw, m.vh, t.x, t.y);
+      v.s = s1; v.tx = c.x; v.ty = c.y;
+      v.gestureAt = Date.now();
+      this._vApply();
+      return;
+    }
+    if (v.drag && ts.length === 1) {
+      const dx = ts[0].clientX - v.drag.x;
+      const dy = ts[0].clientY - v.drag.y;
+      if (Math.abs(dx) > 6 || Math.abs(dy) > 6) v.drag.moved = true;
+      const c = viewerClampPan(v.s || 1, m.cw, m.ch, m.vw, m.vh, v.drag.tx + dx, v.drag.ty + dy);
+      v.tx = c.x; v.ty = c.y;
+      v.gestureAt = Date.now();
+      this._vApply();
+    }
+  },
+  viewerTouchEnd(e: any) {
+    const v: any = (this as any)._viewerZoom || {};
+    const ts = (e && e.touches) || [];
+    v.gestureAt = Date.now();
+    if (ts.length > 0) { v.drag = null; v.pinch = null; return; }   // 还有手指按着（双指抬起一根）
+    const drag = v.drag;
+    v.drag = null; v.pinch = null;
+    if (!drag || drag.moved) return;                                 // 拖过/缩过 → 不当点击
+    const ch = (e && e.changedTouches && e.changedTouches[0]) || null;
+    const x = ch ? ch.clientX : drag.x;
+    const y = ch ? ch.clientY : drag.y;
+    const now = Date.now();
+    if (now - (v.lastTap || 0) < 320 && Math.abs(x - (v.tapX || 0)) < 32 && Math.abs(y - (v.tapY || 0)) < 32) {
+      v.lastTap = 0;                                                 // 双击：放大（点在哪儿就缩到哪儿）
+      this.toggleViewerZoom({ clientX: x, clientY: y });
+      return;
+    }
+    v.lastTap = now; v.tapX = x; v.tapY = y;
+    const self: any = this;
+    setTimeout(function () {                                          // 单击：等 320ms 看有没有第二下
+      if (self._viewerZoom && self._viewerZoom.lastTap === now) { self._viewerZoom.lastTap = 0; self.closeViewer(); }
+    }, 320);
+  },
+  viewerWheel(e: any) {
+    const v: any = (this as any)._viewerZoom || {};
+    try { if (e && e.preventDefault) e.preventDefault(); } catch (err) { /* ignore */ }
+    const m = this._vMetrics();
+    const cur = Number(v.s) || 1;
+    const next = (e && e.deltaY < 0) ? (cur * 1.15) : (cur / 1.15);
+    v.gestureAt = Date.now();
+    this._vSetScale(next, (e && e.clientX != null) ? e.clientX : m.vw / 2, (e && e.clientY != null) ? e.clientY : m.vh / 2);
+  },
 
   // 「基于这张改」：把「把图3改成：」填进对应面板的输入框，用户补一句就能发（模型按图号找 base_image）
   useViewerAsBase() {
