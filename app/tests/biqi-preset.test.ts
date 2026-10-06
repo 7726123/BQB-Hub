@@ -135,4 +135,19 @@ describe('比奇预设：默认与编辑', () => {
     BiqiAgent.openPresetModal();
     expect(els['biqiPresetText'].value).toBe('我的版本');
   });
+
+  it('自愈：弹层若被套在隐藏视图里（父节点不是 body），打开时自动搬到 body——对话模式点不开的那个 bug', () => {
+    const hiddenHost = { id: 'editor-wrap' };
+    els['biqiPresetModal'].parentNode = hiddenHost;      // 模拟：它被放在写作视图容器里
+    const body: any = { appendChild: (n: any) => { appended.push(n); n.parentNode = body; } };
+    const appended: any[] = [];
+    (g.document as any).body = body;
+    BiqiAgent.openPresetModal();
+    expect(appended.length).toBe(1);                     // 搬了一次
+    expect(els['biqiPresetModal'].parentNode).toBe(body);
+    expect(els['biqiPresetModal'].classList.contains('show')).toBe(true);
+    BiqiAgent.openPresetModal();                         // 已在 body 下 → 不再重复搬
+    expect(appended.length).toBe(1);
+    delete (g.document as any).body;
+  });
 });

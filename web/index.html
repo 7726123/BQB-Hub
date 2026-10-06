@@ -1322,25 +1322,6 @@ label{font-size:13px;color:var(--text-secondary);display:block;margin-bottom:4px
         </div>
         <div id="biqiGrip" title="拖动调整高度（拖到底变整屏）" aria-label="拖动调整高度"><span></span></div>
       </div>
-      <!-- 比奇预设弹层（2026-10-06，用户要求）：小说模式与对话模式**共用这一份**，可编辑、可恢复默认。
-           这里只放"比奇是谁、怎么干活"这类人设与工作方式；生图规则、工具协议、临时世界书机制由软件每轮另行注入，
-           不写进预设——用户改了不会丢，也不会被改坏。 -->
-      <div class="modal-overlay" id="biqiPresetModal">
-        <div class="modal" style="max-width:680px;width:94%;">
-          <div class="modal-header"><h3>⚙️ 比奇预设（可编辑）</h3><button class="icon-btn" onclick="BiqiAgent.closePresetModal()" title="关闭">✕</button></div>
-          <div class="modal-body">
-            <div class="cw-preset-block">
-              <div class="cw-preset-block-title">📌 比奇的系统预设 <span class="cw-muted">（小说 / 对话共用一份；清空或与默认一致＝继续跟随软件更新）</span></div>
-              <textarea id="biqiPresetText" rows="14" spellcheck="false" placeholder="比奇的人设与工作方式…"></textarea>
-            </div>
-          </div>
-          <div class="modal-footer">
-            <button onclick="BiqiAgent.closePresetModal()">取消</button>
-            <button onclick="BiqiAgent.resetPreset()" title="清除自定义，恢复系统默认（立即生效）">恢复默认</button>
-            <button class="primary" onclick="BiqiAgent.savePreset()">💾 保存预设</button>
-          </div>
-        </div>
-      </div>
         <button id="editorScrollBottom" onclick="EditorManager.scrollEditorToBottom()" title="回到最底部" aria-label="回到最底部">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M12 4.6 V18.4"/>
@@ -2346,6 +2327,27 @@ label{font-size:13px;color:var(--text-secondary);display:block;margin-bottom:4px
     </div>
   </div>
   <div id="variablesList" style="flex:1;overflow-y:auto;padding:10px 12px 20px;-webkit-overflow-scrolling:touch;"></div>
+</div>
+
+<!-- ===== 全局弹层区（不放进任何"视图/面板"容器里）=====
+     ⚠️ 这里的弹层必须是**全局**的：对话模式曾经点「预设」没反应，就是因为弹层被放在写作视图里、
+     而对话模式的比奇窗是同一个面板元素被搬到 #chatBody 去的——弹层留在原地、跟着写作视图一起隐藏了。
+     BiqiAgent.openPresetModal() 里还有一道自愈（不在 body 下就临时搬过来），双保险。 -->
+<div class="modal-overlay" id="biqiPresetModal">
+  <div class="modal" style="max-width:680px;width:94%;">
+    <div class="modal-header"><h3>⚙️ 比奇预设（可编辑）</h3><button class="icon-btn" onclick="BiqiAgent.closePresetModal()" title="关闭">✕</button></div>
+    <div class="modal-body">
+      <div class="cw-preset-block">
+        <div class="cw-preset-block-title">📌 比奇的系统预设 <span class="cw-muted">（小说 / 对话共用一份；清空或与默认一致＝继续跟随软件更新）</span></div>
+        <textarea id="biqiPresetText" rows="14" spellcheck="false" placeholder="比奇的人设与工作方式…"></textarea>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button onclick="BiqiAgent.closePresetModal()">取消</button>
+      <button onclick="BiqiAgent.resetPreset()" title="清除自定义，恢复系统默认（立即生效）">恢复默认</button>
+      <button class="primary" onclick="BiqiAgent.savePreset()">💾 保存预设</button>
+    </div>
+  </div>
 </div>
 
 </body>

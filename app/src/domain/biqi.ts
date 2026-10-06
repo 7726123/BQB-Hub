@@ -408,6 +408,13 @@ export const BiqiAgent: {
   openPresetModal(): void {
     const m = document.getElementById('biqiPresetModal');
     if (!m) return;
+    // 自愈（2026-10-06）：弹层必须挂在全局层。曾经的 bug——它在写作视图里，而对话模式的比奇窗是
+    // 同一个面板元素被搬到 #chatBody 的，弹层跟着写作视图一起隐藏 → 对话模式点「预设」没反应。
+    // 这里兜一道：不在 body 下就搬过去（HTML 里也已放在全局区，双保险）。
+    try {
+      const body = (document as unknown as { body?: any }).body;
+      if (body && m.parentNode !== body && typeof body.appendChild === 'function') body.appendChild(m);
+    } catch (e) { /* 搬不动就算了（至少小说模式还能用） */ }
     const ta = document.getElementById('biqiPresetText') as HTMLTextAreaElement | null;
     if (ta) ta.value = this._presetText();
     m.classList.add('show');
