@@ -22,7 +22,7 @@ description: 在用户的 Windows 电脑上配好 BQB Hub 的「画图主机」�
 1. **模型文件只能用户自己下载**（第 2 步）。不要把模型文件写进任何安装包、不要转发、不要上传到任何地方。
 2. **模型许可必须原样转达用户**（见文末「许可与署名」）：必须署名、**仅个人非商用**、不可再分发模型文件。
 3. **每一步验证通过再往下**（每步都写了「验证」）；失败就照第 9 节排错，不要跳步硬试。
-4. 写盘的文件必须与**附录 A/B/C 里的内容逐字一致**（尤其 `serve.mjs`、`comfy-workflow.mjs`、工作流 JSON）。
+4. 写盘的文件必须与**附录 A/B/C 里的内容逐字一致**（用户要换别的模型时，只改 `comfy/workflow.json`，别动主机程序）（尤其 `serve.mjs`、`comfy-workflow.mjs`、工作流 JSON）。
 5. 安装/下载类操作**先告诉用户**你要做什么（下载多少 MB、装到哪个目录、是否会开机自启），得到同意再执行。
 6. 不要动用户电脑上无关的东西；所有新增文件集中在**一个目录**里（下面统一用 `C:\bqb-host`，用户可以指定别的路径，路径里**不要有中文和空格**）。
 
@@ -44,6 +44,9 @@ Test-Path "$env:USERPROFILE\Documents\ComfyUI"   # True = 已经装过 ComfyUI�
 - 记住 ComfyUI 的 **models 目录**（默认 `C:\Users\<用户名>\Documents\ComfyUI\models`；用户装的时候改过位置的话，以 `curl http://127.0.0.1:8188/object_info/UNETLoader` 里返回的路径为准）。
 
 ## 2. 模型：**请用户自己下载**（唯一的手动步骤）
+
+**默认方案**（不想挑模型就照这套做——它实测跑通过，最省事；也可以让用户自己找别的模型，见本节末尾「换成别的模型」）。
+**不管最后用哪套模型，App 侧都不用改**：档位尺寸、步数、seed、以图改图都由「画图主机」按你配好的工作流自动映射。
 
 对用户说清三件事：① 需要**注册并登录 Civitai**（免费）；② 一共要下 **4 个文件、约 4.5GB**；③ 下完告诉你，你继续。
 
@@ -79,6 +82,29 @@ Get-Item "$m\loras\*.safetensors" | Select Name,Length                          
 ```
 
 数量对不上 = 没下完（Civitai 大文件会断，重下那个文件即可）。
+
+### 换成别的模型（可选：用户自带模型时看这里）
+
+主机**不挑模型**——SD1.5 / SDXL / Illustrious / Pony / NoobAI / Flux / SD3 / Qwen-Image / Z-Image …都行，
+只要工作流是一份正常的「文生图」API 格式图。换模型时你要做四件事：
+
+1. **让工作流配得上这个模型**（最容易踩的一步）：在 ComfyUI 里用新模型跑通一张 → 菜单 **Workflow → Export (API)** 导出 → 覆盖 `C:\bqb-host\comfy\workflow.json`。
+   主机的自动识别条件（不满足就套不上参数，出了图也可能尺寸不对）：
+   - 必须有 **`KSampler` 或 `KSamplerAdvanced`**（steps / seed / cfg 从这里套）；
+   - 正向/负向要能顺着连线找到**带 `text` 的提示词节点**（中间夹 `ConditioningCombine` 之类的也能穿透）；
+   - **尺寸要落在「空 Latent」节点的数值型 `width`/`height` 上**（这是 App 档位尺寸唯一生效的地方）；
+   - 「以图改图」还需要能找到 **VAE**（`VAEDecode` 用的那个来源，或任意 `VAELoader`）——单文件 checkpoint 的 VAE 输出也行。
+2. **改 `_hint`**（工作流 JSON 里的 `_` 开头的字段，ComfyUI 不认、只给主机和 App 看）：写明这套模型的提示词风格——tag 系写「danbooru 风格 tag，用英文标签、逗号分隔」，自然语言系写「用英文短句描述画面」。App 会把它交给写卡的模型去组织提示词，写错了画面会明显跑偏。
+3. **改 `_tiers`（档位尺寸/步数）并按模型调采样参数**：形如
+   `"_tiers": {"fast":{"size":512,"steps":8},"draft":{"size":512,"steps":10},"normal":{"size":768,"steps":8},"high":{"size":1024,"steps":10}}`
+   （`steps:null` = 用工作流自己的步数；改完立即生效，主机每次出图都读这个文件）。参考值：
+   - **SDXL / Illustrious / Pony / NoobAI 系**：25~30 步、cfg 5~7、768~1024；**negative 节点要写正经的负面词**（cfg>1 才生效；默认那套是 cfg 1.0，负面词是摆设）。
+   - **SD1.5 系**：**512 原生**——把「标准」档也声明成 512，给它 768 会画崩。
+   - **Lightning / Hyper / Turbo / LCM 等加速版**：4~8 步、cfg 1~2（步数按它的模型页说明写）。
+   - **分体式（Flux / Qwen-Image / Z-Image 等）**：CLIP、VAE 要配该模型对应的那一套（导出的工作流里已经连着，别手工改错）；`config.json` 的 `weight_dtype` 只对带这个输入的加载节点生效（≥12GB 显存可以删掉那行换精度）。
+4. **验证**：先在 ComfyUI 里出一张确认能画，再让用户在 App 里试一次；**App 实际会用的档位参数**看 `curl http://127.0.0.1:8123/api/comfy/status` 里返回的 `tiers`，与你在工作流里声明的一致才算配好。
+
+> ⚠️ 换成别人分享的模型时，**许可要用户自己确认**（站内默认那两个的许可说明只对它们有效）：能否商用、要不要署名、能不能再分发/做衍生。
 
 ## 3. 落地工作流，并用 API 真的出一张图
 

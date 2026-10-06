@@ -95,6 +95,18 @@ describe('工具挂牌与执行', () => {
     // ⑥ 许可/署名与非商用提醒
     expect(md).toContain('非商用');
     expect(md).toContain('署名');
+    // ⑦ 默认方案 + 「换成别的模型」（用户不想被固定死；App 侧不用改）
+    expect(md).toContain('默认方案');
+    expect(md).toContain('换成别的模型');
+    expect(md).toContain('Z-Image');
+    expect(md).toContain('Qwen-Image');
+    expect(md).toContain('Export (API)');
+    expect(md).toContain('KSampler');
+    expect(md).toContain('_hint');
+    expect(md).toContain('_tiers');
+    // 不要出现被 heredoc/转义吃坏的控制字符（曾把 C:qb-host 写成 C:<BS>qb-host）
+    const hasCtrl = md.split('').some((c) => c.charCodeAt(0) < 9 || (c.charCodeAt(0) > 13 && c.charCodeAt(0) < 32));
+    expect(hasCtrl).toBe(false);   // 曾把 C:qb-host 写成 C:<BS>qb-host（heredoc 吃转义）
     // 大小写进卡片
     expect(s!.bytes).toBe(utf8Bytes(md));
     expect(s!.bytes).toBeGreaterThan(20000);
@@ -144,8 +156,8 @@ describe('文件条与两个图标按钮', () => {
     expect(h).not.toContain('预览');
     expect(h).not.toContain('模型要你自己先登录 Civitai 下载');
     expect(h).not.toContain('<pre');
-    expect(typeof UsageAssistant.copySkill).not.toBe('function');
-    expect(typeof UsageAssistant.toggleSkillPreview).not.toBe('function');
+    expect(typeof (UsageAssistant as unknown as Any).copySkill).not.toBe('function');
+    expect(typeof (UsageAssistant as unknown as Any).toggleSkillPreview).not.toBe('function');
   });
 
   it('保存：走原生桥 saveFileBase64，文件名/mime 正确，base64 能解回同一份 UTF-8 文本', async () => {

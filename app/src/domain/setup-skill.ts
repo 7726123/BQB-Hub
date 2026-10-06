@@ -60,10 +60,13 @@ export interface SetupSkillResult { ok: boolean; markdown?: string; bytes?: numb
  */
 export async function buildSetupSkillMd(): Promise<SetupSkillResult> {
   try {
-    let md = await _getText(SETUP_SKILL_TEMPLATE);
+    // 模板统一按 LF 组装：模板自身若被编辑器存成 CRLF，占位符那一行的行尾会把 `\r` 留进
+    // 被替换内容的末尾（附录块最后一个字符多一个 `\r`）——附录必须**逐字节**可还原，所以先归一。
+    // 只归一模板；**替换内容原样保留**（启动.cmd 需要 CRLF）。
+    let md = (await _getText(SETUP_SKILL_TEMPLATE)).replace(/\r\n/g, '\n');
     for (const key of Object.keys(SETUP_SKILL_PARTS)) {
       const body = await _getText(SETUP_SKILL_PARTS[key]);
-      const clean = String(body).replace(/\s+$/, '');
+      const clean = String(body).replace(/[\s\uFEFF]+$/, '');   // 末尾空白 + BOM 残留
       md = md.split(key).join(clean);
     }
     if (md.indexOf('{{') >= 0) {
