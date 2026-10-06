@@ -6,9 +6,9 @@ import { SettingSyncManager } from './settingsync';
 import { selectedRawText, rawOffsetOf, nodeAtRawOffset, roundIndexOf, collectRoundDeletes } from '../lib/msgslice';
 import { renderMdStrong } from '../lib/mdtext';
 import { ImageHost, AVATAR_STORE_SIZE } from './imagehost';
-import { probeHost, drawImageToStore, genImagesHtml, imageLabel, hydrateImages, lookAtImageTool, type HostStatusCache } from './imagedraw';
+import { probeHost, drawImageToStore, genImagesHtml, imageLabel, hydrateImages, lookAtImageTool, appendAttachSpec, countImageTurns, stripImageTurns, DRAW_ATTACH_HINT, type AttachSpec, type HostStatusCache } from './imagedraw';
 import { ImageCache } from '../lib/imagecache';
-import { visionState, lookAtImageTracked } from '../lib/vision';
+import { visionState, markVision, lookAtImageTracked, looksLikeVisionError } from '../lib/vision';
 import { resizeDataUrlLongSide } from '../lib/imagedata';
 
 // 安全提示：本模块在 app.js 之前加载，加载期（init/_load）触发的兜底提示不能依赖
@@ -112,6 +112,10 @@ const CardWriterChat: CardWriterChatShape = {
   _imgGone: new Set<string>(), // 确认取不到的 id（存档里没有 / 别的书的）→ 渲染成「已过期」，不再反复查
   _hydrating: false, // 水合进行中（防 renderMessages → 水合 → renderMessages 递归）
   _visionNoToast: false, // 「当前模型看不了图」只提示一次（每个实例一次）
+  // 主对话「直接看图」（visionCaps=yes）：待附图队列 + 本轮摘图重试标记。
+  // 图片作为**临时 user 消息**附进本轮请求（不落库、不进历史），见 imagedraw.ts 的 IMG_TURN_FLAG。
+  _attachQueue: [] as AttachSpec[], // 工具（look_at_image）排的队，_handleTools 之后统一附图
+  _imgStripped: false, // 本轮已因"模型/网关不接受图片"摘过一次图（防重试循环）
   _drawCancelled: false, // 用户点了「暂停」：中断出图轮询
   _drawAbort: null as any, // 当前出图请求的 AbortController（停止时 abort）
   _drawToolsOn: false, // 本轮是否给 draw_image/set_avatar（= 主机已启用且在线的探测结果）
@@ -595,6 +599,8 @@ const CardWriterChat: CardWriterChatShape = {
     this._toolsOk = false; // 本轮是否有**成功**的工具调用（收尾文案据此区分"已写入"与"没提交成功"）
     this._writeOk = false; // 本轮是否有成功的**写**工具调用（只读工具不算）
     this._toolRounds = 0; // 本条消息已发生的工具轮数
+    this._attachQueue = []; // 待附图队列（每条用户消息重新开始）
+    this._imgStripped = false; // 摘图重试标记同理按消息重置
     this._repeatKey = null; // 重复调用守卫：上一轮工具调用链（相同工具+相同参数连续重复计数）
     this._repeatCount = 0;
     // 状态提示：一律「正在思考…」。以前按"这句话像不像确认语"预先显示「正在写入…」，
@@ -773,6 +779,24 @@ const CardWriterChat: CardWriterChatShape = {
             if (turnErrored) return; // 同一次失败可能既走 onError 又走 catch，只处理一次
             turnErrored = true;
             cancelStreamRender();
+            // 「直接看图」的兜底：这一轮附了图、而端点报的是"不接受图片"（4xx + image/vision/模态 这类词）
+            // → 摘掉图片、把该模型记为"看不了图"，**同一轮立刻重试一次**。用户最多多等一次请求，
+            // 主对话不会因为图片而整场失败（这是把图片放进主请求换来的唯一新增风险，必须兜住）。
+            if (!this._imgStripped && countImageTurns(msgs) > 0 && looksLikeVisionError(error)) {
+              this._imgStripped = true;
+              markVision('no');
+              const _n = stripImageTurns(msgs);
+              try { const _m = this.messages[assistantIdx]; if (_m) { _m.content = ''; _m.reasoningLive = ''; } } catch (e) { /* ignore */ }
+              turnText = '';
+              turnReasoning = '';
+              if (!_cwHidden()) App.toast('当前模型看不了图片：已摘掉图片重试（不影响出图与改图）');
+              this._statusText = '正在思考…';
+              this.renderMessages();
+              // 用**同一个 round** 重跑（图片摘掉后请求小了一圈）；resolve 里传新 promise，
+              // 让外层 await 链继续跟着这一轮走（照抄上面 resolve(runTurn(msgs, round + 1)) 的写法）
+              resolve(runTurn(msgs, round) as any);
+              return;
+            }
             this._isSending = false;
             this._statusText = '';
             archiveReasoning();
@@ -907,19 +931,27 @@ const CardWriterChat: CardWriterChatShape = {
                   tools.forEach((t: any, i: any) => {
                     msgs.push({ role: 'tool', tool_call_id: t.id || ('call_' + i), content: results[i] || 'ok' });
                   });
-                  // A：出图轮 → **软件替模型核对一眼**刚生成的图（一次独立的看图子调用），
-                  // 结论作为软件记录注入下一轮，让它如实汇报（模型自己看不到图片）。
-                  // 看不了图的模型整段跳过（visionCaps=no）；子调用失败也只是这次不注入，主对话不受影响。
+                  // 看图（三条路，见 imagedraw.ts 的 IMG_TURN_FLAG 说明）——2026-10-06 起不再默认走"没有预设的子调用"：
+                  //  · visionCaps='yes'     → 把刚出/要看的图**附进本轮请求**（临时 user 消息），模型自己看，
+                  //                            带着角色卡、用户原话、生图规则一起判断——比无上下文的子调用准得多，也省一次往返；
+                  //  · visionCaps='unknown' → 仍走一次独立子调用（既不冒险又把"能不能看图"试出来），回答当软件记录注入；
+                  //  · visionCaps='no'      → 什么都不做（今天的行为）。
                   try {
                     const _ids = results.map(function (r: any) {
                       try { return String((JSON.parse(r) || {}).image_id || ''); } catch (e) { return ''; }
                     }).filter(Boolean);
-                    if (_ids.length) {
+                    if (_ids.length && visionState() === 'yes') {
+                      this._attachQueue.push({ refs: _ids, hint: DRAW_ATTACH_HINT });
+                    } else if (_ids.length && visionState() === 'unknown') {
                       const _g: any = this._genImages.get(_ids[0]);
                       const _note = await this._visionCheckNote(_ids, String((_g && _g.prompt) || ''));
                       if (_note) msgs.push({ role: 'system', content: _note });
                     }
-                  } catch (e) { /* 核对失败不影响本轮 */ }
+                    // 工具（look_at_image）自己排进队列的图，统一在这里附——排在工具结果之后，模型下一轮就看到
+                    for (const _sp of this._attachQueue.splice(0)) {
+                      await appendAttachSpec({ msgs: msgs, spec: _sp, store: this._genImages, bookId: String(this._getTargetId() || '') || undefined });
+                    }
+                  } catch (e) { /* 看图失败不影响本轮 */ }
                   if (repeatReminder) msgs.push({ role: 'system', content: repeatReminder });
                   // 设计轮的软收尾：工具已经提交过一轮了，下一轮只该输出文字（工具还在，但别再多轮循环）
                   if (this._designTurn && this._toolRounds >= _DESIGN_TOOL_ROUNDS) {
@@ -1155,6 +1187,11 @@ const CardWriterChat: CardWriterChatShape = {
           : '- 本机画图主机是旧版、暂时不支持改图；用户真要改就按新的描述重新画一张（不要停在"改不了"上）。\n')
         + '- **要动某个角色的头像时**（画一张新的 / 基于现在的改 / 或用户问"TA 有头像吗"）：先调 list_avatars 看谁有头像；'
         + '想先看一眼 TA 现在的头像（配色、长相、风格才接得上）就用 look_at_image，image_id 填**角色名**。\n'
+        + (visionState() === 'yes'
+          // 能看图：出图后软件自动附图、look_at_image 也改成附图 → 模型是"亲眼看到"，那套"你其实没看见"的
+          // 补丁（三条：工具返回、核对记录、工具描述）在这一支全部失效，这里也不再要求它打这种折扣。
+          ? '- **看图**：你**能直接看到图**——出图后软件会把刚画的图附给你看（不用额外调用）；look_at_image 也会把你要看的那张附给你。看完直接说结论（"我看到……"），不要再说"我看不到图"或让作者自己看。\n'
+          : '- **看图**：想确认画面细节用 look_at_image——它用一次独立的看图调用核对（约 3~6 秒），把它的回答转给你；那不是你亲眼所见，**不要对作者说"我看到了"**。\n')
         + '- prompt 用英文，按工具说明里的「画风与提示词要求」写；头像一律 1:1（尺寸由档位定，别传尺寸）；用户要"几个候选"时连续调用 2~3 次 quality:"draft"。\n'
         + '- 档位：default=标准（768）；"快一点/先看看"用 quality:"fast"（512）；"更精细/更大"用 quality:"high"（1024）；挑构图用 quality:"draft"。每档的实际步数由画图主机的工作流决定，别向用户报步数。\n'
         + '- 出图后把图给用户看，再问要不要设为某角色的头像；**必须等用户明确同意**（"用这张 / 设为头像 / 就它了"）才调用 set_avatar，并把用户的原话填进 user_said。\n'
@@ -1202,18 +1239,24 @@ const CardWriterChat: CardWriterChatShape = {
       }
     };
   },
-  // 看图工具：模型自己看不到图片，靠**一次单独的看图子调用**回答"这张画得怎么样"这类问题。
+  // 看图工具：两条实现（看待图能力三态）——
+  //  · 能看图（visionCaps=yes）：软件把那张图**附进本轮请求**，模型亲眼看到后自己回答（不额外调用、更准）；
+  //  · 还没试过（unknown）：走一次独立的看图子调用（无预设/无角色卡，只够判断"有没有崩坏"）。
   // 传的图是 420px 缩略图（便宜、够判断明显问题）；看不了图的模型（visionCaps=no）不给这个工具。
   // image_id 也支持**角色名**（用 TA 当前的头像）——这是"查看某个角色现在的头像"的正门。
   _imageToolLook() {
+    const canSee = visionState() === 'yes';
     return {
       type: 'function',
       function: {
         name: 'look_at_image',
-        description: '看一眼某张图（单独的看图调用，约 3~6 秒）。可以问"手有没有画坏""背景是不是夜晚""这张和图4比哪张更像林晚"。'
+        description: '看一眼某张图。可以问"手有没有画坏""背景是不是夜晚""这张和图4比哪张更像林晚"。'
           + '**两种常用场景**：① 判断刚画的那张对不对、有没有崩坏（用「图3」这类编号）；'
           + '② **查看某个角色现在的头像长什么样**（画新头像 / 改头像前先看一眼，风格和长相才对得上）——image_id 直接填角色名。'
-          + '拿不准谁有头像就先调 list_avatars。拿到的是文字回答——据此向作者说明，但不要说成"我亲眼看到的"。',
+          + '拿不准谁有头像就先调 list_avatars。'
+          + (canSee
+            ? '**你能直接看图**：调用后软件会把那张图附到你的消息里，你亲眼看到、直接回答（约 1 秒，不额外调用模型）。'
+            : '拿到的是**另一次看图调用的文字回答**（不是你亲眼所见）——据此向作者说明，但不要说成"我亲眼看到的"。'),
         parameters: {
           type: 'object',
           properties: {
@@ -1309,6 +1352,9 @@ const CardWriterChat: CardWriterChatShape = {
       bookId: String(this._getTargetId() || '') || undefined,
       onStatus: () => { this._statusText = '正在看图…'; this.renderMessages(true); }
     });
+    // 能看图（visionCaps=yes）：不必现在就去取图——把引用排进队列，由本轮末尾统一附进请求
+    // （附图这一步在 onTools 里做，跟出图后的自动附图走同一条路）。
+    if (r.ok && r.attach) this._attachQueue.push(r.attach);
     if (!r.ok && r.message.indexOf('看不了图片') >= 0 && !(this as any)._visionNoToast) {
       (this as any)._visionNoToast = true;
       try { if (!_cwHidden()) cwToast('当前模型看不了图片：已关闭"看图/图核对"（不影响出图与改图）'); } catch (e) { /* ignore */ }
@@ -1316,8 +1362,9 @@ const CardWriterChat: CardWriterChatShape = {
     return r;
   },
 
-  // A（出图后自动核对一眼）：软件替模型看一次刚生成的图，把结论作为**软件记录**注入下一轮。
-  // 看不了图的模型（已确认看不了）直接跳过；试失败但不像能力问题（超时等）也只是这次不注入，主对话照常。
+  // 出图后的一次独立核对（**只在 visionCaps='unknown' 时用**：既把"能不能看图"试出来，也顺便把结论
+  // 交给模型）。已经确认能看图（'yes'）时走另一条路——直接把图附进本轮请求让它自己看（见 onTools 里的
+  // 三态分发）；确认看不了（'no'）直接跳过。试失败但不像能力问题（超时等）也只是这次不注入，主对话照常。
   async _visionCheckNote(imgIds: string[], prompt: string): Promise<string> {
     const id = String((imgIds && imgIds[0]) || '');
     if (!id || visionState() === 'no') return '';

@@ -85,6 +85,8 @@ beforeEach(() => {
   C._drawToolsOn = false; C._drawCancelled = false; C._drawAbort = null;
   C._hostStatus = { at: 0, ok: false, model: '', hint: '' };
   C._writeOk = false; C._toolsOk = false;
+  C._attachQueue = []; C._imgStripped = false;
+  __resetVisionForTest();   // 看图能力三态逐例清干净（'yes' 泄漏会让"走子调用"的用例改成走附图分支）
 });
 
 describe('生图规则注入（_imageRuleMessage）', () => {

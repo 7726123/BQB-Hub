@@ -225,11 +225,87 @@ export async function hydrateImages(store: Map<string, any>, bookId: string | un
   return { loaded: loaded, gone: gone };
 }
 
+// ==================== 主对话「直接看图」：把图片附进本轮请求，让主 agent 自己看 ====================
+// 2026-10-06 用户要求：看图不该是一次「完全没有预设」的独立子调用——那时的子调用没有世界书、
+// 没有角色卡、没有用户原话，只能判"有没有崩坏"，判不了"和设定/要求符不符"。改成三条路：
+//   · visionCaps='yes'    → 把图作为 user 消息（content 数组）附进**主对话本轮请求**，模型真看真答；
+//   · visionCaps='unknown'→ 仍走一次独立子调用（既当"能不能看图"的探针，也把它的回答当工具结果给模型）；
+//   · visionCaps='no'     → 不附、不试（今天的行为，看图工具也不挂牌）。
+// 三条约束（踩过才知道）：
+//   · 图片只能挂在 **user** 消息上：tool 结果只能是字符串，system 分支会被 api 层 String() 掉（见 api.ts）。
+//   · **不落库、不进历史**：只活在这一次请求的 msgs 数组里（整轮结束随数组丢弃）。进了历史的话，40 轮窗口
+//     里每轮都要重发图片 token，还要处理图片被本地存档清理后的降级。
+//   · 标记用**非枚举**属性：JSON.stringify 不会把私有字段发给端点，摘图时却能准确定位（见 stripImageTurns）。
+export const IMG_TURN_FLAG = '__bqbImgTurn';
+
+export interface AttachSpec { refs: unknown[]; hint: string }
+export interface AttachImage { dataUrl: string; label: string }
+
+/** 附图上限（与看图子调用一致）：一次最多两张，再多只附前两张（token 随图线性涨）。 */
+export const ATTACH_MAX_IMAGES = 2;
+
+/** 出图后自动附图时给模型的说明（附的就是它刚画的那张）。 */
+export const DRAW_ATTACH_HINT = '【看图】这是你刚生成的那张图（软件附在了这条消息下面，你直接看）：'
+  + '核对画面是否与你写的描述相符、有没有明显崩坏（手指/文字/结构/糊）；有问题可以主动问作者要不要重画。';
+
+/** 造一条附图 user 消息。看不到图时要求模型直说——不猜（网关静默丢图时用户能知道原因）。 */
+export function imageTurnMessage(imgs: AttachImage[], hint: string): any | null {
+  const list = (imgs || []).filter(function (x) { return x && x.dataUrl; }).slice(0, ATTACH_MAX_IMAGES);
+  if (!list.length) return null;
+  const text = String(hint || '') + '\n（附图：' + list.map(function (x) { return x.label; }).join('、') + '）'
+    + '（图已经附在这条消息里，你直接看。**如果确实看不到这张图，就直说"我看不到图"，不要猜**。）';
+  const content: any[] = [{ type: 'text', text: text }];
+  for (const x of list) content.push({ type: 'image_url', image_url: { url: String(x.dataUrl) } });
+  const msg: any = { role: 'user', content: content };
+  try { Object.defineProperty(msg, IMG_TURN_FLAG, { value: true, enumerable: false, configurable: true }); } catch (e) { /* ignore */ }
+  return msg;
+}
+
+/** 本轮请求里附了几条图（摘图重试用）。 */
+export function countImageTurns(msgs: any[]): number {
+  let n = 0;
+  for (const m of (msgs || [])) if (m && m[IMG_TURN_FLAG]) n++;
+  return n;
+}
+
+/** 把附图消息从请求里**摘掉**（模型/网关不接受图片时的兜底重试用）。返回摘掉几条。 */
+export function stripImageTurns(msgs: any[]): number {
+  let n = 0;
+  for (let i = (msgs || []).length - 1; i >= 0; i--) {
+    if (msgs[i] && msgs[i][IMG_TURN_FLAG]) { msgs.splice(i, 1); n++; }
+  }
+  return n;
+}
+
 /**
- * 看图工具（写卡 / 比奇共用）：模型问"这张画得怎么样 / 和图4比哪张更像"，我们**单独发一次带图的子调用**，
- * 把它的文字回答当工具结果回给模型（主对话请求里永远不出现图片字段——模型看不了图也不会把主对话搞挂）。
+ * 把一条「附图说明」解析成图并附进 msgs（引用写法与出图底图一致：图3 / img3 / last / 角色名）。
+ * 返回附上的张数（0 = 引用都取不到，静默跳过——看图不是主流程，不该把整轮搞失败）。
+ */
+export async function appendAttachSpec(opts: {
+  msgs: any[]; spec: AttachSpec; store: Map<string, any>; bookId?: string;
+}): Promise<number> {
+  const refs = Array.isArray(opts.spec && opts.spec.refs) ? opts.spec.refs : [];
+  const imgs: AttachImage[] = [];
+  for (const r of refs) {
+    const raw = String(r || '').trim();
+    if (!raw) continue;
+    let b: BaseImageResult | null = null;
+    try { b = await resolveBaseImage(raw, opts.store, opts.bookId, { prefer: 'thumb' }); } catch (e) { b = null; }
+    if (b && b.ok && b.dataUrl) imgs.push({ dataUrl: String(b.dataUrl), label: String(b.label || raw) });
+    if (imgs.length >= ATTACH_MAX_IMAGES) break;
+  }
+  const m = imageTurnMessage(imgs, String((opts.spec && opts.spec.hint) || ''));
+  if (!m) return 0;
+  opts.msgs.push(m);
+  return imgs.length;
+}
+
+/**
+ * 看图工具（写卡 / 比奇共用）。三条路（见上面 IMG_TURN_FLAG 的说明）：
+ *  · 能看图（'yes'）：**不额外调用**——把图回给调用方（attach），由它附进主对话本轮请求，模型自己看、自己答；
+ *  · 还没试过（'unknown'）：单独发一次带图的子调用（探针 + 顺便把回答当工具结果）；
+ *  · 确认看不了（'no'）：直接失败，让模型用文字跟作者确认，不许猜图里有什么。
  * 传的 store / bookId 与出图时一致（写卡=讨论目标书、比奇=激活书），跨书隔离照旧生效。
- * 能力兜底：visionState()==='no'（试过一次、确认看不了）时直接失败并让模型用文字说清楚；unknown 允许试一次。
  */
 export async function lookAtImageTool(opts: {
   imageRef: unknown;
@@ -238,7 +314,7 @@ export async function lookAtImageTool(opts: {
   store: Map<string, any>;
   bookId?: string;
   onStatus?: () => void;
-}): Promise<{ ok: boolean; message: string }> {
+}): Promise<{ ok: boolean; message: string; attach?: AttachSpec }> {
   const ref = String((opts && opts.imageRef) || '').trim();
   const q = String((opts && opts.question) || '').trim();
   if (!ref) return { ok: false, message: '工具调用参数无效：缺少 image_id（用界面上的编号，如「图3」；也可以填角色名用 TA 的头像）' };
@@ -248,12 +324,21 @@ export async function lookAtImageTool(opts: {
   }
   const imgs: string[] = [];
   const labels: string[] = [];
+  const usedRefs: string[] = [];
   const refs = [ref, String((opts && opts.imageRef2) || '').trim()];
   for (const r of refs) {
     if (!r) continue;
     const b = await resolveBaseImage(r, opts.store, opts.bookId, { prefer: 'thumb' });
     if (!b.ok) return { ok: false, message: '失败：' + (b.error || ('取不到' + r)) };
-    if (b.dataUrl) { imgs.push(String(b.dataUrl)); labels.push(String(b.label || r)); }
+    if (b.dataUrl) { imgs.push(String(b.dataUrl)); labels.push(String(b.label || r)); usedRefs.push(r); }
+  }
+  // 能看图：交给调用方附图（模型自己看，不额外发请求）
+  if (visionState() === 'yes' && usedRefs.length) {
+    return {
+      ok: true,
+      attach: { refs: usedRefs, hint: '【看图】软件把你要看的图附在了这条消息下面，你直接看，然后回答：' + q },
+      message: '（图已附在你这条消息后面，你直接看得到）请看图回答：' + q
+    };
   }
   try { if (opts.onStatus) opts.onStatus(); } catch (e) { /* ignore */ }
   const res = await lookAtImageTracked({ images: imgs, question: q, callLabel: 'vision' });

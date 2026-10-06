@@ -9,7 +9,7 @@ import { SettingSyncManager } from '../src/domain/settingsync';
 import { WorldBookManager } from '../src/domain/worldbook';
 import { BiqiAgent } from '../src/domain/biqi';
 import { ImageCache } from '../src/lib/imagecache';
-import { markVision, __resetVisionForTest } from '../src/lib/vision';
+import { visionState, markVision, __resetVisionForTest } from '../src/lib/vision';
 
 const g = globalThis as unknown as Record<string, any>;
 const SM = () => (globalThis as unknown as { StorageManager: { get: (k: string, d?: unknown) => any; set: (k: string, v: unknown) => void; remove: (k: string) => void } }).StorageManager;
@@ -96,6 +96,9 @@ beforeEach(() => {
   BiqiAgent._mode = 'novel';
   BiqiAgent._loadedKey = 'biqiHistory_' + BOOK_ID;
   BiqiAgent._imgGone.clear();
+  BiqiAgent._attachQueue = [];   // 待附图队列 / 看图能力逐例清干净（'yes' 泄漏会让后面的用例走附图分支）
+  BiqiAgent._imgStripped = false;
+  __resetVisionForTest();
   ImageCache.__resetForTest();   // 本地存档（内存后端）逐例清干净
 });
 
@@ -416,6 +419,101 @@ describe('看图（视觉子调用）：工具门控 + 调用', () => {
       expect(out.ok).toBe(false);
       expect(String(out.error)).toContain('看不了图片');
       expect(calls.length).toBe(0);
+    } finally { delete g.APIHandler; __resetVisionForTest(); }
+  });
+});
+
+describe('主对话直接看图（三态 + 摘图重试）', () => {
+  // 各轮**共用同一个 msgs 数组**（原地追加），所以必须在请求回调当场记录这一刻有几张图
+  function snap(msgs: any[], o: any) {
+    const imgs = (msgs || []).filter((m: any) => m && m.role === 'user' && Array.isArray(m.content));
+    return {
+      label: String((o && o.callLabel) || ''),
+      imgs: imgs.map((m: any) => ({ text: String(m.content[0] && m.content[0].text || ''), url: String(m.content[1] && m.content[1].image_url && m.content[1].image_url.url || '') }))
+    };
+  }
+
+  it("caps='yes'：出图后附图给主对话（不再发独立看图子调用）；附图不进消息历史", async () => {
+    seedBook();
+    BiqiAgent._genImages.clear(); BiqiAgent._imgSeq = 0;
+    markVision('yes');
+    const seen: any[] = [];
+    let visionSubcalls = 0;
+    g.APIHandler = {
+      fetchCompletions: (msgs: any[], _onData: any, onDone: any, onErr: any, opts: any) => {
+        seen.push(snap(msgs, opts));
+        if (opts && opts.callLabel === 'vision') { visionSubcalls++; onDone('不该被调用'); return; }
+        if (seen.filter((x: any) => x.label !== 'vision').length === 1) { opts.onTools([{ id: 'c1', name: 'draw_image', arguments: { prompt: 'girl, rain' } }]); return; }
+        onDone('画好了。');
+      }
+    };
+    try {
+      BiqiAgent.messages = [{ role: 'user', content: '画一张她在雨里的图' }, { role: 'assistant', content: '', _steps: [] }];
+      BiqiAgent._isSending = true;
+      await BiqiAgent._runLoop('画一张她在雨里的图');
+
+      const mains = seen.filter((x: any) => x.label !== 'vision');
+      expect(mains.length).toBe(2);                     // 出图轮 + 收尾轮
+      expect(visionSubcalls).toBe(0);                   // 能看图 → 不再有"没有预设"的子调用
+      expect(mains[0].imgs.length).toBe(0);
+      expect(mains[1].imgs.length).toBe(1);
+      expect(mains[1].imgs[0].text).toContain('刚生成');
+      expect(mains[1].imgs[0].url).toContain('data:image/png;base64,AAA');
+      expect(JSON.stringify(BiqiAgent.messages)).not.toContain('image_url');
+    } finally { delete g.APIHandler; __resetVisionForTest(); }
+  });
+
+  it("端点不接受图片（400 + image_url）→ 摘图同轮重试一次、记 no，对话不失败", async () => {
+    seedBook();
+    BiqiAgent._genImages.clear(); BiqiAgent._imgSeq = 0;
+    markVision('yes');
+    const seen: any[] = [];
+    g.APIHandler = {
+      fetchCompletions: (msgs: any[], _onData: any, onDone: any, onErr: any, opts: any) => {
+        seen.push(snap(msgs, opts));
+        const n = seen.length;
+        if (n === 1) { opts.onTools([{ id: 'c1', name: 'draw_image', arguments: { prompt: 'x' } }]); return; }
+        if (n === 2) { onErr('HTTP 400: image_url is not supported by this model'); return; }
+        onDone('画好了。');
+      }
+    };
+    try {
+      BiqiAgent.messages = [{ role: 'user', content: '画一张' }, { role: 'assistant', content: '', _steps: [] }];
+      BiqiAgent._isSending = true;
+      await BiqiAgent._runLoop('画一张');
+
+      expect(seen.length).toBe(3);                      // 出图轮 / 失败轮（带图）/ 重试轮（无图）
+      expect(seen[1].imgs.length).toBe(1);
+      expect(seen[2].imgs.length).toBe(0);
+      expect(visionState()).toBe('no');
+      expect(String(BiqiAgent.messages[BiqiAgent.messages.length - 1].content)).toContain('画好了');
+    } finally { delete g.APIHandler; __resetVisionForTest(); }
+  });
+
+  it("caps='yes' + look_at_image：工具结果只说「已附」，模型不额外调用一次", async () => {
+    seedBook();
+    BiqiAgent._genImages.set('img1', { full: 'data:image/png;base64,F', thumb: 'data:image/jpeg;base64,THUMB', book: BOOK_ID });
+    markVision('yes');
+    const seen: any[] = [];
+    let visionSubcalls = 0;
+    g.APIHandler = {
+      fetchCompletions: (msgs: any[], _onData: any, onDone: any, _onErr: any, opts: any) => {
+        seen.push(snap(msgs, opts));
+        if (opts && opts.callLabel === 'vision') { visionSubcalls++; onDone('不该被调用'); return; }
+        if (seen.filter((x: any) => x.label !== 'vision').length === 1) { opts.onTools([{ id: 'c1', name: 'look_at_image', arguments: { image_id: '图1', question: '画的是什么' } }]); return; }
+        onDone('我看到是一只黑猫。');
+      }
+    };
+    try {
+      BiqiAgent.messages = [{ role: 'user', content: '看看图1' }, { role: 'assistant', content: '', _steps: [] }];
+      BiqiAgent._isSending = true;
+      await BiqiAgent._runLoop('看看图1');
+
+      const mains = seen.filter((x: any) => x.label !== 'vision');
+      expect(visionSubcalls).toBe(0);
+      expect(mains[1].imgs.length).toBe(1);
+      expect(mains[1].imgs[0].text).toContain('画的是什么');
+      expect(mains[1].imgs[0].url).toContain('THUMB');
     } finally { delete g.APIHandler; __resetVisionForTest(); }
   });
 });

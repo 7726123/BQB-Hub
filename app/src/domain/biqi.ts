@@ -11,9 +11,9 @@ import { PluginManager } from './plugins';
 import { SettingSyncManager } from './settingsync';
 import { WorldBookManager } from './worldbook';
 import { renderMdStrong } from '../lib/mdtext';
-import { probeHost, drawImageToStore, genImagesHtml, imageLabel, hydrateImages, lookAtImageTool, type HostStatusCache } from './imagedraw';
+import { probeHost, drawImageToStore, genImagesHtml, imageLabel, hydrateImages, lookAtImageTool, appendAttachSpec, countImageTurns, stripImageTurns, DRAW_ATTACH_HINT, type AttachSpec, type HostStatusCache } from './imagedraw';
 import { ImageCache } from '../lib/imagecache';
-import { visionState, lookAtImageTracked } from '../lib/vision';
+import { visionState, markVision, lookAtImageTracked, looksLikeVisionError } from '../lib/vision';
 
 export interface BiqiMessage { role: 'user' | 'assistant'; content: string; _steps?: string[]; imageIds?: string[] }
 
@@ -103,6 +103,8 @@ export const BiqiAgent: {
   _toolLookImage(a: any): Promise<string>;
   _visionCheckNote(imgIds: string[], prompt: string): Promise<string>;
   _visionNoToast: boolean;
+  _attachQueue: AttachSpec[]; // 主对话「直接看图」：待附图队列（每条用户消息清空）
+  _imgStripped: boolean; // 本轮已因"端点不接受图片"摘过一次图（防重试循环）
   _imageRuleMessage(): string;
   _refreshHostStatus(): Promise<void>;
   _toolDrawImage(a: any): Promise<string>;
@@ -139,6 +141,9 @@ export const BiqiAgent: {
   _imgGone: new Set<string>(), // 确认取不到的 id → 渲染成「已过期」，不再反复查
   _hydrating: false, // 水合进行中（防 renderMessages → 水合 → renderMessages 递归）
   _visionNoToast: false, // 「当前模型看不了图」只提示一次（每个实例一次）
+  // 主对话「直接看图」（visionCaps=yes）：待附图队列 + 摘图重试标记，机制与写卡一致（见 imagedraw.ts）。
+  _attachQueue: [] as AttachSpec[],
+  _imgStripped: false,
   _drawToolsOn: false, // 本轮是否给 draw_image（= 主机已启用且在线的探测结果）
   _hostStatus: { at: 0, ok: false, model: '', hint: '' } as HostStatusCache, // 画图主机状态缓存（60 秒）
   _ratio: BIQI_DEFAULT_RATIO,
@@ -487,6 +492,8 @@ export const BiqiAgent: {
     this.messages.push({ role: 'user', content: text });
     this.messages.push({ role: 'assistant', content: '', _steps: [] });
     this._steps = [];
+    this._attachQueue = []; // 待附图队列按每条用户消息重新开始
+    this._imgStripped = false;
     this._status = '正在思考…';
     this._isSending = true;
     this._save();
@@ -546,7 +553,16 @@ export const BiqiAgent: {
     try {
       for (let round = 0; round < BIQI_MAX_ROUNDS; round++) {
         setStatus(this._steps.length ? '正在整理回答…' : '正在思考…');
-        const r = await this._sendTurn(msgs, onPartial);
+        let r = await this._sendTurn(msgs, onPartial);
+        // 「直接看图」兜底：这一轮给模型附了图、而端点报"不接受图片"（4xx + image/vision/模态 这类词）
+        // → 摘掉图片、把该模型记为"看不了图"，**同一轮立刻重试一次**，主对话不因图片整场失败。
+        if (r.err && !this._imgStripped && countImageTurns(msgs) > 0 && looksLikeVisionError(r.err)) {
+          this._imgStripped = true;
+          markVision('no');
+          stripImageTurns(msgs);
+          try { App.toast('当前模型看不了图片：已摘掉图片重试（不影响出图与改图）'); } catch (e) { /* ignore */ }
+          r = await this._sendTurn(msgs, onPartial);
+        }
         if (r.err) { lastErr = r.err; break; }
         if (!r.tools || !r.tools.length) { finalText = r.text || ''; break; }
         msgs.push({
@@ -569,17 +585,29 @@ export const BiqiAgent: {
           if (line) pushStep(line);
           msgs.push({ role: 'tool', tool_call_id: t.id || ('biqi_' + i), content: out });
         }
-        // A：出图轮 → 软件替模型核对一眼（一次独立的看图子调用），结论作为软件记录注入下一轮
+        // 看图（三条路，与写卡一致，见 imagedraw.ts 的 IMG_TURN_FLAG）：
+        //  · 'yes'     → 把刚出/要看的图附进本轮请求（临时 user 消息），模型自己看；
+        //  · 'unknown' → 走一次独立子调用（探针 + 把回答当软件记录注入）；
+        //  · 'no'      → 什么都不做。
         try {
           const ids: string[] = [];
           for (const o of outs) {
             try { const j = JSON.parse(String(o || '{}')); if (j && j.image_id) ids.push(String(j.image_id)); } catch (e) { /* ignore */ }
           }
-          if (ids.length) {
+          if (ids.length && visionState() === 'yes') {
+            this._attachQueue.push({ refs: ids, hint: DRAW_ATTACH_HINT });
+          } else if (ids.length && visionState() === 'unknown') {
             const note = await this._visionCheckNote(ids, String((((this._genImages.get(ids[0]) || {}) as any).prompt) || ''));
             if (note) msgs.push({ role: 'system', content: note });
           }
-        } catch (e) { /* 核对失败不影响本轮 */ }
+          // look_at_image 排进队列的图（附在所有 tool 结果之后，模型下一轮就能看到）
+          for (const sp of this._attachQueue.splice(0)) {
+            await appendAttachSpec({
+              msgs: msgs, spec: sp, store: this._genImages,
+              bookId: (typeof WorldBookManager !== 'undefined' && WorldBookManager.getActiveId && WorldBookManager.getActiveId()) || undefined
+            });
+          }
+        } catch (e) { /* 看图失败不影响本轮 */ }
         if (round === BIQI_MAX_ROUNDS - 1) finalText = r.text || '（这轮改完了，接着说下一步要动哪里？）';
       }
     } catch (e: any) {
@@ -698,16 +726,20 @@ export const BiqiAgent: {
     return base;
   },
 
-  // 看图工具：模型自己看不到图片，靠**一次单独的看图子调用**回答"这张画得怎么样"这类问题。
-  // 传 420px 缩略图（便宜、够判断明显问题）；看不了图的模型不给这个工具。
+  // 看图工具：两条实现（看待图能力）——能看图（'yes'）时软件把那张图**附进本轮请求**，模型亲眼看完
+  // 自己回答（不额外调用、更准）；还没试过（'unknown'）时走一次独立的看图子调用（无预设/无角色卡，
+  // 只够判断"有没有崩坏"）。传的是 420px 缩略图；看不了图的模型（'no'）不给这个工具。
   _imageToolLook(): unknown {
+    const canSee = visionState() === 'yes';
     return {
       type: 'function',
       function: {
         name: 'look_at_image',
-        description: '看一眼已经生成的图（单独的看图调用，约 3~6 秒）：可以问"手有没有画坏""背景是不是夜晚""这张和图4比哪张更像苏黎"。'
-          + '**什么时候用**：你要判断画得对不对、有没有崩坏，或作者问起某张图的细节，而你自己看不到图片。'
-          + '拿到的是文字回答——据此向作者说明，但不要说成"我亲眼看到的"。',
+        description: '看一眼已经生成的图：可以问"手有没有画坏""背景是不是夜晚""这张和图4比哪张更像苏黎"。'
+          + '**什么时候用**：你要判断画得对不对、有没有崩坏，或作者问起某张图的细节。'
+          + (canSee
+            ? '**你能直接看图**：调用后软件会把那张图附到你的消息里，你亲眼看到、直接回答（约 1 秒，不额外调用模型）。'
+            : '拿到的是**另一次看图调用的文字回答**（不是你亲眼所见）——据此向作者说明，但不要说成"我亲眼看到的"。'),
         parameters: {
           type: 'object',
           properties: {
@@ -778,6 +810,10 @@ export const BiqiAgent: {
           ? '- **画面里有世界书里的角色时：默认用 TA 的头像当底图**（base_image 填角色名）——这样动作/衣服/背景都能换、脸始终是 TA；多人在场用作者点名的那个人，他没点名就用画面里最主要的那个。**带底图时一律按"大改"处理**（换姿势动作/整套衣服/背景场景，只保住人物和脸），不要做"只改一点"的小修——作者要的是新鲜感。角色还没头像就照常按描述画（别报错，末尾可以补一句"给它设张头像，以后脸就能固定"）。\n'
           : '')
         + '- 提示词落在最近上下文里能确定的东西上（人物外观、当前场景、正在发生的事）；他没说的细节按上下文最合理的样子补，别自己另起一个故事；\n'
+        + (visionState() === 'yes'
+          // 能看图：出图后软件自动附图、look_at_image 也改成附图 → 模型是"亲眼看到"，不再要求它打折扣
+          ? '- **看图**：你**能直接看到图**——出图后软件会把刚画的图附给你看（不用额外调用）；要看别的图（比如某角色的头像）就调 look_at_image，软件会把那张图附给你。看完直接说结论（"我看到……"），不要再说"我看不到图"。\n'
+          : '- **看图**：要确认画面细节就调 look_at_image——它用一次独立的看图调用核对（约 3~6 秒），把它的回答转给你；那不是你亲眼所见，**不要对作者说"我看到了"**。\n')
         + '- 出图后用一两句中文说明画的是什么，问他要不要换一张或调整；失败（主机离线/超时/主机不支持改图）就如实说原因，不要重试超过一次，也不要假装画了。';
     }
     return '【生图】本轮你没有画图工具——作者还没配置画图主机，或者画图主机没在运行。因此：\n'
@@ -845,6 +881,8 @@ export const BiqiAgent: {
       bookId: (typeof WorldBookManager !== 'undefined' && WorldBookManager.getActiveId && WorldBookManager.getActiveId()) || undefined,
       onStatus: () => { this._status = '正在看图…'; this.renderMessages(); }
     });
+    // 能看图（'yes'）：不用现在取图——把引用排进队列，由本轮末尾统一附进请求（与出图后的自动附图同一条路）
+    if (r.ok && r.attach) this._attachQueue.push(r.attach);
     if (!r.ok && r.message.indexOf('看不了图片') >= 0 && !this._visionNoToast) {
       this._visionNoToast = true;
       try { App.toast('当前模型看不了图片：已关闭"看图/图核对"（不影响出图与改图）'); } catch (e) { /* ignore */ }
@@ -852,8 +890,8 @@ export const BiqiAgent: {
     return JSON.stringify(r.ok ? { ok: true, result: r.message } : { ok: false, error: r.message });
   },
 
-  // A（出图后自动核对一眼）：软件替模型看一次刚生成的图，结论作为**软件记录**注入下一轮。
-  // 看不了图的模型（已确认）直接跳过；试失败但不像能力问题（超时等）也只是这次不注入。
+  // 出图后的一次独立核对（**只在 visionCaps='unknown' 时用**：既把能力试出来，也把结论交给模型）；
+  // 已确认能看图时走"把图附进本轮请求让它自己看"，确认看不了时跳过。
   async _visionCheckNote(imgIds: string[], prompt: string): Promise<string> {
     const id = String((imgIds && imgIds[0]) || '');
     if (!id || visionState() === 'no') return '';
