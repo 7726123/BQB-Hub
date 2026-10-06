@@ -186,6 +186,19 @@ const CardWriterChat: CardWriterChatShape = {
 
   _load() {
     this.messages = SM().get<any>(this._key(), []);
+    // 迁移（2026-10-06）：旧版本把「工具执行实录」追加在 assistant 正文里，模型会照抄到回复里；
+    // 这里把历史里残留的标记行清掉（只认我们写死的标记，不做语义猜测），免得它继续被当成"自己的话"。
+    try {
+      let hit = 0;
+      for (const m of (this.messages || [])) {
+        if (m && m.role === 'assistant' && typeof m.content === 'string'
+          && (m.content.indexOf('【本轮工具执行实录') >= 0 || m.content.indexOf('【软件记录·') >= 0)) {
+          const cleaned = this._stripSummaryEcho(m.content);
+          if (cleaned !== m.content) { m.content = cleaned; hit++; }
+        }
+      }
+      if (hit) this._save();
+    } catch (e) { /* 迁移失败不影响加载 */ }
     // 换书/重进面板：清掉选择与多选状态（否则浮条/勾选会指向上一次的消息）
     this._multiMode = false;
     this._multiSel = [];
@@ -369,20 +382,36 @@ const CardWriterChat: CardWriterChatShape = {
       if ((msgs[i] || {}).role === 'user') roundCount++;
       if (roundCount >= MAX_ROUNDS) { roundStart = i; break; }
     }
-    const sliced = msgs.slice(roundStart);
-    // 「工具执行实录」只注入最近 3 条 assistant（够模型判断上一轮到底写没写；再多只是白烧 prefill）。
-    // 这是给模型的**事实**：跨轮它看不到 tool 消息，只靠自己的措辞回忆就会把"我说过已写入"当成写过。
-    const withSummary: Record<number, string> = {};
+    // 注（2026-10-06）：工具执行实录**不再**追加到历史里的 assistant 正文上——那样模型会看到
+    // "自己上一轮写过这一行"，于是照着复述到回复里（用户反馈）。改为贴着生成点的一条 system 消息，
+    // 见 _callAPI 里的 _toolSummaryForPrompt()。顺带好处：历史逐字不变 → 前缀缓存不再被这条注入破坏。
+    return msgs.slice(roundStart);
+  },
+
+  // 「工具执行实录」给模型看的那条 system 消息（最近 3 轮有记录时才有）。没有就返回 ''。
+  _toolSummaryForPrompt() {
+    const lines: string[] = [];
+    const msgs = this.messages || [];
     let budget = 3;
-    for (let i = sliced.length - 1; i >= 0 && budget > 0; i--) {
-      const line = this._toolSummaryText(sliced[i]);
-      if (line) { withSummary[i] = line; budget--; }
+    for (let i = msgs.length - 1; i >= 0 && budget > 0; i--) {
+      const line = this._toolSummaryText(msgs[i]);
+      if (line) { lines.unshift(line); budget--; }
     }
-    if (!budget || !Object.keys(withSummary).length) return sliced;
-    return sliced.map(function (m: any, i: number) {
-      if (withSummary[i] == null) return m;
-      return Object.assign({}, m, { content: String((m && m.content) || '') + '\n\n' + withSummary[i] });
-    });
+    if (!lines.length) return '';
+    return '【软件记录·仅供你判断，不要复述】下面是软件记录的真实工具执行结果（按时间从早到晚）。'
+      + '**这不是你说过的话**，只是让你知道"上一轮到底写没写、有没有失败"：\n' + lines.join('\n') + '\n'
+      + '规矩：**绝对不要**在你的回复里出现「工具执行实录」这类字样，也不要复述、引用或改写这些记录'
+      + '（执行结果由软件直接显示给用户）。你只管按真实结果继续干活、正常说话。';
+  },
+
+  // 展示兜底：万一模型还是把我们注入的实录标记写进了回复，就把那一行删掉（只认我们自己写死的标记，不做语义猜测）。
+  _stripSummaryEcho(text: any) {
+    const t = String(text == null ? '' : text);
+    if (t.indexOf('【本轮工具执行实录') < 0 && t.indexOf('【软件记录·') < 0) return t;
+    return t.split('\n').filter(function (line) {
+      const s = String(line).trim();
+      return s.indexOf('【本轮工具执行实录') !== 0 && s.indexOf('【软件记录·') !== 0;
+    }).join('\n').replace(/^\s*\n+/, '').replace(/\n{3,}/g, '\n\n');
   },
 
   // 消息上记的「工具执行实录」→ 给模型看的一行（没有就返回 ''）
@@ -632,6 +661,13 @@ const CardWriterChat: CardWriterChatShape = {
     const historyMsgs = this._recentHistory();
     for (let i = 0; i < historyMsgs.length; i++) messages.push(historyMsgs[i]);
 
+    // 工具执行实录（软件事实，见 _toolSummaryForPrompt）：贴着生成点发一条 system 消息，并明确"不要复述"。
+    // 放在生图规则之前（不把「思考纪律 / 设计轮说明」从生成点挤开）。
+    {
+      const _sumRule = this._toolSummaryForPrompt();
+      if (_sumRule) messages.push({ role: 'system', content: _sumRule });
+    }
+
     // 生图规则（文案与条件见 _imageRuleMessage）：在线 → 正向规则；不在线 → 「你没有画图能力」的反向规则。
     // 位置放在「思考纪律」之前：思考纪律与设计轮说明要贴住生成点（实测结论），不能被我这条挤到中间。
     {
@@ -764,7 +800,8 @@ const CardWriterChat: CardWriterChatShape = {
               if (!turnText && turnReasoning && !turnToolStarted) archiveReasoning(); // 正文首字 = 思考结束 → 折叠
               turnText += chunk;
               if (!turnToolStarted) {
-                this.messages[assistantIdx].content = turnText;
+                // 上屏前过一遍兜底：模型若把我们注入的实录标记照抄出来，那一行不显示
+                this.messages[assistantIdx].content = this._stripSummaryEcho(turnText);
                 scheduleStreamRender();
               }
               chunkCount++;
@@ -776,7 +813,7 @@ const CardWriterChat: CardWriterChatShape = {
               this._statusText = '';
               archiveReasoning(); // 本轮结束：未归档的思考（纯思考/无正文轮）折叠进消息
               if (turnText) {
-                this.messages[assistantIdx].content = turnText.trim();
+                this.messages[assistantIdx].content = this._stripSummaryEcho(turnText.trim());
               } else if (!fullContent) {
                 // 空回复分两种：有思考流 = 输出额度（思维链+正文共享）被长思考耗尽，
                 // 流正常收尾但没有正文；无思考流 = 模型什么都没给。
@@ -862,7 +899,7 @@ const CardWriterChat: CardWriterChatShape = {
                   // reasoning_content 占位 / tool 后桥接 assistant）仍由 api.ts 标准化层处理。
                   msgs.push({
                     role: 'assistant',
-                    content: turnTextSnapshot,
+                    content: this._stripSummaryEcho(turnTextSnapshot),   // 同样别把照抄的实录取回历史里（否则自我强化）
                     tool_calls: tools.map((t: any, i: any) => ({ id: t.id || ('call_' + i), type: 'function', function: { name: t.name, arguments: JSON.stringify(t.arguments || {}) } }))
                   });
                   tools.forEach((t: any, i: any) => {

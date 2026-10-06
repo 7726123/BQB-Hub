@@ -1,34 +1,42 @@
 // 看图缩放（2026-10-06）：点开大图后能放大看细节。
 // 覆盖：纯数学（fit/clamp/zoomAt）+ 手势接线（双击 / 双指捏合 / 拖动平移 / 滚轮 / 徽标切换 / 单击关闭）。
 import { describe, it, expect, beforeEach } from 'vitest';
+import fs from 'node:fs';
+import path from 'node:path';
 import { viewerFitScale, viewerClampPan, viewerZoomAt } from '../src/domain/ui';
 import '../src/domain/ui';   // 只为副作用：模块尾部把 UIManager 挂到 globalThis（对象本身没有 export）
 
-// 迷你 DOM：只给看图缩放需要的那三个元素。
-// 图：原图 800×800，适应后渲染 400×400（=natScale 2，即 1:1 需要 scale 2）；视口 400×800。
+// 迷你 DOM：只给看图缩放需要的那几个元素。
+// 图：原图 1600×1600，适应后布局 400×400（=natScale 4，即 1:1 需要 scale 4）；视口 400×800。
 const els: Record<string, any> = {};
 let UIManager: any;
 function tick(ms: number) { return new Promise((r) => setTimeout(r, ms)); }
 function touch(clientX: number, clientY: number) { return { clientX: clientX, clientY: clientY }; }
 function ev(extra: any) { return Object.assign({ preventDefault: () => undefined }, extra || {}); }
+function fakeClassList() {
+  const s = new Set<string>();
+  return { add: (c: string) => s.add(c), remove: (c: string) => s.delete(c), contains: (c: string) => s.has(c) };
+}
 
 beforeEach(() => {
   UIManager = (globalThis as any).UIManager;
   for (const k of Object.keys(els)) delete els[k];
   els['imgViewer'] = { style: {} };
   els['imgViewerImg'] = {
-    style: {},
-    naturalWidth: 800, naturalHeight: 800,
+    style: {}, src: '',
+    naturalWidth: 1600, naturalHeight: 1600,
     // 布局尺寸（不受 transform 影响）：适应后 400×400
     offsetWidth: 400, offsetHeight: 400,
     // 模拟真实浏览器：getBoundingClientRect 会把当前 transform 算进去 → 这里故意报"被放大后的"尺寸。
     // 实现必须用 offsetWidth 当基准，否则放大后 natScale/夹取/徽标会自我循环（回归修复 2026-10-06）。
-    getBoundingClientRect: () => ({ width: 1000, height: 1000 })
+    getBoundingClientRect: () => ({ width: 800, height: 800 })
   };
-  els['imgViewerZoom'] = { textContent: '' };
+  els['imgViewerBar'] = { style: {}, classList: fakeClassList() };
+  els['imgViewerSave'] = { style: {} };
   (globalThis as any).document = { getElementById: (id: string) => els[id] || null };
   (globalThis as any).innerWidth = 400;
   (globalThis as any).innerHeight = 800;
+  delete (globalThis as any).HttpBridge;   // 默认"老 App"：没有原生保存方法 → 工具条整条隐藏
   (UIManager as any)._vReset();
 });
 
@@ -52,30 +60,27 @@ describe('看图缩放：纯数学', () => {
 });
 
 describe('看图缩放：手势接线', () => {
-  it('打开时是「适应」（无 transform），徽标显示"适应"', () => {
-    expect(els['imgViewerZoom'].textContent).toBe('适应');
+  it('打开时是「适应」（无 transform）', () => {
     expect(String(els['imgViewerImg'].style.transform || '')).toBe('');
   });
 
-  it('双击 → 1:1 原图（scale=2，徽标 100% = 原图像素）；再双击/点徽标 → 回到适应', () => {
+  it('双击 → 1:1 原图（natScale=4 → scale(4)）；再双击 → 回到适应', () => {
     const tap = () => {
       UIManager.viewerTouchStart(ev({ touches: [touch(200, 400)] }));
       UIManager.viewerTouchEnd(ev({ touches: [], changedTouches: [touch(200, 400)] }));
     };
     tap(); tap();
-    expect((UIManager as any)._viewerZoom.s).toBe(2);
-    expect(String(els['imgViewerImg'].style.transform)).toContain('scale(2)');
-    expect(els['imgViewerZoom'].textContent).toBe('100%');
-    UIManager.toggleViewerZoom();
+    expect((UIManager as any)._viewerZoom.s).toBe(4);
+    expect(String(els['imgViewerImg'].style.transform)).toContain('scale(4)');
+    tap(); tap();
     expect((UIManager as any)._viewerZoom.s).toBe(1);
-    expect(els['imgViewerZoom'].textContent).toBe('适应');
+    expect(String(els['imgViewerImg'].style.transform || '')).toBe('');
   });
 
-  it('双指捏合：两指间距翻倍 → 放大到 1:1（s=2，徽标 100%）', () => {
+  it('双指捏合：两指间距翻倍 → scale 翻倍（可超过 1:1，上限 natScale*2）', () => {
     UIManager.viewerTouchStart(ev({ touches: [touch(150, 400), touch(250, 400)] }));      // d=100
     UIManager.viewerTouchMove(ev({ touches: [touch(100, 400), touch(300, 400)] }));       // d=200
     expect((UIManager as any)._viewerZoom.s).toBe(2);
-    expect(els['imgViewerZoom'].textContent).toBe('100%');
     // 收拢回原距离 → 回适应
     UIManager.viewerTouchMove(ev({ touches: [touch(150, 400), touch(250, 400)] }));
     expect((UIManager as any)._viewerZoom.s).toBe(1);
@@ -100,14 +105,37 @@ describe('看图缩放：手势接线', () => {
     expect((UIManager as any)._viewerZoom.s).toBe(1);
   });
 
-  it('基准尺寸用 offsetWidth（不受 transform 影响）：放大到 1:1 后徽标是 100%、夹取仍按适应尺寸算', () => {
-    UIManager.toggleViewerZoom();                    // 双击/徽标的路径：1:1 = 800/400 = scale 2
-    expect((UIManager as any)._viewerZoom.s).toBe(2);
-    expect(els['imgViewerZoom'].textContent).toBe('100%');   // 不是 200%（用 getBoundingClientRect 就会错成 200%）
-    // 放大后拖动：x 仍被夹在 ±200（(400*2-400)/2），说明夹取用的是适应尺寸而不是"放大后的 rect"
+  it('基准尺寸用 offsetWidth（不受 transform 影响）：1:1 目标与夹取范围都按适应尺寸算', () => {
+    UIManager.toggleViewerZoom();                    // 双击/内部路径：1:1 = 1600/400 = scale 4
+    expect((UIManager as any)._viewerZoom.s).toBe(4);         // 用 rect（800）会错算成 scale 2
+    // 放大后拖动：x 仍被夹在 ±600（(400*4-400)/2），说明夹取用的是适应尺寸而不是"放大后的 rect"
     UIManager.viewerTouchStart(ev({ touches: [touch(200, 400)] }));
     UIManager.viewerTouchMove(ev({ touches: [touch(9999, 400)] }));
-    expect((UIManager as any)._viewerZoom.tx).toBe(200);
+    expect((UIManager as any)._viewerZoom.tx).toBe(600);
+  });
+
+  it('工具条精简：只显示「保存到相册」；老 App 没原生方法时整条隐藏；4 秒后自动变淡（仍可点）', async () => {
+    (globalThis as any).HttpBridge = { saveFileBase64: () => '{"ok":true}' };
+    UIManager.viewAvatar('data:image/png;base64,AAA', { id: 'img1', ctx: 'cardwriter' });
+    expect(els['imgViewerBar'].style.display).toBe('flex');
+    expect(els['imgViewerSave'].style.display).toBe('');
+    expect(els['imgViewerBar'].classList.contains('dim')).toBe(false);
+    await tick(4200);
+    expect(els['imgViewerBar'].classList.contains('dim')).toBe(true);   // 变淡但不消失（还能点）
+    // 老 App：没有 saveFileBase64 → 按钮与整条都隐藏（缩放/关闭不靠按钮）
+    delete (globalThis as any).HttpBridge;
+    UIManager.viewAvatar('data:image/png;base64,AAA');
+    expect(els['imgViewerBar'].style.display).toBe('none');
+    expect(els['imgViewerSave'].style.display).toBe('none');
+    expect(els['imgViewerBar'].classList.contains('dim')).toBe(false);  // 重开时清掉上一次的变淡
+    // 顺带锁住"工具条只有一个按钮"（用户 2026-10-06 要求删掉多余按钮，别再被加回来）
+    const html = fs.readFileSync(path.resolve(__dirname, '..', '..', 'web', 'index.html'), 'utf8');
+    const barHtml = /<div class="img-viewer-bar"[^>]*>([\s\S]*?)<\/div>/.exec(html);
+    expect(barHtml, '找不到看图工具条').toBeTruthy();
+    const btnIds = [...String(barHtml![1]).matchAll(/<button[^>]*id="([^"]+)"/g)].map((m) => m[1]);
+    expect(btnIds).toEqual(['imgViewerSave']);
+    const btnNoId = [...String(barHtml![1]).matchAll(/<button(?![^>]*id=)/g)];
+    expect(btnNoId.length).toBe(0);                                     // 也不许有空 id 的按钮（关闭按钮已删）
   });
 
   it('单击（没拖动）→ 关闭；刚做过手势后的 click 不会误关', async () => {

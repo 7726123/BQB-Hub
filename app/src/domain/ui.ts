@@ -13,7 +13,7 @@ import { StatusVars } from './statusvars';
 import { parseKnowers } from './realstate';   // 「部分人知道」的知情者名单解析（与读取侧共用一份）
 import { formatVersion } from '../lib/webver';
 import { avatarUrl } from '../lib/avatarurl';
-import { saveImageToDevice, shareImageFromDevice, canSaveImage, canShareImage } from '../lib/saveimage';
+import { saveImageToDevice, shareImageFromDevice, canSaveImage } from '../lib/saveimage';
 // 社区聊天：独立 legacy 全局（modules/community.js），运行时成员按 typeof 探测
 declare const CommunityChat: { [k: string]: any };
 export interface UIManagerShape {
@@ -1609,15 +1609,22 @@ const UIManager: UIManagerShape = {
     viewer!.style.display = 'flex';
     this._vReset();   // 每次打开都回到"适应屏幕"（上一张的缩放/平移不带过来）
     this._viewerImg = (opt && opt.id) ? { id: String(opt.id), label: String(opt.label || ''), ctx: String(opt.ctx || '') } : null;
-    var bar = document.getElementById('imgViewerBar');
-    if (bar) bar.style.display = 'flex';
-    var baseBtn = document.getElementById('imgViewerBase');
-    if (baseBtn) baseBtn.style.display = this._viewerImg ? '' : 'none';
     var bridge = (window as unknown as { HttpBridge?: any }).HttpBridge;
     var saveBtn = document.getElementById('imgViewerSave');
-    if (saveBtn) saveBtn.style.display = canSaveImage(bridge) ? '' : 'none';
-    var shareBtn = document.getElementById('imgViewerShare');
-    if (shareBtn) shareBtn.style.display = canShareImage(bridge) ? '' : 'none';
+    var canSave = canSaveImage(bridge);
+    if (saveBtn) saveBtn.style.display = canSave ? '' : 'none';
+    // 工具条（2026-10-06 按用户要求精简）：**只留「保存到相册」**，放右下角小尺寸半透明，4 秒后自动变淡（仍可点）。
+    // 老 App 没有原生保存方法 → 整条不显示（缩放/关闭都不靠按钮：双击/双指/滚轮 + 点画面任意处关闭）。
+    var bar = document.getElementById('imgViewerBar') as any;
+    if (bar) {
+      bar.style.display = canSave ? 'flex' : 'none';
+      if (bar.classList) {
+        bar.classList.remove('dim');
+        const self: any = this;
+        if (self._vBarTimer) { clearTimeout(self._vBarTimer); self._vBarTimer = null; }
+        self._vBarTimer = setTimeout(function () { try { bar.classList.add('dim'); } catch (e) { /* ignore */ } }, 4000);
+      }
+    }
   },
 
   closeViewer() { var v = document.getElementById('imgViewer'); if (v) v.style.display = 'none'; },
@@ -1653,12 +1660,6 @@ const UIManager: UIManagerShape = {
     if (img && img.style) {
       img.style.transform = (s === 1 && !v.tx && !v.ty) ? '' : ('translate(' + v.tx + 'px,' + v.ty + 'px) scale(' + s + ')');
       img.style.transformOrigin = 'center center';
-    }
-    const tag = document.getElementById('imgViewerZoom');
-    if (tag) {
-      // 徽标显示"相对原图"的百分比（100% = 1:1 原图像素）：s 是相对"适应"的比例，除以 natScale 才是原图比
-      const m = this._vMetrics();
-      tag.textContent = (s > 1.02) ? (Math.round(s / m.natScale * 100) + '%') : '适应';
     }
   },
   /** 设成比例 s（以屏幕点 px/py 为锚，缺省=视口中心），并夹取平移 */
@@ -1775,7 +1776,9 @@ const UIManager: UIManagerShape = {
     this._vSetScale(next, (e && e.clientX != null) ? e.clientX : m.vw / 2, (e && e.clientY != null) ? e.clientY : m.vh / 2);
   },
 
-  // 「基于这张改」：把「把图3改成：」填进对应面板的输入框，用户补一句就能发（模型按图号找 base_image）
+  // 「基于这张改」：把「把图3改成：」填进对应面板的输入框，用户补一句就能发（模型按图号找 base_image）。
+  // 注：工具条 2026-10-06 按用户要求精简（只留「保存到相册」），这个按钮暂时下掉了——功能本身没删：
+  // 用户直接说「把图3改成雪夜」一样走这条路（模型按图号找 base_image）；要恢复按钮把它加回 bar 即可。
   useViewerAsBase() {
     const info: any = (this as any)._viewerImg;
     if (!info) return;
@@ -1800,6 +1803,7 @@ const UIManager: UIManagerShape = {
     try { App.toast(r.ok ? ('已保存到 ' + (r.path || '相册') + '，去相册/图库看看') : ('保存失败：' + r.error)); } catch (e) { /* ignore */ }
   },
 
+  // 注：工具条 2026-10-06 精简后没有「分享」按钮了（方法保留，要恢复按钮把它加回 bar 即可）
   shareViewerImage() {
     const img = document.getElementById('imgViewerImg') as HTMLImageElement | null;
     const r = shareImageFromDevice(img ? img.src : '', (window as unknown as { HttpBridge?: any }).HttpBridge);

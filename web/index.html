@@ -687,11 +687,10 @@ label{font-size:13px;color:var(--text-secondary);display:block;margin-bottom:4px
 .wb-avatar-empty{width:52px;height:52px;border-radius:9px;background:var(--bg-tertiary);display:flex;align-items:center;justify-content:center;font-size:24px}
 .img-viewer{position:fixed;inset:0;z-index:3000;background:rgba(0,0,0,.88);display:none;align-items:center;justify-content:center;cursor:zoom-out;touch-action:none;-webkit-user-select:none;user-select:none}
 .img-viewer img{max-width:92vw;max-height:86vh;border-radius:8px;-webkit-user-drag:none;user-select:none;-webkit-user-select:none}
-.img-viewer-bar{position:absolute;bottom:16px;left:50%;transform:translateX(-50%);display:flex;gap:8px;background:rgba(20,24,32,.74);padding:8px 10px;border-radius:14px;cursor:default;max-width:94vw;flex-wrap:wrap;justify-content:center;align-items:center}
-.img-viewer-bar button{color:#fff;background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.2);padding:7px 12px;border-radius:10px;font-size:13px;cursor:pointer}
-.img-viewer-bar button:active{background:rgba(255,255,255,.26)}
-#imgViewerZoom{min-width:54px;font-variant-numeric:tabular-nums}
-.img-viewer-hint{color:rgba(255,255,255,.55);font-size:11px;padding:0 2px}
+.img-viewer-bar{position:absolute;right:14px;bottom:14px;display:flex;gap:8px;background:rgba(20,24,32,.5);padding:5px 6px;border-radius:12px;cursor:default;align-items:center;transition:opacity .35s ease}
+.img-viewer-bar.dim{opacity:.35}
+.img-viewer-bar button{color:#fff;background:rgba(255,255,255,.14);border:1px solid rgba(255,255,255,.2);padding:6px 11px;border-radius:9px;font-size:12.5px;cursor:pointer}
+.img-viewer-bar button:active{background:rgba(255,255,255,.3)}
 
 /* ===== 正文字体 ===== */
 @font-face{font-family:'Noto Serif SC';src:url('assets/fonts/NotoSerifSC.woff2') format('woff2');font-weight:400;font-display:swap}
@@ -2255,16 +2254,11 @@ label{font-size:13px;color:var(--text-secondary);display:block;margin-bottom:4px
 <!-- ===== 头像文件选择 + 图片放大查看 ===== -->
 <input type="file" id="avatarFileInput" accept="image/*" style="display:none;" onchange="UIManager.onAvatarPicked(this)">
 <div class="img-viewer" id="imgViewer" onclick="UIManager.viewerClick()" ontouchstart="UIManager.viewerTouchStart(event)" ontouchmove="UIManager.viewerTouchMove(event)" ontouchend="UIManager.viewerTouchEnd(event)" ondblclick="UIManager.toggleViewerZoom(event)" onwheel="UIManager.viewerWheel(event)"><img id="imgViewerImg" alt="" draggable="false">
-  <!-- 看图工具条（2026-10-06）：缩放 / 改图引用 / 存相册 / 分享。基于这张改只在"生成的图"上出现（带图号时），
-       保存与分享要有新版 App 的原生方法（saveFileBase64/shareFileBase64）才显示，否则整条隐藏。
-       缩放（2026-10-06 加）：徽标显示「适应 / NNN%」，点一下在适应与原图 1:1 之间切换；也支持双击、双指捏合、滚轮。 -->
+  <!-- 看图工具条（2026-10-06 精简）：只留「保存到相册」——需要新版 App 的原生方法（saveFileBase64），
+       没有就整条不显示。放右下角、小尺寸半透明、4 秒后自动变淡（仍可点），尽量不挡画面。
+       缩放走手势（双击/双指/滚轮）、关闭点画面任意处，所以这两件事都不再放按钮。 -->
   <div class="img-viewer-bar" id="imgViewerBar" onclick="event.stopPropagation()">
-    <button id="imgViewerZoom" onclick="UIManager.toggleViewerZoom()" title="点一下在「适应屏幕 / 原图 1:1」之间切换；也可双击或双指放大">适应</button>
-    <button id="imgViewerBase" onclick="UIManager.useViewerAsBase()" style="display:none;">基于这张改</button>
     <button id="imgViewerSave" onclick="UIManager.saveViewerImage()" style="display:none;">保存到相册</button>
-    <button id="imgViewerShare" onclick="UIManager.shareViewerImage()" style="display:none;">分享</button>
-    <button onclick="UIManager.closeViewer()">关闭</button>
-    <span class="img-viewer-hint">双击/双指可放大 · 拖动平移</span>
   </div>
 </div>
 

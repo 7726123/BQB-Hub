@@ -261,7 +261,7 @@ describe('批量结果回传模型：结构化 JSON 与 failed 明细', () => {
     expect(c._writeOk).toBe(true);
   });
 
-  it('工具执行实录：挂在消息上、进历史、气泡按实录渲染（2026-10-06 取代原来的"假已写入兜底"）', async () => {
+  it('工具执行实录：挂在消息上、气泡按实录渲染；给模型看的是**贴着生成点的 system 消息**（不追加进 assistant 正文）', async () => {
     const c = prime();
     c._draft = { characters: [], entries: [entry('甲')], deleted: [] };
     WB_BOOKS = [{ id: 'wb1', name: '测试书', entries: [entry('甲')] }];
@@ -278,12 +278,31 @@ describe('批量结果回传模型：结构化 JSON 与 failed 明细', () => {
     expect(line).toContain('已写入 1 项');
     expect(line).toContain('另有 1 项只读查询成功');
     expect(line).toContain('软件记录');                    // 明确告诉模型：这是事实，不是它自己的话
+    // 历史里**不再**把实录追加到 assistant 正文（用户 2026-10-06 反馈"模型会照着自己上一轮那行复述"）
     const hist: any[] = c._recentHistory();
-    expect(String(hist[hist.length - 1].content)).toContain('【本轮工具执行实录');
-    expect(String(hist[hist.length - 1].content)).toContain('好了。');   // 原话保留，实录附在后
+    expect(String(hist[hist.length - 1].content)).toBe('好了。');
+    expect(String(hist[hist.length - 1].content)).not.toContain('工具执行实录');
+    // 改为 system 侧注入：事实照给，并明确"不要复述"
+    const sumRule = c._toolSummaryForPrompt();
+    expect(sumRule).toContain('【软件记录·仅供你判断，不要复述】');
+    expect(sumRule).toContain('【本轮工具执行实录');       // 事实本身还在（anti-hallucination 的那份）
+    expect(sumRule).toContain('已写入 1 项');
+    expect(sumRule).toContain('绝对不要');
     const html = c._wroteHtml(ai);
     expect(html).toContain('cw-wrote');
     expect(html).toContain('本轮已写入 1 项');
+  });
+
+  it('展示兜底 _stripSummaryEcho：模型照抄的实录行会被删掉（只认自家标记，正常内容一字不动）', () => {
+    const c = prime();
+    const dirty = '好的，已经处理完了。\n\n【本轮工具执行实录（软件记录，不是你的话）】没有任何写入操作。\n\n还有别的要改吗？';
+    const clean = String(c._stripSummaryEcho(dirty));
+    expect(clean).toContain('好的，已经处理完了。');
+    expect(clean).toContain('还有别的要改吗？');
+    expect(clean).not.toContain('工具执行实录');
+    expect(c._stripSummaryEcho('正常的一句话，不受影响')).toBe('正常的一句话，不受影响');
+    expect(c._stripSummaryEcho('【软件记录·仅供你判断，不要复述】xx')).toBe('');
+    expect(c._stripSummaryEcho('只读查询成功 3 项')).toBe('只读查询成功 3 项');   // 不是标记行就不动
   });
 
   it('只读调用的实录条：据实写"本轮没有写入任何内容（只有查询）"', async () => {
