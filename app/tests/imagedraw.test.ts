@@ -1,6 +1,7 @@
 // 生图公共部件：图号 / 底图引用解析 / 改图幅度 / 缩略图 HTML。
 // 覆盖用户 2026-10-06 的要求："可以指名第几张图让它改"——图号与界面上看到的「图3」必须一致。
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { ImageCache } from '../src/lib/imagecache';
 
 const h = vi.hoisted(() => ({
   books: [] as any[],
@@ -21,6 +22,7 @@ vi.mock('../src/domain/settingsync', () => ({
 let m: any;
 beforeEach(async () => {
   m = await import('../src/domain/imagedraw');
+  ImageCache.__resetForTest();   // 本地存档（内存后端）逐例清干净
   h.books = []; h.mode = 'novel';
   h.overlays = { novel: { added: [] }, chat: { added: [] } };
   (globalThis as any).fetch = () => Promise.reject(new Error('network disabled in tests'));
@@ -95,11 +97,12 @@ describe('resolveBaseImage：指名第几张', () => {
     expect((await m.resolveBaseImage('last', store([]))).ok).toBe(false);   // 一张都没有
   });
 
-  it('句柄过期（本会话没有这张）：明确说清"只在本会话内存里"', async () => {
+  it('句柄过期（本会话没有、存档里也没有这张）：说清"本机存档里没有"并让重新生成', async () => {
     const r = await m.resolveBaseImage('图9', store([['img1', { full: 'A' }]]));
     expect(r.ok).toBe(false);
     expect(r.error).toContain('图9');
-    expect(r.error).toContain('只在本会话内存');
+    expect(r.error).toContain('本机存档');
+    expect(r.error).toContain('重新生成');
   });
 
   it('角色名 → 用它的头像（原书条目 / 临时层都找）', async () => {
@@ -159,5 +162,54 @@ describe('genImagesHtml：编号徽标 + 改图/重修标注', () => {
     const expired = m.genImagesHtml(s, { imageIds: ['img9'] }, 'BiqiAgent.viewImage');
     expect(expired).toContain('cw-img-expired');
     expect(expired).not.toContain('cw-img-no');
+  });
+});
+
+describe('本地存档：重开 App 后把图取回来', () => {
+  it('hydrateImages：按书取回（原图/元数据都在）；别的书、存档里没有的进 gone', async () => {
+    await ImageCache.put({ book: 'wb1', id: 'img1', thumb: 'T1', full: 'F1', at: 1, seed: 7, size: '768x768', seconds: 5, prompt: 'p' });
+    const s = store([]);
+    const r1 = await m.hydrateImages(s, 'wb1', ['img1']);
+    expect(r1.loaded).toEqual(['img1']);
+    expect(r1.gone).toEqual([]);
+    expect(s.get('img1').full).toBe('F1');
+    expect(s.get('img1').book).toBe('wb1');       // 归属带着走（跨书隔离照旧生效）
+    expect(s.get('img1').seed).toBe(7);
+
+    const r2 = await m.hydrateImages(store([]), 'wb2', ['img1']);   // 别的书的同号图取不到
+    expect(r2.loaded).toEqual([]);
+    expect(r2.gone).toEqual(['img1']);
+
+    const s3 = store([['img1', { full: 'MEM' }]]);
+    expect((await m.hydrateImages(s3, 'wb1', ['img1'])).loaded).toEqual([]);   // 内存里已有：跳过
+    expect(s3.get('img1').full).toBe('MEM');
+
+    const r4 = await m.hydrateImages(store([]), 'wb1', ['img9']);
+    expect(r4.gone).toEqual(['img9']);                                        // 存档里也没有 → gone
+  });
+
+  it('genImagesHtml：传了 gone 集合 → 未确认的按「正在读取本地存档」渲染，确认没有的才是「已过期」', () => {
+    const s = store([]);
+    const loading = m.genImagesHtml(s, { imageIds: ['img1'] }, 'X.viewImage', { gone: new Set<string>() });
+    expect(loading).toContain('cw-img-loading');
+    expect(loading).not.toContain('cw-img-expired');
+    const gone = m.genImagesHtml(s, { imageIds: ['img1'] }, 'X.viewImage', { gone: new Set(['img1']) });
+    expect(gone).toContain('cw-img-expired');
+    expect(gone).not.toContain('cw-img-loading');
+  });
+
+  it('resolveBaseImage：内存没有 → 从本地存档取回（重开后仍能"基于图5改"）；跨书给准确报错', async () => {
+    await ImageCache.put({ book: 'wb1', id: 'img5', thumb: 'T5', full: 'F5', at: 1 });
+    const s = store([]);
+    const r = await m.resolveBaseImage('图5', s, 'wb1');
+    expect(r.ok).toBe(true);
+    expect(r.dataUrl).toBe('F5');                 // 原图（不是缩略图）
+    expect(s.has('img5')).toBe(true);             // 取回后放回句柄表：接着看大图 / 保存到相册都能用
+
+    h.books = [{ id: 'wbA', name: '甲书', entries: [] }];
+    const r2 = await m.resolveBaseImage('图5', store([]), 'wbB');   // 甲书存档里的图，不能在乙书里改
+    expect(r2.ok).toBe(false);
+    expect(r2.error).toContain('另一本书');
+    expect(r2.error).toContain('甲书');
   });
 });

@@ -8,6 +8,7 @@ import { PluginManager } from '../src/domain/plugins';
 import { SettingSyncManager } from '../src/domain/settingsync';
 import { WorldBookManager } from '../src/domain/worldbook';
 import { BiqiAgent } from '../src/domain/biqi';
+import { ImageCache } from '../src/lib/imagecache';
 
 const g = globalThis as unknown as Record<string, any>;
 const SM = () => (globalThis as unknown as { StorageManager: { get: (k: string, d?: unknown) => any; set: (k: string, v: unknown) => void; remove: (k: string) => void } }).StorageManager;
@@ -93,6 +94,8 @@ beforeEach(() => {
   BiqiAgent._hostStatus = { at: 0, ok: false, model: '', hint: '' };
   BiqiAgent._mode = 'novel';
   BiqiAgent._loadedKey = 'biqiHistory_' + BOOK_ID;
+  BiqiAgent._imgGone.clear();
+  ImageCache.__resetForTest();   // 本地存档（内存后端）逐例清干净
 });
 
 function toolNames(): string[] {
@@ -265,7 +268,8 @@ describe('比奇生图：draw_image 执行', () => {
     ih.drawCalls = [];
     const bad = JSON.parse(await BiqiAgent._executeTool({ id: 'c2', name: 'draw_image', arguments: { prompt: 'x', base_image: '图9' } } as any));
     expect(bad.ok).toBe(false);
-    expect(bad.error).toContain('只在本会话内存');
+    expect(bad.error).toContain('本机存档');      // 新文案：本机存档里也没有才失败（重开 App 图还在）
+    expect(bad.error).toContain('重新生成');
     expect(ih.drawCalls.length).toBe(0);
   });
 
@@ -284,7 +288,7 @@ describe('比奇生图：draw_image 执行', () => {
 });
 
 describe('比奇生图：气泡渲染', () => {
-  it('缩略图 + 参数行进气泡；句柄没了显示"已过期"；空内容但有图不显示状态条', () => {
+  it('缩略图 + 参数行进气泡；句柄没了先"读取存档"再"已过期"；空内容但有图不显示状态条', async () => {
     BiqiAgent._genImages.set('img1', { full: 'data:image/png;base64,AAA', thumb: 'data:image/png;base64,BBB', seed: 7, size: '768x768', seconds: 9.1, prompt: 'x' });
     BiqiAgent.messages = [{ role: 'assistant', content: '', imageIds: ['img1'], _steps: ['🎨 出图 → 768x768 · 9.1s · img1'] }];
     BiqiAgent._isSending = true;                       // 流式占位中：有图就不该再压状态条
@@ -305,10 +309,17 @@ describe('比奇生图：气泡渲染', () => {
     expect(viewed).toEqual([]);                        // 句柄没了不炸
 
     BiqiAgent._genImages.clear();                      // 重载后句柄失效
+    BiqiAgent._imgGone.clear();
+    BiqiAgent.renderMessages();
+    html = els['biqiMessages'].innerHTML;
+    // 两段式：句柄不在内存里时先显示"正在读取本地存档…"（异步水合），确认存档里也没有才变"已过期"
+    expect(html).toContain('cw-img-loading');
+    await new Promise((r) => setTimeout(r, 0));
     BiqiAgent.renderMessages();
     html = els['biqiMessages'].innerHTML;
     expect(html).toContain('cw-img-expired');
     expect(html).toContain('图片已过期');
+    expect(BiqiAgent._imgGone.has('img1')).toBe(true);   // 确认没有 → 记下来，不再反复查
   });
 });
 
@@ -365,5 +376,25 @@ describe('比奇生图：_runLoop 注入与全链路', () => {
     expect(String(calls[0].msgs[1].content)).toContain('你没有画图工具');
     expect((calls[0].tools as any[]).map((t: any) => t.function.name)).not.toContain('draw_image');
     expect(BiqiAgent._isSending).toBe(false);
+  });
+});
+
+describe('图片本地存档：重开后水合 + 清空对话删库', () => {
+  it('_hydrateImages 取回原图并续排图号；clear() 只删这本书的存档与句柄', async () => {
+    ImageCache.__resetForTest();
+    BiqiAgent._imgGone.clear();
+    await ImageCache.put({ book: BOOK_ID, id: 'img2', thumb: 'T2', full: 'F2', at: 1, seed: 5, size: '512x512', seconds: 3, prompt: 'p' });
+    await ImageCache.put({ book: 'other_book', id: 'img2', thumb: 'T3', full: 'F3', at: 2 });
+    BiqiAgent.messages = [{ role: 'assistant', content: '看图', imageIds: ['img2'] }];
+    BiqiAgent._imgSeq = 0;
+    await BiqiAgent._hydrateImages();
+    expect(BiqiAgent._genImages.get('img2').full).toBe('F2');    // 取回的是原图（激活书那一份）
+    expect(BiqiAgent._imgSeq).toBe(2);                           // 下一张是 img3
+
+    BiqiAgent.clear();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(await ImageCache.get(BOOK_ID, 'img2')).toBeNull();          // 这本书的存档删了
+    expect(await ImageCache.get('other_book', 'img2')).toBeTruthy();   // 别的书不动
+    expect(BiqiAgent._genImages.has('img2')).toBe(false);
   });
 });

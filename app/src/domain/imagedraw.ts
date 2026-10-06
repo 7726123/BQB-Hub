@@ -7,6 +7,7 @@ import { ImageHost, QUALITY_TIERS, type HostTiers } from './imagehost';
 import { WorldBookManager } from './worldbook';
 import { SettingSyncManager } from './settingsync';
 import { resizeDataUrlLongSide, bytesToDataUrl } from '../lib/imagedata';
+import { ImageCache } from '../lib/imagecache';
 
 /** 主机状态缓存（60 秒）。放在各 Agent 自己身上，字段由 probeHost 原地写回。
  *  caps/tiers 可缺省：老缓存/测试桩里没有这些字段时按"主机没声明"处理（空）。 */
@@ -140,20 +141,40 @@ export async function resolveBaseImage(ref: unknown, store: Map<string, any>, bo
     const m = /^(?:img\s*|图\s*)?(\d+)$/i.exec(low);
     if (m) {
       id = 'img' + m[1];
-      if (!store.has(id)) {
-        return { ok: false, error: '找不到' + raw + '（生成的图片只在本会话内存里；重开 App 后旧图只剩"已过期"占位，请重新生成一张，或换一张还在的图）' };
-      }
-      const g = store.get(id);
-      if (!mine(g)) {
-        const name = _bookName(owner(g));
+      // 句柄不在内存里**不直接报错**：继续往下走——下面会先查本地存档（重开 App 后图还在那儿），
+      // 存档里也没有才给「找不到」的说明。句柄在、但属于别的书 → 这里就明确拒绝（不能拿到这本书里用）。
+      const g0: any = store.get(id);
+      if (g0 && !mine(g0)) {
+        const name = _bookName(owner(g0));
         return { ok: false, error: raw + '是用另一本书' + (name ? ('《' + name + '》') : '') + '画的，不能拿到这本书里改：切回那本书再改它，或在这本书里重新画一张' };
       }
     }
   }
   if (id) {
+    let url = '';
     const g: any = store.get(id);
-    const url = String((g && (g.full || g.thumb)) || '');
-    if (!url) return { ok: false, error: '那张图的数据已经没了，请重新生成' };
+    url = String((g && (g.full || g.thumb)) || '');
+    if (!url) {
+      // 内存里没有（多半是重开过 App）→ 从本地存档取回，并放回句柄表（看图 / 保存 / 基于它改都能用）
+      let rec: any = null;
+      try { rec = await ImageCache.get(String(bookId || ''), id); } catch (e) { rec = null; }
+      if (rec && (rec.thumb || rec.full)) {
+        store.set(id, {
+          full: rec.full || rec.thumb, thumb: rec.thumb || rec.full, seed: rec.seed, size: rec.size,
+          seconds: rec.seconds, prompt: rec.prompt, base: rec.base, hires: rec.hires, book: rec.book
+        });
+        url = String(rec.full || rec.thumb);
+      } else {
+        // 存档里也没有：可能是"另一本书"画的（给准确的跨书提示），也可能真的清掉了/太旧了
+        let owner = '';
+        try { owner = await ImageCache.bookOf(id); } catch (e) { owner = ''; }
+        if (owner && bookId && owner !== bookId) {
+          const name = _bookName(owner);
+          return { ok: false, error: raw + '是用另一本书' + (name ? ('《' + name + '》') : '') + '画的，不能拿到这本书里改：切回那本书再改它，或在这本书里重新画一张' };
+        }
+        return { ok: false, error: '找不到' + raw + '：本机存档里已经没有它了（图片按书存档，清空讨论/删书会一起删；也可能它属于另一本书）——重新生成一张吧' };
+      }
+    }
     return { ok: true, dataUrl: url, label: imageLabel(id) || raw };
   }
   // 不是编号 → 当角色名，用它的头像
@@ -172,6 +193,34 @@ export async function resolveBaseImage(ref: unknown, store: Map<string, any>, bo
   } catch (e) {
     return { ok: false, error: '「' + raw + '」的头像不是本地图片、也抓不下来（' + ((e && (e as Error).message) || e) + '），换用图片编号或先重新设一张头像' };
   }
+}
+
+/**
+ * 把本地存档（IndexedDB）里的图取回内存句柄表——重开 App 后、渲染消息前调用。
+ *  · 只取"这本书"的（bookId 与出图时同一个：写卡=讨论目标书、比奇=激活书）——跨书不混用；
+ *  · 内存里已有的跳过（本会话刚生成的）；
+ *  · 存档里也没有的进 gone（调用方渲染成「已过期」，并且别再反复查）。
+ */
+export async function hydrateImages(store: Map<string, any>, bookId: string | undefined, ids: string[]): Promise<{ loaded: string[]; gone: string[] }> {
+  const loaded: string[] = [];
+  const gone: string[] = [];
+  const book = String(bookId || '');
+  for (const raw of ids || []) {
+    const id = String(raw || '');
+    if (!id || store.has(id)) continue;
+    let rec: any = null;
+    try { rec = await ImageCache.get(book, id); } catch (e) { rec = null; }
+    if (rec && (rec.thumb || rec.full)) {
+      store.set(id, {
+        full: rec.full || rec.thumb, thumb: rec.thumb || rec.full, seed: rec.seed, size: rec.size,
+        seconds: rec.seconds, prompt: rec.prompt, base: rec.base, hires: rec.hires, book: rec.book
+      });
+      loaded.push(id);
+    } else {
+      gone.push(id);
+    }
+  }
+  return { loaded: loaded, gone: gone };
 }
 
 export interface DrawOutcome {
@@ -298,15 +347,23 @@ export async function drawImageToStore(opts: {
     opts.store.delete(k);
   }
   try { if (opts.onImage) opts.onImage(id); } catch (e) { /* ignore */ }
+  // 落本地存档（重开 App 后还能看到缩略图、点开原图、基于它改图；清空讨论 / 删书时一起删）。
+  // imagecache 自己不抛、失败不影响本次出图；写完顺手按上限剔除。
+  void ImageCache.put({
+    book: String(opts.bookId || ''), id: id, thumb: thumb, full: full, at: Date.now(),
+    seed: meta.seed, size: sizeText, seconds: seconds, prompt: prompt, base: baseLabel, hires: hires, jobId: String(d.jobId || '')
+  }).then(function () { return ImageCache.prune(); }).catch(function () { /* 存档失败不影响出图 */ });
   return { ok: true, host: host, id: id, tier: tier, seed: meta.seed, size: sizeText, seconds: seconds, prompt: prompt, base: baseLabel, baseNote: baseNote, hires: hires };
 }
 
-/** 消息里的图片缩略图（消息只存 imageIds；图片数据只在本会话内存里，重载后显示占位）。
+/** 消息里的图片缩略图（消息只存 imageIds；图片数据在内存句柄表 + 本地存档里）。
  *  · 缩略图左下角带「图3」编号（与模型看到的编号一致：用户可以指名"把图3改成…"）；
  *  · 点缩略图 → viewCall（调用方的 viewImage(id)，拿**原图**给全屏查看器；不传则退回直接用缩略图 src）。
+ *  · opt.gone：确认没有的 id 集合（渲染成「已过期」）；**传了它**时，其余"内存里没有"的按
+ *    「正在读取本地存档…」渲染（水合是异步的，读到了会重渲染）。不传 → 与以前一致，直接「已过期」。
  *  注：气泡里显示的始终是 420px 缩略图，所以点开必须换成原图——否则 1024 档和 512 档看起来一模一样
  *  （用户 2026-10-06 反馈的正是这个）。 */
-export function genImagesHtml(store: Map<string, any>, m: any, viewCall?: string): string {
+export function genImagesHtml(store: Map<string, any>, m: any, viewCall?: string, opt?: { gone?: Set<string> | null }): string {
   const ids = (m && m.imageIds) ? m.imageIds : null;
   if (!ids || !ids.length) return '';
   const cells: string[] = [];
@@ -314,7 +371,13 @@ export function genImagesHtml(store: Map<string, any>, m: any, viewCall?: string
   for (const gid of ids) {
     const g = store.get(gid);
     const src = g ? String(g.thumb || g.full || '').replace(/"/g, '&quot;') : '';
-    if (!src) { cells.push('<div class="cw-img-expired">图片已过期<br>（需要时重新生成）</div>'); continue; }
+    if (!src) {
+      const gone = opt && opt.gone;
+      cells.push(gone && !gone.has(String(gid))
+        ? '<div class="cw-img-loading"><span class="cw-spinner"></span>正在读取本地存档…</div>'
+        : '<div class="cw-img-expired">图片已过期<br>（需要时重新生成）</div>');
+      continue;
+    }
     const safeId = String(gid).replace(/[^A-Za-z0-9_]/g, '');
     const onclick = viewCall ? (viewCall + "('" + safeId + "')") : 'UIManager.viewAvatar(this.src)';
     const no = imageLabel(gid);   // '图N'——只由数字拼成，直接内联安全

@@ -6,7 +6,8 @@ import { SettingSyncManager } from './settingsync';
 import { selectedRawText, rawOffsetOf, nodeAtRawOffset, roundIndexOf, collectRoundDeletes } from '../lib/msgslice';
 import { renderMdStrong } from '../lib/mdtext';
 import { ImageHost, AVATAR_STORE_SIZE } from './imagehost';
-import { probeHost, drawImageToStore, genImagesHtml, imageLabel, type HostStatusCache } from './imagedraw';
+import { probeHost, drawImageToStore, genImagesHtml, imageLabel, hydrateImages, type HostStatusCache } from './imagedraw';
+import { ImageCache } from '../lib/imagecache';
 import { resizeDataUrlLongSide } from '../lib/imagedata';
 
 // 安全提示：本模块在 app.js 之前加载，加载期（init/_load）触发的兜底提示不能依赖
@@ -101,11 +102,14 @@ const CardWriterChat: CardWriterChatShape = {
   _pausedResume: null,
   _resumeWatcher: null, // visibilitychange 监听（回到前台自动接着跑）
 
-  // 画图主机（本地 ComfyUI）：本会话生成的图片句柄。
-  // 消息里只存 imageIds，不存图——768² 的 PNG base64 约 1MB，进消息会把存储撑爆；
-  // 重载后句柄失效 → 渲染成「已过期」占位（设成头像的那张是永久的，在世界书里）。
-  _genImages: new Map<string, any>(), // id -> { full, thumb, seed, size, seconds, prompt }
+  // 画图主机（本地 ComfyUI）：本会话生成的图片句柄 + 本地存档（lib/imagecache）。
+  // 消息里只存 imageIds，不存图——768² 的 PNG base64 约 1MB，进消息会把存储撑爆。
+  // 重开 App 后句柄表是空的：渲染时按"讨论目标书"从本地存档取回（hydrateImages），
+  // 存档里也没有的才渲染成「已过期」（见 _imgGone）；清空讨论 / 删书会把这本书的存档一起删。
+  _genImages: new Map<string, any>(), // id -> { full, thumb, seed, size, seconds, prompt, book }
   _imgSeq: 0,
+  _imgGone: new Set<string>(), // 确认取不到的 id（存档里没有 / 别的书的）→ 渲染成「已过期」，不再反复查
+  _hydrating: false, // 水合进行中（防 renderMessages → 水合 → renderMessages 递归）
   _drawCancelled: false, // 用户点了「暂停」：中断出图轮询
   _drawAbort: null as any, // 当前出图请求的 AbortController（停止时 abort）
   _drawToolsOn: false, // 本轮是否给 draw_image/set_avatar（= 主机已启用且在线的探测结果）
@@ -1629,17 +1633,52 @@ const CardWriterChat: CardWriterChatShape = {
   },
 
 
-  // 生成的图片缩略图（消息里只存 imageIds；图片数据只在本会话内存里，重载后显示占位）。
+  // 生成的图片缩略图（消息里只存 imageIds；图片数据在内存句柄表 + 本地存档里）。
   _imagesHtml(m: any) {
-    return genImagesHtml(this._genImages, m, 'CardWriterChat.viewImage');
+    return genImagesHtml(this._genImages, m, 'CardWriterChat.viewImage', { gone: this._imgGone });
+  },
+
+  // 图片水合：重开 App 后消息里的句柄是空的 → 按"讨论目标书"从本地存档取回内存，读到就重渲染一次。
+  // 只查一遍：取不到的进 _imgGone（渲染成「已过期」）。顺带把图号续上（见 maxSeq）。
+  async _hydrateImages() {
+    if (this._hydrating) return;
+    const ids: string[] = [];
+    for (let i = 0; i < (this.messages || []).length; i++) {
+      const arr = (this.messages[i] && this.messages[i].imageIds) || [];
+      for (let j = 0; j < arr.length; j++) {
+        const id = String(arr[j] || '');
+        if (id && !this._genImages.has(id) && !this._imgGone.has(id)) ids.push(id);
+      }
+    }
+    if (!ids.length) return;
+    this._hydrating = true;
+    try {
+      const bookId = String(this._getTargetId() || '') || undefined;
+      const r = await hydrateImages(this._genImages, bookId, ids);
+      for (let i = 0; i < r.gone.length; i++) this._imgGone.add(r.gone[i]);
+      // 图号接着存档里的最大值排：重开 App 后 _imgSeq 归零，直接递增会盖掉旧记录（旧气泡会显示成新图）
+      try {
+        const mx = await ImageCache.maxSeq(String(bookId || ''));
+        if (mx > this._imgSeq) this._imgSeq = mx;
+      } catch (e) { /* 忽略 */ }
+      if (r.loaded.length || r.gone.length) this.renderMessages();
+    } finally { this._hydrating = false; }
   },
 
   // 点缩略图看大图：给全屏查看器换**原图**（气泡里是 420px 缩略图，直接用它看 1024 档和 512 档没差别）。
   // 带上图号与来源面板：查看器里的「基于这张改」据此把「把图3改成：」填进写卡输入框。
   viewImage(id: any) {
-    const g = this._genImages.get(String(id || ''));
+    const key = String(id || '');
+    const g = this._genImages.get(key);
     const src = (g && (g.full || g.thumb)) || '';
-    if (src) UIManager.viewAvatar(src, { id: String(id || ''), label: imageLabel(id), ctx: 'cardwriter' });
+    if (src) { UIManager.viewAvatar(src, { id: key, label: imageLabel(id), ctx: 'cardwriter' }); return; }
+    // 内存里没有（重开过 App / 被上限挤掉）→ 先从本地存档取回再打开
+    void hydrateImages(this._genImages, String(this._getTargetId() || '') || undefined, [key]).then((r) => {
+      const gg = this._genImages.get(key);
+      const s2 = (gg && (gg.full || gg.thumb)) || '';
+      if (s2) UIManager.viewAvatar(s2, { id: key, label: imageLabel(id), ctx: 'cardwriter' });
+      else App.toast('这张图在本机存档里也没有了（清空讨论/删书会一起删）——重新生成一张吧');
+    }).catch(() => { /* 忽略 */ });
   },
 
   renderMessages(isStreaming: any) {
@@ -1773,6 +1812,8 @@ const CardWriterChat: CardWriterChatShape = {
         }
       }
     }
+    // 图片水合：重开 App 后消息里的图片句柄是空的 → 异步从本地存档取回，读到了会自己再渲染一次
+    void this._hydrateImages();
   },
 
   // ===== 思维链流式滚动模式（跟随 ⇄ 锚定）=====
@@ -1804,6 +1845,16 @@ const CardWriterChat: CardWriterChatShape = {
     const bookName = ctx && ctx.bookName ? ctx.bookName : '当前书';
     UIManager.showConfirm('确定清空《' + bookName + '》的写卡讨论记录？此操作不可恢复。', () => {
       this.messages = [];
+      // 这次讨论的图片存档一起删（用户明确要的："清空对话后这些图就可以删了"）；
+      // 只删这本书的：别的书的图（含内存里的句柄）不动。
+      const _bid = String(this._getTargetId() || '');
+      void ImageCache.delByBook(_bid);
+      for (const k of Array.from(this._genImages.keys())) {
+        const g: any = this._genImages.get(k);
+        if (String((g && g.book) || '') === _bid) this._genImages.delete(k);
+      }
+      this._imgGone.clear();
+      this._imgSeq = 0;   // 存档已删，图号从头排不会盖掉谁
       if (this._multiMode) { this._multiMode = false; this._multiSel = []; this._syncMultiChrome(); }
       this.clearSelection();
       this._save();

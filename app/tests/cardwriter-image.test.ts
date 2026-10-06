@@ -4,6 +4,7 @@
 // 注：cardwriter.ts 模块顶层即 init()（读全局桩），所以必须先建桩再动态 import。
 import { describe, it, expect, beforeEach, beforeAll, vi } from 'vitest';
 import { WorldBookManager as WBM } from '../src/domain/worldbook';
+import { ImageCache } from '../src/lib/imagecache';
 
 const anyG = globalThis as unknown as Record<string, unknown>;
 
@@ -78,7 +79,8 @@ beforeEach(() => {
   WB_BOOKS = [{ id: 'wb1', entries: [{ id: 'e1', type: '角色', name: '林晚', content: '…' }] }];
   C.messages = [];
   C._draft = { characters: [], entries: [], deleted: [] };
-  C._genImages.clear(); C._imgSeq = 0;
+  C._genImages.clear(); C._imgSeq = 0; C._imgGone.clear();
+  ImageCache.__resetForTest();   // 本地存档（内存后端）逐例清干净
   C._drawToolsOn = false; C._drawCancelled = false; C._drawAbort = null;
   C._hostStatus = { at: 0, ok: false, model: '', hint: '' };
   C._writeOk = false; C._toolsOk = false;
@@ -299,7 +301,8 @@ describe('draw_image', () => {
     const r = JSON.parse(out[0]);
     expect(r.ok).toBe(false);
     expect(r.message).toContain('图9');
-    expect(r.message).toContain('只在本会话内存');
+    expect(r.message).toContain('本机存档');      // 新文案：说清"本机存档里也没有了"（重开 App 图还在，被清掉/别的书才没有）
+    expect(r.message).toContain('重新生成');
     expect(ih.drawCalls.length).toBe(0);
   });
 
@@ -426,5 +429,50 @@ describe('看图：点缩略图给的是原图（1024 档不该看起来和 512 
     ih.viewed = [];
     C.viewImage('不存在的id');
     expect(ih.viewed).toEqual([]);                                    // 句柄没了不炸也不白屏
+  });
+});
+
+describe('图片本地存档：重开后水合 + 清空讨论删库', () => {
+  it('_hydrateImages：把存档里的图取回句柄表，并把图号续排（新出的图不会盖掉旧记录）', async () => {
+    ImageCache.__resetForTest();
+    C._imgGone.clear();
+    await ImageCache.put({ book: 'wb1', id: 'img4', thumb: 'T4', full: 'F4', at: 1, seed: 3, size: '512x512', seconds: 4, prompt: 'p' });
+    C.messages = [{ role: 'assistant', content: '看图', imageIds: ['img4'] }];
+    C._imgSeq = 0;
+    await C._hydrateImages();
+    expect(C._genImages.has('img4')).toBe(true);
+    expect(C._genImages.get('img4').full).toBe('F4');       // 取回的是原图
+    expect(C._genImages.get('img4').book).toBe('wb1');      // 归属带着走（跨书隔离照旧）
+    expect(C._imgSeq).toBe(4);                              // 下一张是 img5
+    expect(C._imgGone.has('img4')).toBe(false);
+
+    // 存档里也没有的（老会话 / 别的书的）→ gone，渲染成「已过期」，不再反复查
+    C._genImages.clear(); C._imgGone.clear();
+    C.messages = [{ role: 'assistant', content: 'x', imageIds: ['img9'] }];
+    await C._hydrateImages();
+    expect(C._imgGone.has('img9')).toBe(true);
+  });
+
+  it('清空讨论：删掉这本书的存档与句柄（别的书不动），图号归零', async () => {
+    ImageCache.__resetForTest();
+    C._imgGone.clear();
+    await ImageCache.put({ book: 'wb1', id: 'img1', thumb: 'T', full: 'F', at: 1 });
+    await ImageCache.put({ book: 'wb2', id: 'img1', thumb: 'T2', full: 'F2', at: 2 });
+    C._genImages.set('img1', { full: 'F', thumb: 'T', book: 'wb1' });
+    C._genImages.set('img9', { full: 'F2', thumb: 'T2', book: 'wb2' });
+    C._imgSeq = 9;
+    const ui: any = anyG.UIManager;
+    const prevConfirm = ui.showConfirm;
+    ui.showConfirm = (_msg: string, cb: any) => cb();       // 测试里直接点「确定」
+    try {
+      C.messages = [{ role: 'assistant', content: 'x', imageIds: ['img1'] }];
+      C.clearHistory();
+      await new Promise((r) => setTimeout(r, 0));
+    } finally { ui.showConfirm = prevConfirm; }
+    expect(await ImageCache.get('wb1', 'img1')).toBeNull();          // 这本书的存档删了
+    expect(await ImageCache.get('wb2', 'img1')).toBeTruthy();        // 别的书不动
+    expect(C._genImages.has('img1')).toBe(false);
+    expect(C._genImages.has('img9')).toBe(true);
+    expect(C._imgSeq).toBe(0);
   });
 });

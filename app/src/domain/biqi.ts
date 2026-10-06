@@ -11,7 +11,8 @@ import { PluginManager } from './plugins';
 import { SettingSyncManager } from './settingsync';
 import { WorldBookManager } from './worldbook';
 import { renderMdStrong } from '../lib/mdtext';
-import { probeHost, drawImageToStore, genImagesHtml, imageLabel, type HostStatusCache } from './imagedraw';
+import { probeHost, drawImageToStore, genImagesHtml, imageLabel, hydrateImages, type HostStatusCache } from './imagedraw';
+import { ImageCache } from '../lib/imagecache';
 
 export interface BiqiMessage { role: 'user' | 'assistant'; content: string; _steps?: string[]; imageIds?: string[] }
 
@@ -98,12 +99,15 @@ export const BiqiAgent: {
   _toolDrawImage(a: any): Promise<string>;
   _genImages: Map<string, any>;
   _imgSeq: number;
+  _imgGone: Set<string>;
+  _hydrating: boolean;
   _drawToolsOn: boolean;
   _hostStatus: HostStatusCache;
   _applyOp(op: 'add' | 'mod' | 'del', target: string, content: string, reason: string, type?: string): { ok: boolean; text: string };
   readWorldbook(): string;
   readStory(): string;
   openWorldbookPage(): void;
+  _hydrateImages(): Promise<void>;
   viewImage(id: any): void;
 } = {
   messages: [],
@@ -113,10 +117,13 @@ export const BiqiAgent: {
   _open: false,
   _mode: 'novel' as 'novel' | 'chat',   // 小说模式 / 对话模式各一份会话与临时世界书
   _loadedKey: '',   // 当前内存里的对话属于哪本书的存档键（换书时据此切会话）
-  // 画图主机（本地 ComfyUI）：本会话生成的图片句柄。消息里只存 imageIds，不存图
-  // （768² 的 PNG base64 约 1MB，进消息会把存储撑爆）；重载后句柄失效 → 渲染成「已过期」占位。
-  _genImages: new Map<string, any>(), // id -> { full, thumb, seed, size, seconds, prompt }
+  // 画图主机（本地 ComfyUI）：本会话生成的图片句柄 + 本地存档（lib/imagecache）。
+  // 消息里只存 imageIds，不存图（768² 的 PNG base64 约 1MB，进消息会把存储撑爆）；
+  // 重开 App 后句柄表是空的：渲染时按"激活书"从本地存档取回，取不到的才渲染成「已过期」（_imgGone）。
+  _genImages: new Map<string, any>(), // id -> { full, thumb, seed, size, seconds, prompt, book }
   _imgSeq: 0,
+  _imgGone: new Set<string>(), // 确认取不到的 id → 渲染成「已过期」，不再反复查
+  _hydrating: false, // 水合进行中（防 renderMessages → 水合 → renderMessages 递归）
   _drawToolsOn: false, // 本轮是否给 draw_image（= 主机已启用且在线的探测结果）
   _hostStatus: { at: 0, ok: false, model: '', hint: '' } as HostStatusCache, // 画图主机状态缓存（60 秒）
   _ratio: BIQI_DEFAULT_RATIO,
@@ -332,7 +339,15 @@ export const BiqiAgent: {
   clear(): void {
     this.messages = [];
     this._steps = [];
-    this._genImages.clear();   // 对话没了，句柄也一起放掉（原图只在本会话内存里）
+    // 这次对话的图片存档一起删（用户明确要的："清空对话后这些图就可以删了"）；只删这本书的，别的书不动。
+    const bid = String((typeof WorldBookManager !== 'undefined' && WorldBookManager.getActiveId && WorldBookManager.getActiveId()) || '');
+    void ImageCache.delByBook(bid);
+    for (const k of Array.from(this._genImages.keys())) {
+      const g: any = this._genImages.get(k);
+      if (String((g && g.book) || '') === bid) this._genImages.delete(k);
+    }
+    this._imgGone.clear();
+    this._imgSeq = 0;   // 存档已删，图号从头排不会盖掉谁
     try { SM().set(this._historyKey(), []); } catch (e) { /* ignore */ }
     this.renderMessages();
   },
@@ -349,7 +364,7 @@ export const BiqiAgent: {
       const cls = m.role === 'user' ? 'chat-msg user' : 'chat-msg assistant';
       const thinking = self._isSending && i === self.messages.length - 1 && m.role === 'assistant';
       const raw = String(m.content || '');
-      const imgHtml = genImagesHtml(self._genImages, m, 'BiqiAgent.viewImage'); // 生成的图片（有图就不算"空内容"，也不再压状态条）
+      const imgHtml = genImagesHtml(self._genImages, m, 'BiqiAgent.viewImage', { gone: self._imgGone }); // 生成的图片（有图就不算"空内容"，也不再压状态条）
       const stepsHtml = (m._steps && m._steps.length)
         ? '<div class="as-steps">' + m._steps.map(function (t) { return '<div>' + htmlEscape(t) + '</div>'; }).join('') + '</div>'
         : '';
@@ -359,6 +374,34 @@ export const BiqiAgent: {
       return '<div class="' + cls + '">' + body + stepsHtml + imgHtml + '</div>';
     }).join('');
     this._scrollMessagesToBottom();
+    // 图片水合：重开 App 后消息里的句柄是空的 → 异步从本地存档取回（按激活书），读到会自己再渲染一次
+    void this._hydrateImages();
+  },
+
+  // 水合：把消息里引用的、内存里没有的图从本地存档（IndexedDB）取回；取不到的进 _imgGone（渲染成「已过期」）。
+  // 顺带把图号续上（重开 App 后 _imgSeq 归零，直接递增会盖掉旧记录 → 旧气泡会显示成新图）。
+  async _hydrateImages() {
+    if (this._hydrating) return;
+    const ids: string[] = [];
+    for (let i = 0; i < (this.messages || []).length; i++) {
+      const arr = (this.messages[i] && this.messages[i].imageIds) || [];
+      for (let j = 0; j < arr.length; j++) {
+        const id = String(arr[j] || '');
+        if (id && !this._genImages.has(id) && !this._imgGone.has(id)) ids.push(id);
+      }
+    }
+    if (!ids.length) return;
+    this._hydrating = true;
+    try {
+      const bookId = (typeof WorldBookManager !== 'undefined' && WorldBookManager.getActiveId && WorldBookManager.getActiveId()) || undefined;
+      const r = await hydrateImages(this._genImages, bookId, ids);
+      for (let i = 0; i < r.gone.length; i++) this._imgGone.add(r.gone[i]);
+      try {
+        const mx = await ImageCache.maxSeq(String(bookId || ''));
+        if (mx > this._imgSeq) this._imgSeq = mx;
+      } catch (e) { /* 忽略 */ }
+      if (r.loaded.length || r.gone.length) this.renderMessages();
+    } finally { this._hydrating = false; }
   },
 
   send(): void {
@@ -823,9 +866,18 @@ export const BiqiAgent: {
   // 点缩略图看大图：给全屏查看器换原图（气泡里是 420px 缩略图）。带图号与来源面板：
   // 查看器里的「基于这张改」据此把「把图3改成：」填进比奇输入框。
   viewImage(id: any): void {
-    const g = this._genImages.get(String(id || ''));
+    const key = String(id || '');
+    const g = this._genImages.get(key);
     const src = (g && (g.full || g.thumb)) || '';
-    if (src) UIManager.viewAvatar(src, { id: String(id || ''), label: imageLabel(id), ctx: 'biqi' });
+    if (src) { UIManager.viewAvatar(src, { id: key, label: imageLabel(id), ctx: 'biqi' }); return; }
+    // 内存里没有（重开过 App / 被上限挤掉）→ 先从本地存档取回再打开
+    const bookId = (typeof WorldBookManager !== 'undefined' && WorldBookManager.getActiveId && WorldBookManager.getActiveId()) || undefined;
+    void hydrateImages(this._genImages, bookId, [key]).then(function (r) {
+      const gg = BiqiAgent._genImages.get(key);
+      const s2 = (gg && (gg.full || gg.thumb)) || '';
+      if (s2) UIManager.viewAvatar(s2, { id: key, label: imageLabel(id), ctx: 'biqi' });
+      else App.toast('这张图在本机存档里也没有了（清空对话/删书会一起删）——重新画一张吧');
+    }).catch(function () { /* 忽略 */ });
   },
 };
 

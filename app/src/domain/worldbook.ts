@@ -2,6 +2,7 @@
 // 迁移自 www/modules/worldbook.js；挂 globalThis 供未迁移模块使用。
 // 注入模型见 ADR-0001：条目单一 inject 开关，默认注入；「初始」在正文为空时单独注入一次。
 import { SM } from '../infra/gate';
+import { ImageCache } from '../lib/imagecache';
 
 // 世界书内容变了 → 通知写卡页的工作副本重新对齐（写卡与世界书维护的是**同一本书**，两边必须一致：
 // 世界书页改了条目/删了条目/改了类型/换过顺序、导入了酒馆卡……写卡这边立即跟随；反向由写卡的直写负责）。
@@ -58,6 +59,8 @@ export const WorldBookManager = {
   },
   deleteBook(id: string): void {
     let all = this.getAll(); all = all.filter(w => w.id !== id); this.saveAll(all);
+    // 这本书的"生成图本地存档"一起删（用户明确要的："清空对话后这些图就可以删了"；删书同理，别留孤儿数据）
+    try { void ImageCache.delByBook(String(id || '')); } catch (e) { /* 删存档失败不影响删书 */ }
     if (this.getActiveId() === id) {
       const next = all[0];
       if (next) {
