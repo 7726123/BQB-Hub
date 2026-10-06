@@ -1,0 +1,3 @@
+# 行尾固定：这个文件是给 Windows 用户双击运行的批处理，仓库里必须保持 CRLF
+# （否则在 cmd.exe 下可能出错；App 打包时读的是工作区文件，避免克隆后与线上产物不一致）
+web/skill/host/启动.cmd text eol=crlf
