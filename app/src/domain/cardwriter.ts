@@ -1129,6 +1129,8 @@ const CardWriterChat: CardWriterChatShape = {
     // 模型据此知道要说明"主机没开"，而不是假装画了（见 _callAPI 里的 _drawToolsOn）。
     if (this._drawToolsOn) {
       _base.push(this._imageToolDraw(), this._imageToolAvatar());
+      // 角色头像一览（只读，不需要看图能力）：让模型知道"谁有头像、能不能基于它改/看一眼"
+      _base.push(this._avatarListTool());
       // 看图工具：只在"没确认看不了图"时给（模型看不了图就不让它看——用户 2026-10-06 要求）
       if (visionState() !== 'no') _base.push(this._imageToolLook());
     }
@@ -1151,6 +1153,8 @@ const CardWriterChat: CardWriterChatShape = {
             + '- **要改角色主体 → 仍然画新图**：像"这个角色不够成熟""重新设计她""太稚气了"这类改人设/年龄/气质的请求，**不要**带 base_image（带了会把旧的核心特征一起带过来），直接按新描述画新图。\n'
             + '- 改图幅度按"改什么"选 strength：换姿势动作、换整套衣服、换背景一律 strong（只保脸）；换表情/衣色/加减小物件用 medium；只有修手指/眼睛这类小毛病才用 slight。prompt 只写"要改成什么"，不用把原图内容整段重写。\n'
           : '- 本机画图主机是旧版、暂时不支持改图；用户真要改就按新的描述重新画一张（不要停在"改不了"上）。\n')
+        + '- **要动某个角色的头像时**（画一张新的 / 基于现在的改 / 或用户问"TA 有头像吗"）：先调 list_avatars 看谁有头像；'
+        + '想先看一眼 TA 现在的头像（配色、长相、风格才接得上）就用 look_at_image，image_id 填**角色名**。\n'
         + '- prompt 用英文，按工具说明里的「画风与提示词要求」写；头像一律 1:1（尺寸由档位定，别传尺寸）；用户要"几个候选"时连续调用 2~3 次 quality:"draft"。\n'
         + '- 档位：default=标准（768）；"快一点/先看看"用 quality:"fast"（512）；"更精细/更大"用 quality:"high"（1024）；挑构图用 quality:"draft"。每档的实际步数由画图主机的工作流决定，别向用户报步数。\n'
         + '- 出图后把图给用户看，再问要不要设为某角色的头像；**必须等用户明确同意**（"用这张 / 设为头像 / 就它了"）才调用 set_avatar，并把用户的原话填进 user_said。\n'
@@ -1200,25 +1204,101 @@ const CardWriterChat: CardWriterChatShape = {
   },
   // 看图工具：模型自己看不到图片，靠**一次单独的看图子调用**回答"这张画得怎么样"这类问题。
   // 传的图是 420px 缩略图（便宜、够判断明显问题）；看不了图的模型（visionCaps=no）不给这个工具。
+  // image_id 也支持**角色名**（用 TA 当前的头像）——这是"查看某个角色现在的头像"的正门。
   _imageToolLook() {
     return {
       type: 'function',
       function: {
         name: 'look_at_image',
-        description: '看一眼已经生成的那张图（单独的看图调用，约 3~6 秒）。可以问"手有没有画坏""背景是不是夜晚""这张和图4比哪张更像林晚"。'
-          + '**什么时候用**：你要判断画得对不对、有没有崩坏，或作者问起某张图的细节，而你自己看不到图片。'
-          + '拿到的是文字回答——请据此向作者说明，但不要把它说成"我亲眼看到的"。',
+        description: '看一眼某张图（单独的看图调用，约 3~6 秒）。可以问"手有没有画坏""背景是不是夜晚""这张和图4比哪张更像林晚"。'
+          + '**两种常用场景**：① 判断刚画的那张对不对、有没有崩坏（用「图3」这类编号）；'
+          + '② **查看某个角色现在的头像长什么样**（画新头像 / 改头像前先看一眼，风格和长相才对得上）——image_id 直接填角色名。'
+          + '拿不准谁有头像就先调 list_avatars。拿到的是文字回答——据此向作者说明，但不要说成"我亲眼看到的"。',
         parameters: {
           type: 'object',
           properties: {
-            image_id: { type: 'string', description: '要看的那张图：界面编号「图3」或 "img3"；也可以填 "last" 或角色名（用 TA 的头像）' },
-            question: { type: 'string', description: '你想让它看什么（一句话，越具体越好，如"她手里的书有没有糊""这张和图4比哪个构图更稳"）' },
-            image_id2: { type: 'string', description: '可选：对比用的第二张（填编号）' }
+            image_id: { type: 'string', description: '要看的那张图：**角色名**（用 TA 当前的头像，最常用）/ 界面编号「图3」或 "img3" / "last"（最近生成的那张）' },
+            question: { type: 'string', description: '你想让它看什么（一句话，越具体越好，如"她现在的发色和瞳色是什么""这张的手有没有问题"）' },
+            image_id2: { type: 'string', description: '可选：对比用的第二张（填编号或角色名）' }
           },
           required: ['image_id', 'question']
         }
       }
     };
+  },
+  // 角色头像一览（只读，纯元信息、不发图片 → 不需要看图能力也能用）：
+  // 模型据此知道谁已经有头像、值不值得基于它改/先看一眼，也能如实回答"TA 有头像吗"。
+  _avatarListTool() {
+    return {
+      type: 'function',
+      function: {
+        name: 'list_avatars',
+        description: '**只读工具**：列出当前书所有「角色」条目以及**谁已经有头像**（含图片来源与原书/临时之分）。'
+          + '**什么时候用**：要给角色画头像、改头像，或用户问"TA 有头像吗/能不能照着现在的头像改"之前先调它——'
+          + '这样你才知道该基于现有头像改、还是重新画一张（也能据此如实告诉用户"已经有头像了，要基于它改吗"）。不影响任何写入。',
+        parameters: { type: 'object', properties: {}, required: [] }
+      }
+    };
+  },
+  _toolListAvatars() {
+    const book: any = this._getTargetBook ? this._getTargetBook() : null;
+    const lines: string[] = [];
+    const seen: Record<string, boolean> = {};
+    const kbOf = (u: any) => {
+      const s = String(u || '');
+      const i = s.indexOf(',');
+      const b64 = i >= 0 ? s.slice(i + 1) : s;
+      return Math.max(1, Math.round(b64.length * 3 / 4 / 1024));
+    };
+    const kindOf = (u: any) => (/^data:/i.test(String(u || '')) ? '内置图片' : '外链图片');
+    try {
+      const entries: any[] = (book && book.entries) || [];
+      entries.forEach(function (e: any) {
+        if (String((e && e.type) || '') !== '角色') return;
+        const nm = String((e && e.name) || '').trim();
+        if (!nm || seen[nm]) return;
+        seen[nm] = true;
+        lines.push(e.avatar
+          ? ('- ' + nm + '：**有头像**（' + kindOf(e.avatar) + '，约 ' + kbOf(e.avatar) + 'KB，原书条目）')
+          : ('- ' + nm + '：没有头像'));
+      });
+    } catch (e) { /* ignore */ }
+    // 临时世界书（比奇新增/改过的角色）：overlay 的键按**当前激活书**算 → 只有目标书是激活书时才看得到
+    try {
+      const activeId = String((typeof (WorldBookManager as any).getActiveId === 'function' ? (WorldBookManager as any).getActiveId() : '') || '');
+      const wantId = String(this._getTargetId() || '');
+      if (!wantId || !activeId || wantId === activeId) {
+        const SS: any = SettingSyncManager;
+        if (SS && typeof SS.getOverlay === 'function' && typeof SS.withMode === 'function') {
+          const modes: Array<'novel' | 'chat'> = ['novel', 'chat'];
+          modes.forEach(function (mode) {
+            const added: any[] = SS.withMode(mode, () => {
+              const o = SS.getOverlay() || {};
+              return Array.isArray(o.added) ? o.added : [];
+            });
+            added.forEach(function (e: any) {
+              if (String((e && e.type) || '') !== '角色') return;
+              const nm = String((e && e.name) || '').trim();
+              if (!nm || seen[nm]) return;
+              seen[nm] = true;
+              const tag = '临时世界书' + (mode === 'chat' ? '·对话模式' : '·小说模式');
+              lines.push(e.avatar
+                ? ('- ' + nm + '：**有头像**（' + kindOf(e.avatar) + '，约 ' + kbOf(e.avatar) + 'KB，' + tag + '）')
+                : ('- ' + nm + '：没有头像（' + tag + '）'));
+            });
+          });
+        }
+      }
+    } catch (e) { /* ignore */ }
+    const bookName = String((book && (book.name || book.title)) || '');
+    if (!lines.length) {
+      return '（这本书里没有「角色」类型条目，先建角色卡再谈头像）' + (bookName ? ('　世界书：《' + bookName + '》') : '');
+    }
+    // 注意：不能用 indexOf('有头像') 计数——「没有头像」也含这三个字（自己踩过）
+    const withAv = lines.filter(function (l) { return l.indexOf('：**有头像**') >= 0; }).length;
+    return '【当前书的角色头像一览】' + (bookName ? ('《' + bookName + '》') : '') + '\n' + lines.join('\n')
+      + '\n共 ' + lines.length + ' 个角色，' + withAv + ' 个已有头像。'
+      + '\n（想看某个头像长什么样：look_at_image 的 image_id 填**角色名**；想基于它改一张：draw_image 的 base_image 填角色名；要设头像：set_avatar，需用户明确同意）';
   },
   async _toolLookImage(a: any) {
     const r = await lookAtImageTool({
@@ -1472,6 +1552,9 @@ const CardWriterChat: CardWriterChatShape = {
     }
     if (t.name === 'lookup_book') {
       return this._lookupBook(a);
+    }
+    if (t.name === 'list_avatars') {
+      return this._toolListAvatars();
     }
     if (t.name === 'set_entry_type') {
       return this._executeSetEntryType(a);

@@ -478,6 +478,49 @@ describe('看图（视觉子调用）：工具门控 + 出图后自动核对', (
     } finally { delete anyG.APIHandler; __resetVisionForTest(); }
   });
 
+  it('list_avatars：列出角色与"谁有头像"（不需要看图能力也能用）；并给出"看/改"的下一步', async () => {
+    C._drawToolsOn = true;
+    C._hostStatus = { at: Date.now(), ok: true, model: 'm', hint: '', caps: ['img2img'] };
+    WB_BOOKS = [{ id: 'wb1', name: '测试书', entries: [
+      { id: 'e1', type: '角色', name: '林晚', avatar: 'data:image/jpeg;base64,' + 'A'.repeat(400) },
+      { id: 'e2', type: '角色', name: '苏黎' },
+      { id: 'e3', type: '世界观', name: '世界背景', avatar: 'data:image/jpeg;base64,XX' }   // 非角色不列
+    ] }];
+    markVision('no');                                   // 看不了图的模型也该有这个只读工具
+    try {
+      expect(C._tools().map((t: any) => t.function.name)).toContain('list_avatars');
+      const out = await C._handleTools([{ id: 'c1', name: 'list_avatars', arguments: {} }], '');
+      const r = JSON.parse(out[0]);
+      expect(r.ok).toBe(true);
+      expect(r.message).toContain('《测试书》');
+      expect(r.message).toContain('林晚：**有头像**');
+      expect(r.message).toContain('苏黎：没有头像');
+      expect(r.message).not.toContain('世界背景');
+      expect(r.message).toContain('共 2 个角色，1 个已有头像');
+      expect(r.message).toContain('image_id 填**角色名**');
+    } finally { __resetVisionForTest(); }
+  });
+
+  it('look_at_image 的 image_id 填**角色名** → 看的就是 TA 当前的头像（"查看角色头像"的正门）', async () => {
+    C._drawToolsOn = true;
+    C._hostStatus = { at: Date.now(), ok: true, model: 'm', hint: '', caps: ['img2img'] };
+    WB_BOOKS = [{ id: 'wb1', name: '测试书', entries: [
+      { id: 'e1', type: '角色', name: '林晚', avatar: 'data:image/jpeg;base64,AVATARBYTES' }
+    ] }];
+    const calls: any[] = [];
+    stubVision('她是黑色长发、蓝色眼睛，穿深色外套。', calls);
+    try {
+      const out = await C._handleTools([{ id: 'c1', name: 'look_at_image', arguments: { image_id: '林晚', question: '她现在的发色瞳色是什么？' } }], '');
+      const r = JSON.parse(out[0]);
+      expect(r.ok).toBe(true);
+      expect(r.message).toContain('黑色长发');
+      expect(calls.length).toBe(1);
+      const url = String(calls[0].msgs[1].content[1].image_url.url);
+      expect(url).toContain('AVATARBYTES');            // 发出去的确实是这个角色的头像
+      expect(String(calls[0].msgs[1].content[0].text)).toContain('发色瞳色');
+    } finally { delete anyG.APIHandler; __resetVisionForTest(); }
+  });
+
   it('出图轮的 result 里带 image_id（供"自动核对"定位那张图）', async () => {
     const out = await C._handleTools([{ id: 'c1', name: 'draw_image', arguments: { prompt: 'x' } }], '');
     expect(JSON.parse(out[0]).image_id).toBe('img1');
