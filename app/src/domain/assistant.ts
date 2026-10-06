@@ -605,18 +605,22 @@ export const UsageAssistant: {
 
   // 工具定义（只读社区世界书检索 + 导入；不写任何远程数据）
   _tools(): unknown[] {
-    if (isClean()) return [];   // 干净版：没有社区可检索，一个工具都不给
-    return [
-      {
-        // 「画图主机」AI 配置技能包（2026-10-06 用户要求：放助手里，由助手直接发一份 .md 给用户）。
-        // 内容由 App 内置素材拼装（见 setup-skill.ts），模型只负责"在合适的时候把它发出去"，不看内容。
-        type: 'function',
-        function: {
-          name: 'send_setup_skill',
-          description: '把《BQB Hub 画图主机配置技能》这份 .md 发给用户：用户把它交给电脑上的 AI 编程助手（Claude Code / WorkBuddy / Cursor 等），那个助手就会照着在电脑上装好 ComfyUI、放好模型、起好画图主机，最后给出手机要填的地址与配对 token。**用户问「怎么配置画图主机 / 怎么让手机能出图 / 电脑怎么装 ComfyUI / 有没有能自动配的教程 / 给我那份 skill」时调用**。调用后不要复述内容（很长），只需一两句说明这文件是给谁用的、怎么用（保存到手机或复制后发到电脑）。',
-          parameters: { type: 'object', properties: {}, required: [] },
-        },
+    // 「画图主机配置技能」是**纯本地**能力（素材内置、不连任何服务器）→ 干净版（离线版）也要给，
+    // 手册 §十八 第 14 条两版共用、都写着"跟我说给我一份配置技能"，所以两版的工具表都得有它；
+    // 差别只在联机那几个工具（干净版没有社区，一个都不给）。
+    const skill = {
+      // 2026-10-06 用户要求：放助手里，由助手直接发一份 .md 给用户。
+      // 内容由 App 内置素材拼装（见 setup-skill.ts），模型只负责"在合适的时候把它发出去"，不看内容。
+      type: 'function',
+      function: {
+        name: 'send_setup_skill',
+        description: '把《BQB Hub 画图主机配置技能》这份 .md 发给用户：用户把它交给电脑上的 AI 编程助手（Claude Code / WorkBuddy / Cursor 等），那个助手就会照着在电脑上装好 ComfyUI、放好模型、起好画图主机，最后给出手机要填的地址与配对 token。**用户问「怎么配置画图主机 / 怎么让手机能出图 / 电脑怎么装 ComfyUI / 有没有能自动配的教程 / 给我那份 skill」时调用**。调用后不要复述内容（很长），只需一两句说明这文件是给谁用的、怎么用（保存到手机或复制后发到电脑）。',
+        parameters: { type: 'object', properties: {}, required: [] },
       },
+    };
+    if (isClean()) return [skill];   // 干净版：只有这个本地能力，社区工具一个都不给
+    return [
+      skill,
       {
         type: 'function',
         function: {

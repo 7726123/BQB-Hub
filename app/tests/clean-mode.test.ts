@@ -97,13 +97,18 @@ describe('干净版：任何启动链路都不发请求', () => {
 });
 
 describe('干净版：助手手册与工具', () => {
-  it('system 里不再有找卡能力，工具表为空', () => {
+  it('system 里不再有找卡能力；工具表只剩本地的「画图主机配置技能」（社区工具一个不给）', () => {
     const sys = assistantSystem();
     expect(sys).toContain('BQB Hub 使用助手');
     expect(sys).toContain('【手册未覆盖】');
     expect(sys).not.toContain('找卡');
     expect(sys).not.toContain('search_cards');
-    expect(UsageAssistant._tools()).toEqual([]);
+    // 2026-10-07：技能包是纯本地能力（素材内置、不连服务器），干净版也必须有——
+    // 手册 §十八 第 14 条两版共用、都写着"跟我说给我一份配置技能"，没工具就会空口承诺。
+    const names = (UsageAssistant._tools() as any[]).map((t: any) => t.function && t.function.name);
+    expect(names).toEqual(['send_setup_skill']);
+    expect(names).not.toContain('search_cards');
+    expect(names).not.toContain('import_card');
   });
 
   it('手册换掉联机小节，其余部分与完整版逐字相同', () => {

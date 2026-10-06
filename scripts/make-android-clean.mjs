@@ -37,6 +37,18 @@ const MAIN = path.join(APP, 'src', 'main');
 function must(p) { if (!fs.existsSync(p)) { console.error('✗ 缺少文件：' + p); process.exit(1); } }
 function read(p) { return fs.readFileSync(p, 'utf8'); }
 function write(p, s) { fs.writeFileSync(p, s, 'utf8'); }
+function patchRe(file, re, to, { optional = false } = {}) {
+  const p = path.join(DST, file);
+  const src = read(p);
+  if (!re.test(src)) {
+    if (optional) return false;
+    console.error('✗ 正则补丁没匹配上（完整版工程改过？）：' + file + ' / 正则 ' + String(re));
+    process.exit(1);
+  }
+  write(p, src.replace(re, to));
+  return true;
+}
+
 function patch(file, from, to, { optional = false } = {}) {
   const p = path.join(DST, file);
   const src = read(p);
@@ -68,8 +80,9 @@ fs.cpSync(SRC, DST, {
 
 // ② 包名 / 版本号
 patch('app/build.gradle', 'applicationId "com.novelwriter.app"', 'applicationId "' + APP_ID + '"');
-patch('app/build.gradle', 'versionCode 160', 'versionCode ' + VERSION_CODE);
-patch('app/build.gradle', 'versionName "1.5.99"', 'versionName "' + VERSION_NAME + '"');
+// 版本号用正则改：完整版每发一版都会变（160 → 161 → …），写死字面量下次就匹配不上
+patchRe('app/build.gradle', /(versionCode\s+)\d+/, '$1' + VERSION_CODE);
+patchRe('app/build.gradle', /(versionName\s+)"[^"]*"/, '$1"' + VERSION_NAME + '"');
 // 干净版没有热更新/自更新插件，但保留 release 签名脚手架（BQB_RELEASE_* 从 ~/.gradle/gradle.properties 读）
 patch('app/build.gradle',
   '// release 签名配置（本轮不切换，仅供将来发布正式包）：',
