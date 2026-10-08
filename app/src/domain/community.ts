@@ -1,5 +1,6 @@
 import { SM } from '../infra/gate';
 import { WorldBookManager } from './worldbook';
+import { visibleEntriesFor } from './ui';   // 普通用户看不到真实模式专用条目（同界面口径）
 import { AdminMode } from './adminmode'; // 管理员令牌（世界书接口按需附带）
 import { defaultServerBase } from '../lib/server-url';
 import { buildWbMetaPrompt, parseWbMeta } from '../lib/wbmeta';
@@ -117,10 +118,11 @@ const CommunityChat: CommunityChatShape = {
       .then(function (text) {
         var data = JSON.parse(text);
         var name = String(data.title || data.name || '导入世界书').trim();
+        var entries = visibleEntriesFor(Array.isArray(data.entries) ? data.entries : []);
         var wb = {
           id: 'wb_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6),
           name: name, title: name,
-          entries: Array.isArray(data.entries) ? data.entries : [],
+          entries: entries,
           description: String(data.description || '').slice(0, 500),
           cover: '', createdAt: Date.now(), importedAt: Date.now()
         };
@@ -1448,11 +1450,12 @@ var grow: any;
     var wb = this._wbBooks[idx];
     var title = String(wb.title || wb.name || '').trim();
     if (!title) { App.toast('世界书没有标题'); return; }
-    // 只序列化可分享的世界书内容（去掉本地小说正文 chapters/currentChapterId）
+    // 只序列化可分享的世界书内容（去掉本地小说正文 chapters/currentChapterId）；
+    // 条目按"用户看得见的"来（普通用户看不到真实模式专用条目）——不会把看不见的内容悄悄分享出去
     var share = {
       name: title,
       title: title,
-      entries: wb.entries || [],
+      entries: visibleEntriesFor(wb.entries || []),
       description: wb.description || ''
     };
     var content = JSON.stringify(share);
@@ -1577,6 +1580,8 @@ var grow: any;
   },
   _renderWbEntries(entries: any[]) {
     var self = this;
+    // 普通用户看不到真实模式专用条目（与软件内世界书页同口径）：预览/导入都按可见集合走
+    entries = visibleEntriesFor(Array.isArray(entries) ? entries : []);
     var head = '<div class="wbd-list-head">世界书内容 · 共 ' + entries.length + ' 条<span class="wbd-hint" style="margin-left:auto;">点条目展开/收起</span></div>';
     if (!entries.length) return head + '<div class="wbd-hint">这份世界书没有条目。</div>';
     var html = head;
@@ -1610,7 +1615,7 @@ var grow: any;
           var wb = {
             id: 'wb_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6),
             name: name, title: name,
-            entries: Array.isArray(data.entries) ? data.entries : [],
+            entries: visibleEntriesFor(Array.isArray(data.entries) ? data.entries : []),
             description: String(data.description || '').slice(0, 500),
             cover: (self.currentWbDetail && self.currentWbDetail.cover) || '',
             createdAt: Date.now(),

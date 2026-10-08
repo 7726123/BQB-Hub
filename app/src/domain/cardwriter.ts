@@ -1,6 +1,7 @@
 import { SM } from '../infra/gate';
+import { AdminMode } from './adminmode';
 import { adaptTavernLorebook, type TavernPolicy } from './tavern-adapter';
-import { WorldBookManager } from './worldbook';
+import { WorldBookManager, REAL_ONLY_ENTRY_TYPES } from './worldbook';
 import { CharacterManager } from './character';
 import { SettingSyncManager } from './settingsync';
 import { selectedRawText, rawOffsetOf, nodeAtRawOffset, roundIndexOf, collectRoundDeletes } from '../lib/msgslice';
@@ -51,6 +52,38 @@ const _DESIGN_TOOL_ROUNDS = 1;
 // set_avatar 也算：它确实改了条目（头像），算进 _writeOk 才不会被"假已写入"兜底误判成空口声称。
 // draw_image 不算：出图不写世界书。
 const _WRITE_TOOLS = ['apply_character', 'delete_character', 'update_worldview', 'upsert_entry', 'delete_entry', 'set_entry_type', 'set_avatar'];
+
+/**
+ * 写卡预设 base 的末段：真实模式怎么给角色分秘密（2026-09-28 加的）。
+ *
+ * 2026-10-08 用户要求真实模式收进管理员模式之后，这一段**只发给管理员**：
+ * `_composePresetText` 按当前模式现删（见 stripRealModeGuidance），
+ * 所以存量设备上已经存过、或用户改过标题的副本也照样删得掉——不用为它升一次预设版本，
+ * 也不会动用户存在本地的分块文案。
+ */
+const REAL_MODE_GUIDANCE = '【如果这本书以后还要用「真实模式」】（多角色各自独立记忆的演出；世界书里角色条目 = 所有人看得到的公开人设）\n'
+  + '- 角色条目只写**别人能观察到、或公开已知**的部分（外貌、身份、表层性格、公开的关系）；\n'
+  + '- **秘密、隐情、"谁知道什么/不知道什么"不要写进角色条目**，写进该角色的「初始记忆」条目'
+  + '（世界书里一个角色一条、1 对 1 绑定角色，软件会只发给 TA 本人）；\n'
+  + '- **只有几个人知道、别人不知道的隐情**（比如"两人初中就认识，一直瞒着班上的人"）写成「部分人知道」条目：'
+  + '名称=一句话标题，内容=这件事本身，知情者=列出所有知道这件事的角色名（只有名单里的角色拿得到，场记和名单外的人一点都看不到）；\n'
+  + '- **客观上公开、人人都知道的事**（通知、公告、传闻）不必建条目——真实模式的场记会自己维护一份「大家都知道的事」；\n'
+  + '- 不确定要不要分开写时问一句「这本书以后要用真实模式吗」，用就把秘密挪进「初始记忆」或「部分人知道」。\n';
+
+/** 认这一段用（只匹配开头那几个字：用户手改过后面的内容也删得掉） */
+const REAL_MODE_GUIDANCE_HEAD = '【如果这本书以后还要用「真实模式」】';
+
+/** 删掉 base 里的真实模式段（段落头到下一个「【…】」分块之前）。纯函数，单测直接打。 */
+export function stripRealModeGuidance(base: string): string {
+  const out: string[] = [];
+  let skipping = false;
+  for (const line of String(base || '').split('\n')) {
+    if (!skipping && line.indexOf(REAL_MODE_GUIDANCE_HEAD) >= 0) { skipping = true; continue; }
+    if (skipping && /^\s*【/.test(line)) skipping = false;   // 下一个分块开始了
+    if (!skipping) out.push(line);
+  }
+  return out.join('\n');
+}
 export interface CardWriterChatShape {
   [k: string]: any;
   messages?: any;
@@ -634,7 +667,11 @@ const CardWriterChat: CardWriterChatShape = {
       if (ctx.bookName) stableMsg += '\n【当前书】《' + ctx.bookName + '》\n';
       if (this._draft) {
         const chars = this._draft.characters || [];
-        const entries = this._draft.entries || [];
+        // 普通用户看不到真实模式专用的条目（与界面同一个口径）：写卡 agent 的上下文也不带它们，
+        // 免得它把这些用户看不见的条目念给用户听。草稿数组本身一字不动——写回世界书时原样保留。
+        const allEntries = this._draft.entries || [];
+        const entries = AdminMode.isOn() ? allEntries
+          : allEntries.filter(function (e: any) { return REAL_ONLY_ENTRY_TYPES.indexOf(String((e && e.type) || '')) < 0; });
         if (chars.length === 0 && entries.length === 0) {
           stableMsg += '这是一本全新的世界书，还没有任何内容——用户将从零开始创建。请引导用户先确定世界观基调，再逐个创建角色，并注意角色间的一致性（避免重名、设定冲突、关系矛盾）。\n';
         } else {
@@ -2568,7 +2605,14 @@ const CardWriterChat: CardWriterChatShape = {
           const ia = TYPE_ORDER.indexOf(a.type || '其他'), ib = TYPE_ORDER.indexOf(b.type || '其他');
           return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib);
         });
-        entriesEl.innerHTML = entries.map(function (e: any, idx: any) {
+        // 真实模式专用的条目（初始记忆 / 部分人知道）对普通用户不展示（2026-10-08 收进管理员模式）：
+        // 只影响这一处渲染——草稿数组照旧带着它们，写回世界书时原样保留（不会因为看不见就被删掉）。
+        // 渲染时把**原始下标**一起带出来（编辑/删除按钮按它定位），所以过滤不会串行。
+        const _admin = AdminMode.isOn();
+        entriesEl.innerHTML = entries.map(function (e: any, idx: any) { return { e: e, i: idx }; })
+          .filter(function (r: any) { return _admin || REAL_ONLY_ENTRY_TYPES.indexOf(String(r.e.type || '')) < 0; })
+          .map(function (r: any) {
+          const e = r.e, idx = r.i;
           return '<div class="cw-draft-char">' +
             '<input class="cw-draft-name" value="' + htmlEscape(e.name || '') + '" placeholder="条目名" oninput="CardWriterChat.editDraftEntryName(' + idx + ', this.value)" onchange="CardWriterChat.editDraftEntryName(' + idx + ', this.value)">' +
             '<textarea placeholder="内容…" oninput="CardWriterChat.editDraftEntryContent(' + idx + ', this.value)">' + htmlEscape(e.content || '') + '</textarea>' +
@@ -2798,14 +2842,7 @@ const CardWriterChat: CardWriterChatShape = {
         + '- 指代：角色一律用全名，禁止「他/她/那个人」；\n'
         + '- 完整性：角色卡主干无缺（性别/年龄/外貌/性格/背景/关系；关系=与卡内其他角色的关系，不是「与主角」），缺的补齐或明确标注；配过示例台词的，例句要按用户原话写入（见【对话示例】）；\n'
         + '- 成稿：本次提交的每一条都是完整最终版（不留占位、不留「待补」）。\n'
-        + '【如果这本书以后还要用「真实模式」】（多角色各自独立记忆的演出；世界书里角色条目 = 所有人看得到的公开人设）\n'
-        + '- 角色条目只写**别人能观察到、或公开已知**的部分（外貌、身份、表层性格、公开的关系）；\n'
-        + '- **秘密、隐情、"谁知道什么/不知道什么"不要写进角色条目**，写进该角色的「初始记忆」条目'
-        + '（世界书里一个角色一条、1 对 1 绑定角色，软件会只发给 TA 本人）；\n'
-        + '- **只有几个人知道、别人不知道的隐情**（比如"两人初中就认识，一直瞒着班上的人"）写成「部分人知道」条目：'
-        + '名称=一句话标题，内容=这件事本身，知情者=列出所有知道这件事的角色名（只有名单里的角色拿得到，场记和名单外的人一点都看不到）；\n'
-        + '- **客观上公开、人人都知道的事**（通知、公告、传闻）不必建条目——真实模式的场记会自己维护一份「大家都知道的事」；\n'
-        + '- 不确定要不要分开写时问一句「这本书以后要用真实模式吗」，用就把秘密挪进「初始记忆」或「部分人知道」。\n',
+        + REAL_MODE_GUIDANCE,
       method: '【写卡方法论】\n'
         + '1. 性格调色盘：性格由底色、主色调、点缀和衍生构成，不要贴单一标签；引导用户用「在什么情境下会做什么」的衍生行为来定义性格。\n'
         + '2. 三面性（可选）：同一角色在不同压力环境下可能有根本性的行为切换，用不同运作模式描述。\n'
@@ -2906,7 +2943,8 @@ const CardWriterChat: CardWriterChatShape = {
     if (!blocks) blocks = this._loadBlocks();
     const nsfw = SM().get<any>('cwNsfw', true);
     const handgun = SM().get<any>('cwHandgun', false);
-    let t = blocks.base || '';
+    // 真实模式那一段只发给管理员（普通用户看不到这个模式：不该被问"这本书以后要用真实模式吗"）
+    let t = AdminMode.isOn() ? String(blocks.base || '') : stripRealModeGuidance(blocks.base || '');
     if (blocks.method) t += '\n\n' + blocks.method;
     if (blocks.selfcheck) t += '\n\n' + blocks.selfcheck;
     if (nsfw && blocks.nsfw) t += '\n\n' + blocks.nsfw;

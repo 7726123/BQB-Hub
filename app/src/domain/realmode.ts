@@ -3,8 +3,11 @@
 //       ② 角色调用（本轮唯一说话人：只看自己可感的材料）
 // 单角色不变量：私有材料只出现在同一个角色的那一次请求里（回归守卫见 app/tests/realmode.test.ts）。
 // 界面元素由 web/index.html 的 #tab-real 提供（id 固定，见 app/tests/realmode-view.test.ts）。
+// 入口门控（2026-10-08）：真实模式只在管理员模式里开放——导航项 #navRealBtn 由 syncEntry 显隐，
+// 世界书「初始记忆 / 部分人知道」条目类型与预设「仅真实」同开关（UIManager.syncRealModeUI）。
 import { RealState, visibleSplit } from './realstate';
 import type { RealRecord, RealScene, RealShell } from './realstate';
+import { AdminMode } from './adminmode';
 import {
   buildPublicMessages, buildRoleMessages, buildMemoryMessages, buildEchoMessages, cleanEcho, cleanMemory,
   formatSlice, formatSubset, formatPublicRecent, parsePublicReply, parseRoleReply, extractBlocks,
@@ -307,6 +310,29 @@ export const RealMode = {
 
   // ---------- 视图 ----------
   init(): void { this._scrollOnce = true; this.render(); },
+
+  /**
+   * 真实模式的入口门控（2026-10-08 用户要求：这个模式还不成熟，先收进管理员模式）。
+   * 入口在 index.html 里（#navRealBtn，默认隐藏），这里只控制显隐；退出时如果正停在真实页，
+   * 退回写作页，别留一个打不开的空页。世界书里真实模式专用的条目类型与预设的「仅真实」
+   * 也跟着这个开关显隐（由 UIManager.syncRealModeUI 统一处理）。
+   */
+  syncEntry(): void {
+    const on = AdminMode.isOn();
+    const nav = el('navRealBtn');
+    if (nav) nav.style.display = on ? '' : 'none';
+    // 写作父项的悬停说明跟着改：普通用户不该从 tooltip 里看到这个模式
+    const writingNav = el('navWriting');
+    if (writingNav) writingNav.title = on ? '写作：小说模式 / 对话模式 / 真实模式' : '写作：小说模式 / 对话模式';
+    if (!on) {
+      const panel = el('tab-real');
+      if (panel && panel.classList && panel.classList.contains('active')) {
+        try { (globalThis as any).MobileUI.switchView('writing'); } catch (e) { panel.classList.remove('active'); }
+      }
+    }
+    try { (globalThis as any).UIManager?.syncRealModeUI?.(); } catch (e) { /* 界面刷新失败不影响入口显隐 */ }
+  },
+
   refreshSendLabel(): void {
     const ta = el('realInput');
     const btn = el('realSendBtn');

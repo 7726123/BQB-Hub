@@ -4,7 +4,7 @@ import { _wbKey } from '../lib/usage';
 import { SettingSyncManager } from './settingsync';
 import { RegexEngine } from '../lib/regex';
 import { PluginManager } from './plugins';
-import { WorldBookManager, selectInjectableEntries, WB_INJECT_MAX_CHARS } from './worldbook';
+import { WorldBookManager, selectInjectableEntries, WB_INJECT_MAX_CHARS, REAL_ONLY_ENTRY_TYPES } from './worldbook';
 import { normalizeStoryWindow, storyWindowTrigger, estimateTokens, wanChars, windowFromContext } from '../lib/contextbudget';
 import { BookManager } from './book';
 import { ProtagonistManager } from './protagonist';
@@ -54,6 +54,50 @@ export interface UIManagerShape {
 const TYPE_CHIPS: Record<string, string> = { '角色': 'chip-red', '世界观': 'chip-purple', '初始': 'chip-blue', '初始记忆': 'chip-green', '部分人知道': 'chip-teal', '其他': 'chip-gray', '变量': 'chip-amber' };
 function typeChip(t: any) { return 'chip ' + (TYPE_CHIPS[t] || 'chip-gray'); }
 
+/**
+ * 当前观众能看到的世界书条目：普通用户过滤掉真实模式专用的类型（名单在 worldbook.ts，单一出处），
+ * 管理员全看（2026-10-08 用户要求：真实模式收进管理员模式，普通用户不该有专用于真实模式的条目）。
+ * 只做界面裁剪——类型下拉不给建、列表 / 书架计数 / 写卡草稿里不出现；
+ * 数据照旧留在书里（导出、备份、上传、真实模式自己的读取都不受影响），管理员模式一开就原样回来，
+ * 所以这是可逆的"看不见"，不是删数据。纯函数，单测直接打。
+ */
+export function visibleEntriesFor(entries: any[]): any[] {
+  const arr = Array.isArray(entries) ? entries : [];
+  if (AdminMode.isOn()) return arr;
+  return arr.filter(function (e: any) { return REAL_ONLY_ENTRY_TYPES.indexOf(String((e && e.type) || '')) < 0; });
+}
+
+/** 条目编辑器「类型」下拉：真实模式专用的两项只在管理员模式里出现（其余项静态写在 modals.ts 里） */
+function syncWbEntryTypeOptions(): void {
+  try {
+    const sel: any = document.getElementById('wbEntryType');
+    if (!sel || !sel.options) return;
+    const on = AdminMode.isOn();
+    if (on) {
+      // 管理员看到完整 7 类：按下拉的出厂顺序重建一次（少一项就补回来，顺序不对也纠正）
+      const ALL = ['世界观', '角色', '初始', '初始记忆', '部分人知道', '其他', '变量'];
+      const cur = String(sel.value || '');
+      const have: string[] = [];
+      for (let i = 0; i < sel.options.length; i++) have.push(String(sel.options[i].value || sel.options[i].text || ''));
+      if (have.join('|') !== ALL.join('|')) {
+        sel.innerHTML = ALL.map(function (t) { return '<option>' + t + '</option>'; }).join('');
+        if (ALL.indexOf(cur) >= 0) sel.value = cur;
+      }
+      return;
+    }
+    for (const t of REAL_ONLY_ENTRY_TYPES) {
+      let opt: any = null;
+      for (let i = 0; i < sel.options.length; i++) {
+        if (String(sel.options[i].value || sel.options[i].text || '') === t) { opt = sel.options[i]; break; }
+      }
+      if (!opt) continue;
+      // 正选着这一项时先退回「世界观」，别留一个指向已删选项的值
+      if (String(sel.value || '') === t) sel.value = '世界观';
+      sel.removeChild(opt);
+    }
+  } catch (e) { /* 下拉是按需重建的：这里失败也不影响条目编辑（下拉里还留着出厂项） */ }
+}
+
 // 变量页时间显示：今天只给时分，其它日期带上月日
 function fmtVarTime(at: number): string {
   try {
@@ -87,6 +131,30 @@ export function viewerZoomAt(s0: number, s1: number, tx: number, ty: number, px:
   if (!(s0 > 0)) return { x: Number(tx) || 0, y: Number(ty) || 0 };
   const k = s1 / s0;
   return { x: px - (px - (Number(tx) || 0)) * k, y: py - (py - (Number(ty) || 0)) * k };
+}
+
+/** 模块编辑器「适用模式」下拉的「仅真实」：只在管理员模式里出现（普通用户看不到真实模式） */
+function syncModuleModeOptions(): void {
+  try {
+    const sel: any = document.getElementById('moduleEditMode');
+    if (!sel || !sel.options) return;
+    let opt: any = null;
+    for (let i = 0; i < sel.options.length; i++) {
+      if (String(sel.options[i].value || '') === 'real') { opt = sel.options[i]; break; }
+    }
+    if (AdminMode.isOn()) {
+      if (!opt && document.createElement) {
+        const o = document.createElement('option');
+        o.value = 'real'; o.text = '仅真实';
+        sel.appendChild(o);
+      }
+      return;
+    }
+    if (opt) {
+      if (String(sel.value || '') === 'real') sel.value = 'both';
+      sel.removeChild(opt);
+    }
+  } catch (e) { /* 下拉失败不影响模块编辑 */ }
 }
 
 const UIManager: UIManagerShape = {
@@ -442,6 +510,21 @@ const UIManager: UIManagerShape = {
   },
 
   // ===== Module Management =====
+  /**
+   * 真实模式相关界面的统一刷新（2026-10-08）：管理员模式开关一变就调一次，启动时也调一次。
+   * 各处渲染函数自己也会读 AdminMode 状态（进页面时本来就是对的），这里只负责"当场刷新"：
+   * ① 世界书条目类型下拉（初始记忆 / 部分人知道）② 世界书列表 / 书架计数 / 换书下拉
+   * ③ 预设模块列表（仅真实模块）④ 模块编辑器「适用模式」下的「仅真实」选项。
+   */
+  syncRealModeUI() {
+    syncWbEntryTypeOptions();
+    syncModuleModeOptions();
+    try { if (document.getElementById('wbEntryList')) this.renderWBEntries(); } catch (e) { /* 页面没开着 */ }
+    try { if (document.getElementById('wbShelfGrid')) this.renderWbShelf(); } catch (e) { /* 同上 */ }
+    try { if (document.getElementById('wbSwitchList')) this.renderWBSwitch(); } catch (e) { /* 同上 */ }
+    try { if (document.getElementById('moduleList')) this.renderModuleList(); } catch (e) { /* 同上 */ }
+  },
+
   toggleModuleManager() {
     const body = document.getElementById('moduleList');
     const arrow = document.querySelector('.module-mgr-arrow');
@@ -459,12 +542,6 @@ const UIManager: UIManagerShape = {
     const preset = PresetManager.getCurrentPreset();
     if (!preset) { container.innerHTML = ''; countEl.textContent = '0/0'; return; }
     const modules = preset.promptModules || [];
-    const enabledCount = modules.filter(function (m: any) { return m.enabled; }).length;
-    countEl.textContent = enabledCount + '/' + modules.length;
-    if (modules.length === 0) {
-      container.innerHTML = '<div style="font-size:12px;color:var(--text-muted);padding:8px 0;text-align:center;">暂无模块</div><button class="small primary" onclick="UIManager.showModuleEdit(null)" style="width:100%;margin-top:4px;">+ 添加模块</button>';
-      return;
-    }
     // Ensure every module has a name
     modules.forEach(function (m: any) {
       if (!m.name) {
@@ -476,7 +553,22 @@ const UIManager: UIManagerShape = {
         }
       }
     });
-    container.innerHTML = modules.map(function (m: any, i: any) {
+    // 真实模式专用的模块（mode=real，如内置「思维链·真实」）只在管理员模式里列出来；
+    // 但 data-drag-idx 必须仍是**全数组**下标（拖动排序按它定位），所以这里带着原始下标一起过滤。
+    const _admin = AdminMode.isOn();
+    const rows: Array<{ m: any; i: number }> = [];
+    modules.forEach(function (m: any, i: any) {
+      if (!_admin && m.mode === 'real') return;
+      rows.push({ m: m, i: i });
+    });
+    const enabledCount = rows.filter(function (r) { return r.m.enabled; }).length;
+    countEl.textContent = enabledCount + '/' + rows.length;
+    if (rows.length === 0) {
+      container.innerHTML = '<div style="font-size:12px;color:var(--text-muted);padding:8px 0;text-align:center;">暂无模块</div><button class="small primary" onclick="UIManager.showModuleEdit(null)" style="width:100%;margin-top:4px;">+ 添加模块</button>';
+      return;
+    }
+    container.innerHTML = rows.map(function (r) {
+      const m = r.m, i = r.i;
       // 位置标签（2026-09-26 晚：类型名就用真实去处——system / user，便于引导预设作者）：
       // system = 拼进最前面的系统提示词；user = 贴在最后一条用户消息末尾（思维链走 user 槽）。
       const _tail = m.role === 'user';
@@ -546,6 +638,7 @@ const UIManager: UIManagerShape = {
     const kindSel = document.getElementById('moduleEditKind') as HTMLSelectElement;
     const BASE_KINDS = '<option value="system">system</option><option value="user_think">user（思维链）</option>';
     kindSel.innerHTML = BASE_KINDS;
+    syncModuleModeOptions();   // 「仅真实」只在管理员模式里出现（普通用户看不到真实模式）
     (document.getElementById('moduleEditMode') as HTMLSelectElement).value = 'both';
     if (moduleId) {
       const preset = PresetManager.getCurrentPreset();
@@ -872,7 +965,7 @@ const UIManager: UIManagerShape = {
       const coverInner = wb.cover
         ? '<img src="' + htmlEscape(wb.cover) + '" alt="">'
         : htmlEscape(name.trim().charAt(0) || '书');
-      const cnt = (wb.entries ? wb.entries.length : 0);
+      const cnt = visibleEntriesFor(wb.entries || []).length;   // 书架计数也不含真实模式专用条目（普通用户）
       const no = 'No.' + String(idx + 1).padStart(2, '0');
       let mon = '—';
       if (wb.createdAt) { try { mon = (new Date(wb.createdAt).getMonth() + 1) + ' 月'; } catch (e) {} }
@@ -1007,7 +1100,7 @@ const UIManager: UIManagerShape = {
     if (list) {
       list.innerHTML = books.map(wb => {
         const n = wb.name || wb.title || '未命名';
-        const cnt = (wb.entries ? wb.entries.length : 0);
+        const cnt = visibleEntriesFor(wb.entries || []).length;   // 换书下拉的条数同口径
         return '<div class="wb-switch-item ' + (wb.id === activeId ? 'active' : '') + '" onclick="UIManager.switchFromTitle(\'' + wb.id + '\')">' +
           '<span class="wb-switch-name">' + htmlEscape(n) + '</span>' +
           '<span class="wb-switch-count">' + cnt + '条</span></div>';
@@ -1068,7 +1161,8 @@ const UIManager: UIManagerShape = {
         entries = SettingSyncManager.getEffectiveEntries();
       }
       const r = selectInjectableEntries(entries, WB_INJECT_MAX_CHARS);
-      const total = entries.filter(function (e: any) { return e && e.inject !== false && e.type !== '变量' && e.type !== '前端' && e.type !== '初始'; }).length;
+      // 分母也不含真实模式专用条目：它们本来就不会注入小说/对话（管理员也一样），算进去只会让人对不上账
+      const total = entries.filter(function (e: any) { return e && e.inject !== false && e.type !== '变量' && e.type !== '前端' && e.type !== '初始' && REAL_ONLY_ENTRY_TYPES.indexOf(String(e.type || '')) < 0; }).length;
       return '注入 ' + r.kept.length + '/' + total + ' 条 / ' + r.chars + ' 字（上限 ' + WB_INJECT_MAX_CHARS + (r.skipped > 0 ? '，超出 ' + r.skipped + ' 条未注入' : '') + '）· ';
     } catch (e) { return ''; }
   },
@@ -1121,18 +1215,20 @@ const UIManager: UIManagerShape = {
     const titleEl = document.getElementById('wbEntriesTitle');
     const descEl = document.getElementById('wbEntriesDesc');
     if (titleEl) titleEl.textContent = wb ? (wb.name || wb.title || '世界书') : '世界书';
-    if (!wb || !wb.entries || wb.entries.length === 0) {
+    // 普通用户看不到真实模式专用的条目（数据还在书里，见 visibleEntriesFor）
+    const visible = visibleEntriesFor(wb ? (wb.entries || []) : []);
+    if (!wb || visible.length === 0) {
       container!.innerHTML = '<div class="empty-box"><div class="empty-tt">暂无条目</div><div class="empty-sub">点击上方「添加条目」创建第一个世界书条目</div></div>';
       if (descEl) descEl.textContent = '0 条 · ' + this._wbInjectStat();
       this._wbPage = 1;
       return;
     }
-    if (descEl) descEl.textContent = wb.entries.length + ' 条 · ' + this._wbInjectStat() + '点右侧「查看」读全文，点整行展开操作';
+    if (descEl) descEl.textContent = visible.length + ' 条 · ' + this._wbInjectStat() + '点右侧「查看」读全文，点整行展开操作';
     const query = (document.getElementById('wbSearch')!.value || '').trim().toLowerCase();
     // Reset to page 1 on new search
     if (query !== this._lastWbQuery) { this._wbPage = 1; this._lastWbQuery = query; }
     // 所见即所得：列表顺序 = 数组顺序 = 注入顺序
-    const sorted = wb.entries.slice();
+    const sorted = visible.slice();
     const filtered = query ? sorted.filter(e => (e.name || '').toLowerCase().includes(query)) : sorted;
     document.getElementById('wbFilteredCount')!.textContent = query ? filtered.length + '/' + sorted.length + ' 条' : '';
 
@@ -1308,6 +1404,7 @@ const UIManager: UIManagerShape = {
   },
 
   showWBEntryModal(editEntryId: any) {
+    syncWbEntryTypeOptions();   // 类型下拉按管理员模式刷新一次（普通用户没有「初始记忆 / 部分人知道」两项）
     const wbEntryEditId = document.getElementById('wbEntryEditId');
     const wbEntryType = document.getElementById('wbEntryType');
     const wbEntryName = document.getElementById('wbEntryName');

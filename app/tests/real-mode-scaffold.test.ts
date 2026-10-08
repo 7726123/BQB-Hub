@@ -2,6 +2,9 @@
 // 模式枚举与门控、模块编辑器下拉/标签、世界书「初始记忆」类型与绑定校验。
 // 用源码扫描 + 纯函数直测（与 module-kind / preset 两个测试同一套写法），不驱动 DOM：
 // 生成链、注入行为、真页交互都不在本次范围内。
+//
+// 2026-10-08 追加：真实模式收进管理员模式（入口 / 世界书条目类型 / 预设选项 / 手册 / 写卡预设）
+// ——本节末尾的「只在管理员模式里开放」一组守卫就是这次的门闩。
 import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -9,12 +12,22 @@ import {
   moduleAppliesTo, moduleMode, pickModules, nativeModulesToModules,
   THINK_TAIL_FALLBACK, MINIMAL_PRESET_MODULES, MINIMAL_PRESET_LATE_MODULES_V5,
 } from '../src/domain/preset';
+import { manualForViewer, USAGE_MANUAL } from '../src/domain/assistant';
+import { visibleEntriesFor } from '../src/domain/ui';
+import { stripRealModeGuidance } from '../src/domain/cardwriter';
 
 const ROOT = path.resolve(__dirname, '..', '..');
 const presetSrc = fs.readFileSync(path.join(ROOT, 'app', 'src', 'domain', 'preset.ts'), 'utf8');
 const modals = fs.readFileSync(path.join(ROOT, 'app', 'src', 'domain', 'modals.ts'), 'utf8');
 const ui = fs.readFileSync(path.join(ROOT, 'app', 'src', 'domain', 'ui.ts'), 'utf8');
 const worldbook = fs.readFileSync(path.join(ROOT, 'app', 'src', 'domain', 'worldbook.ts'), 'utf8');
+const html = fs.readFileSync(path.join(ROOT, 'web', 'index.html'), 'utf8');
+const realmodeSrc = fs.readFileSync(path.join(ROOT, 'app', 'src', 'domain', 'realmode.ts'), 'utf8');
+const adminmodeSrc = fs.readFileSync(path.join(ROOT, 'app', 'src', 'domain', 'adminmode.ts'), 'utf8');
+const appSrc = fs.readFileSync(path.join(ROOT, 'app', 'src', 'domain', 'app.ts'), 'utf8');
+const cardwriterSrc = fs.readFileSync(path.join(ROOT, 'app', 'src', 'domain', 'cardwriter.ts'), 'utf8');
+const biqiSrc = fs.readFileSync(path.join(ROOT, 'app', 'src', 'domain', 'biqi.ts'), 'utf8');
+const communitySrc = fs.readFileSync(path.join(ROOT, 'app', 'src', 'domain', 'community.ts'), 'utf8');
 
 describe('真实模式（real）：模式枚举与门控', () => {
   it('预设模块编辑器的「适用模式」下拉含 real / 仅真实', () => {
@@ -117,5 +130,126 @@ describe('世界书：初始记忆类型与绑定角色', () => {
     const toastAt = ui.indexOf('已经有初始记忆了，一条只能绑一个角色');
     expect(toastAt).toBeGreaterThan(0);
     expect(ui.indexOf('data.bindId = bindId;')).toBeGreaterThan(toastAt);
+  });
+});
+
+// 2026-10-08：真实模式收进管理员模式。普通用户看不到入口、建不了真实模式专用的条目、
+// 手册与写卡 agent 也不提它；管理员模式一开全部原样回来（数据一步都没动）。
+describe('真实模式：只在管理员模式里开放（2026-10-08）', () => {
+  it('侧栏入口出厂隐藏，由 RealMode.syncEntry() 按管理员模式放出来；退出时退回写作页', () => {
+    expect(html).toMatch(/data-view="real" id="navRealBtn" style="display:none"/);
+    expect(realmodeSrc).toContain('syncEntry(): void {');
+    expect(realmodeSrc).toContain("const nav = el('navRealBtn');");
+    expect(realmodeSrc).toContain('AdminMode.isOn()');
+    expect(realmodeSrc).toContain('UIManager?.syncRealModeUI?.()');
+    // 正停在真实页时关掉管理员模式 → 退回写作页（别留一个打不开的空页）
+    expect(realmodeSrc).toContain("MobileUI.switchView('writing')");
+  });
+
+  it('开关一翻就联动（与「管理」入口同一条规矩），冷启动也同步一次', () => {
+    expect(adminmodeSrc).toContain('RM.syncEntry');
+    expect(adminmodeSrc).toContain('RealMode');
+    expect(appSrc).toContain('RealMode.syncEntry');
+  });
+
+  it('世界书：类型下拉的两项按管理员模式增删；列表/书架/换书下拉都走 visibleEntriesFor', () => {
+    // 出厂 HTML 仍带全部 7 类（modals.ts 静态），由 ui.ts 在运行时增删
+    expect(modals).toContain('<option>初始记忆</option>');
+    expect(modals).toContain('<option>部分人知道</option>');
+    expect(ui).toContain('function syncWbEntryTypeOptions(');
+    expect(ui).toContain("const ALL = ['世界观', '角色', '初始', '初始记忆', '部分人知道', '其他', '变量'];");
+    expect(ui).toContain('syncWbEntryTypeOptions();   // 类型下拉按管理员模式刷新一次');
+    // 三处计数/列表同口径
+    expect(ui).toContain('const visible = visibleEntriesFor(wb ? (wb.entries || []) : []);');
+    expect(ui).toContain('const cnt = visibleEntriesFor(wb.entries || []).length;');
+    // 变量页那类"注入 N/M 条"的分母也不含它们（它们对小说/对话本来就不注入）
+    expect(ui).toContain("REAL_ONLY_ENTRY_TYPES.indexOf(String(e.type || '')) < 0");
+    // 统一刷新入口
+    expect(ui).toContain('syncRealModeUI()');
+  });
+
+  it('visibleEntriesFor：普通用户看不到真实模式条目，管理员全看；原数组一个字不动', () => {
+    const entries = [
+      { id: 'a', type: '角色', name: '千纱' },
+      { id: 'b', type: '初始记忆', name: '千纱的开局' },
+      { id: 'c', type: '部分人知道', name: '两人初中就认识' },
+      { id: 'd', type: '世界观', name: '世界背景' },
+    ];
+    const g = globalThis as unknown as Record<string, unknown>;
+    try {
+      g.StorageManager = { get: (_k: string, d?: unknown) => d, set: () => undefined };
+      expect(visibleEntriesFor(entries).map((e: any) => e.id)).toEqual(['a', 'd']);
+      g.StorageManager = { get: (k: string, d?: unknown) => (k === 'adminMode' ? true : d), set: () => undefined };
+      expect(visibleEntriesFor(entries).map((e: any) => e.id)).toEqual(['a', 'b', 'c', 'd']);
+    } finally {
+      delete g.StorageManager;
+    }
+    expect(entries.length).toBe(4);
+  });
+
+  it('预设：模块列表与「适用模式」下拉里的「仅真实」只在管理员模式里出现', () => {
+    expect(ui).toContain("if (!_admin && m.mode === 'real') return;");
+    // 过滤后 data-drag-idx 仍是全数组下标（否则拖动排序会串位）
+    expect(ui).toContain('data-drag-idx="\' + i + \'"');
+    expect(ui).toContain('function syncModuleModeOptions(');
+    expect(ui).toContain("o.value = 'real'; o.text = '仅真实';");
+    expect(ui).toContain('syncModuleModeOptions();   // 「仅真实」只在管理员模式里出现');
+    // 数据层不动：real 仍是合法模式（管理员自己的模块照旧生效）
+    expect(moduleMode({ mode: 'real' })).toBe('real');
+    expect(pickModules([{ id: 'r', enabled: true, content: 'r', mode: 'real', order: 0 }], 'real').length).toBe(1);
+  });
+
+  it('使用助手手册：普通用户那份没有真实模式一节，管理员那份原样', () => {
+    const user = manualForViewer(false);
+    const admin = manualForViewer(true);
+    expect(admin).toBe(USAGE_MANUAL);
+    expect(admin).toContain('十七、真实模式（多角色各自独立记忆的演出）');
+    expect(user).not.toContain('真实模式');
+    expect(user).not.toContain('初始记忆');
+    expect(user).not.toContain('部分人知道');
+    // 其余小节逐字还在（整节删，不是重写手册）
+    expect(user).toContain('十四、对话模式');
+    expect(user).toContain('十六、写预设');
+    expect(user).toContain('十八、生图（画图主机）');
+    expect(user.split('\n')[0]).toBe(USAGE_MANUAL.split('\n')[0]);
+    // 缩进/emoji 之类的杂项：行数只少了真实模式那一节
+    expect(USAGE_MANUAL.split('\n').length - user.split('\n').length).toBeGreaterThan(5);
+  });
+
+  it('写卡预设：base 里的真实模式段只发给管理员（存量副本、用户改过标题的都删得掉）', () => {
+    const base = '【写卡基础指令】\n- 甲\n'
+      + '【如果这本书以后还要用「真实模式」】（多角色各自独立记忆的演出）\n'
+      + '- 秘密、隐情写进「初始记忆」\n'
+      + '【写卡方法论】\n- 乙\n';
+    const out = stripRealModeGuidance(base);
+    expect(out).not.toContain('真实模式');
+    expect(out).not.toContain('初始记忆');
+    expect(out).toContain('【写卡基础指令】');
+    expect(out).toContain('【写卡方法论】');
+    expect(stripRealModeGuidance(out)).toBe(out);   // 幂等
+    // 段落在末尾（后面没有别的分块）也删得掉
+    expect(stripRealModeGuidance('【写卡基础指令】\n- 甲\n【如果这本书以后还要用「真实模式」】\n- x\n')).not.toContain('真实模式');
+    // 出厂文案：段落收在一个 const 里，普通用户那份由 _composePresetText 现删
+    expect(cardwriterSrc).toContain('const REAL_MODE_GUIDANCE =');
+    expect(cardwriterSrc).toContain('stripRealModeGuidance(blocks.base ||');
+    // 写卡草稿列表也不给普通用户看真实模式条目（但草稿数组原样保留，写回时不会丢）
+    expect(cardwriterSrc).toContain('REAL_ONLY_ENTRY_TYPES.indexOf');
+  });
+
+  it('条目类型名单只有一处（worldbook.ts），界面各处引用同一份', () => {
+    expect(worldbook).toContain("export const REAL_ONLY_ENTRY_TYPES = ['初始记忆', '部分人知道'];");
+    expect(ui).toContain('REAL_ONLY_ENTRY_TYPES');
+    expect(cardwriterSrc).toContain('REAL_ONLY_ENTRY_TYPES');
+    // 比奇读世界书（read_worldbook 工具）也同口径：读到的不比用户看到的多
+    expect(biqiSrc).toContain('REAL_ONLY_ENTRY_TYPES');
+    expect(biqiSrc).toContain('if (!AdminMode.isOn())');
+  });
+
+  it('社区：上传 / 卡片预览 / 导入都按可见集合走（看不见的内容不会被悄悄分享或塞进书里）', () => {
+    expect(communitySrc).toContain("import { visibleEntriesFor } from './ui';");
+    expect(communitySrc).toContain('entries: visibleEntriesFor(wb.entries || []),');
+    expect(communitySrc).toContain('entries = visibleEntriesFor(Array.isArray(entries) ? entries : []);');   // 卡片预览
+    // 两处导入（卡下载 / 助手 import_card）也过滤
+    expect((communitySrc.match(/visibleEntriesFor\(Array\.isArray\(data\.entries\) \? data\.entries : \[\]\)/g) || []).length).toBe(2);
   });
 });

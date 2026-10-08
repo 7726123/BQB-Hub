@@ -15,6 +15,15 @@ function _notifyCardWriterChanged() {
   } catch (e) { /* 通知失败不影响世界书写入 */ }
 }
 
+/**
+ * 真实模式专用的条目类型：由真实模式按角色单独注入（private 视角），**从不进小说/对话的常规注入**
+ * （见下方 filterRelevantEntries / selectInjectableEntries 里那两条跳过）。
+ * 2026-10-08 起真实模式只在管理员模式里开放，所以这两类条目的界面入口/列表也只在管理员模式下出现
+ * （界面裁剪见 ui.ts 的 visibleEntriesFor / syncWbEntryTypeOptions，写卡草稿见 cardwriter.ts）。
+ * 这里只放"类型名"这一份事实，供各界面共用，避免三处各写一份名单。
+ */
+export const REAL_ONLY_ENTRY_TYPES = ['初始记忆', '部分人知道'];
+
 export const WorldBookManager = {
   getAll(): WorldBookGlobal[] { return SM().get<WorldBookGlobal[]>('worldBooks', []) ?? []; },
   saveAll(arr: WorldBookGlobal[]): void { SM().set('worldBooks', arr); _notifyCardWriterChanged(); },

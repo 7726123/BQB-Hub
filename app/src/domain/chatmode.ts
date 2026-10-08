@@ -983,7 +983,8 @@ export const ChatMode = {
     await new Promise<void>((resolve) => {
       const done = () => resolve();
       try {
-        APIHandler.fetchCompletions(
+        // void：这一版的承诺由回调驱动（done()），外面已经在 await 这个 Promise 了
+        void APIHandler.fetchCompletions(
           msgs as any,
           (chunk: string) => {
             this._acc += String(chunk || '');

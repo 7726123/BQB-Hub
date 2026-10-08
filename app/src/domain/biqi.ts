@@ -7,9 +7,10 @@
 // 生图：主机（用户电脑上的 ComfyUI，协议见 domain/imagehost.ts）在线时给 draw_image 工具，
 //      交互策略与写卡 Agent 不同——作者明确让画就直接画，不反问（用户 2026-10-05 定的）。
 import { SM } from '../infra/gate';
+import { AdminMode } from './adminmode';
 import { PluginManager } from './plugins';
 import { SettingSyncManager } from './settingsync';
-import { WorldBookManager } from './worldbook';
+import { WorldBookManager, REAL_ONLY_ENTRY_TYPES } from './worldbook';
 import { renderMdStrong } from '../lib/mdtext';
 import { probeHost, drawImageToStore, genImagesHtml, imageLabel, hydrateImages, lookAtImageTool, appendAttachSpec, countImageTurns, stripImageTurns, DRAW_ATTACH_HINT, type AttachSpec, type HostStatusCache } from './imagedraw';
 import { ImageCache } from '../lib/imagecache';
@@ -998,9 +999,14 @@ export const BiqiAgent: {
   // 正文走 App.collectRecentStoryText（续写同一个函数，见 app.ts）。
   readWorldbook(): string {
     try {
-      const entries = (typeof SettingSyncManager !== 'undefined')
+      let entries = (typeof SettingSyncManager !== 'undefined')
         ? SettingSyncManager.getEffectiveEntries()
         : ((WorldBookManager.getActive() || {}).entries || []);
+      // 真实模式专用的条目（初始记忆 / 部分人知道）本来就不进常规注入，也不给普通用户看
+      // （2026-10-08 真实模式收进管理员模式）——比奇读到的和用户看到的、和实际注入的保持一致。
+      if (!AdminMode.isOn()) {
+        entries = entries.filter(function (e: any) { return REAL_ONLY_ENTRY_TYPES.indexOf(String((e && e.type) || '')) < 0; });
+      }
       const items = entries.map(function (e: any) {
         const st = (typeof SettingSyncManager !== 'undefined') ? SettingSyncManager.entryStatus(e.id) : 'orig';
         const tag = st === 'added' ? '（临时新增）' : (st === 'modified' ? '（临时修改）' : '');

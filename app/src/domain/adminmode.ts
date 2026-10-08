@@ -6,7 +6,9 @@
 //
 // 作用：拿到服务器签发的管理员令牌（12h）后，① 侧边栏出现与「社区」同级的「管理」页签
 //   （内含使用统计与审核队列，见 domain/community.ts 与 index.html 的 #tab-admin），
-//   ② 每轮生成内容留档上报（sendTrace）。
+//   ② 每轮生成内容留档上报（sendTrace），
+//   ③ 真实模式（入口、世界书「初始记忆 / 部分人知道」条目类型、预设「仅真实」）只在这个模式下开放
+//   ——2026-10-08 用户要求：真实模式还不成熟，普通用户先看不到（见 realmode.ts 的 syncEntry）。
 //
 // 正文窗口不受本模式影响：与普通用户完全一致，只由设置里的「正文窗口」决定
 // （lib/contextbudget.ts）。旧版会把窗口压到 1 万字，随窗口设置可调而下线。
@@ -45,6 +47,12 @@ export const AdminMode = {
     try {
       const CC = (globalThis as unknown as { CommunityChat?: { syncAdminEntry?: () => void } }).CommunityChat;
       if (CC && CC.syncAdminEntry) CC.syncAdminEntry();
+    } catch (e) { /* 忽略 */ }
+    // 真实模式（入口 + 世界书条目类型 + 预设「仅真实」）也跟着这个开关立刻显隐：
+    // 与「管理」入口同一条规矩——改完开关不用重启，界面上立刻是对的样子。
+    try {
+      const RM = (globalThis as unknown as { RealMode?: { syncEntry?: () => void } }).RealMode;
+      if (RM && RM.syncEntry) RM.syncEntry();
     } catch (e) { /* 忽略 */ }
   },
 

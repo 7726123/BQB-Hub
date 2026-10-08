@@ -942,15 +942,15 @@ describe('重演 / 删除 / 换书', () => {
     const calls: Array<{ chunks: string[]; max: number }> = [];
     g.ArchiveStore = { addBlocks: (chunks: string[], max: number) => calls.push({ chunks, max }) };
     ChatMode.append('ai', '林薇：「一。」\n白：灯亮了。');
-    ChatMode.syncArchive();
+    void ChatMode.syncArchive();
     expect(calls).toHaveLength(1);
     expect(calls[0].chunks.join('\n')).toContain('灯亮了。');
     expect(calls[0].chunks.join('\n')).not.toContain('林薇：');   // 前缀已剥掉，归档里是连续文本
     expect(calls[0].max).toBe(900);
-    ChatMode.syncArchive();                                      // 幂等：没有新消息不再写
+    void ChatMode.syncArchive();                                      // 幂等：没有新消息不再写
     expect(calls).toHaveLength(1);
     ChatMode.append('ai', '林叶：我把信折好。');
-    ChatMode.syncArchive();
+    void ChatMode.syncArchive();
     expect(calls).toHaveLength(2);
     expect(calls[1].chunks.join('\n')).toContain('我把信折好。');
     delete g.ArchiveStore;

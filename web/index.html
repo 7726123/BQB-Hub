@@ -1190,7 +1190,9 @@ label{font-size:13px;color:var(--text-secondary);display:block;margin-bottom:4px
           <button class="nav-item nav-sub" data-view="chat" title="对话模式：把同一本书演成聊天记录">
             <span class="nav-label">对话模式</span>
           </button>
-          <button class="nav-item nav-sub" data-view="real" title="真实模式：一个场景多个角色，一轮只有一个人说话">
+          <!-- 真实模式入口：默认隐藏，只有管理员模式开启时由 RealMode.syncEntry() 放出来
+               （2026-10-08 用户要求：这个模式还不成熟，先只在自己这边开放） -->
+          <button class="nav-item nav-sub" data-view="real" id="navRealBtn" style="display:none" title="真实模式：一个场景多个角色，一轮只有一个人说话">
             <span class="nav-label">真实模式</span>
           </button>
         </div>
@@ -2206,7 +2208,7 @@ label{font-size:13px;color:var(--text-secondary);display:block;margin-bottom:4px
     <button type="button" class="bs-skip" id="bootSplashSkip">稍后</button>
   </div>
 </div>
-<script id="bootMain" data-src="modules/main.js?v=355881271-161"></script>
+<script id="bootMain" data-src="modules/main.js?v=3043836079-161"></script>
 <script>
 (function () {
   var el = document.getElementById('bootSplash');

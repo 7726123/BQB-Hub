@@ -326,6 +326,9 @@ const App: AppShape = {
     // 侧边栏「管理」入口也要在启动时同步一次：此前它只在社区页渲染里同步，而那句还在
     // 「未登录就 return」之后——于是冷启动后不进社区页（或没登录社区）时入口一直藏着（表现为"没有管理栏"）。
     if (typeof CommunityChat !== 'undefined' && (CommunityChat as any).syncAdminEntry) (CommunityChat as any).syncAdminEntry();
+    // 真实模式（入口 + 世界书条目类型 + 预设「仅真实」）也只在管理员模式下开放：启动时同步一次
+    // （与「管理」入口同一类"上次开着就常驻"的入口，别等用户进某个页面才出现；2026-10-08 用户要求）。
+    if (typeof RealMode !== 'undefined' && RealMode.syncEntry) RealMode.syncEntry();
     // 归档上下文头 + 人物事件行：滚动归档后用现有 API 生成（SM 'archiveHeadEnabled' 可关）
     if (typeof ArchiveStore !== 'undefined' && ArchiveStore.setHeadProvider) {
       ArchiveStore.initStorage(); // IndexedDB 持久化（异步加载，容量远超 localStorage）

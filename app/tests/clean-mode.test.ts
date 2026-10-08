@@ -131,10 +131,11 @@ describe('干净版：助手手册与工具', () => {
     const cl = clean.split('\n');
     expect(cl[0]).toBe(full[0]);
     expect(clean).toContain('二、章节与开局');
-    expect(clean).toContain('十七、真实模式（多角色各自独立记忆的演出）');
-    const u17 = full.find((l) => l.startsWith('1. 位置：侧栏「写作」下面的「真实模式」'));
-    expect(u17).toBeTruthy();
-    expect(clean).toContain(String(u17));
+    // 真实模式只在管理员模式里开放：干净版没有管理员模式 → 手册里也不能讲（2026-10-08）
+    expect(USAGE_MANUAL).toContain('十七、真实模式（多角色各自独立记忆的演出）');
+    expect(clean).not.toContain('十七、真实模式');
+    expect(clean).not.toContain('初始记忆');
+    expect(clean).not.toContain('部分人知道');
     // 完整版手册本身没有被改动
     expect(USAGE_MANUAL).toContain('也可从社区下载他人分享的世界书');
     expect(USAGE_MANUAL).toContain('网页包热更新');

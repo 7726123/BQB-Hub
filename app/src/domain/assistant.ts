@@ -5,6 +5,7 @@
 import { SM } from '../infra/gate';
 import { renderMdStrong } from '../lib/mdtext';
 import { isClean } from '../lib/buildflags';
+import { AdminMode } from './adminmode';
 import { buildSetupSkillMd, SETUP_SKILL_FILE_NAME, SETUP_SKILL_MIME } from './setup-skill';
 
 export interface AssistantMessage { role: 'user' | 'assistant'; content: string }
@@ -167,6 +168,30 @@ const MANUAL_FULL = ['【BQB Hub 使用手册】',
 /** 完整版手册。干净版（离线版）不直接用这份，见 manualForClean()。 */
 export const USAGE_MANUAL = MANUAL_FULL;
 
+// ==================== 手册的观众裁剪（真实模式只在管理员模式里开放） ====================
+// 真实模式还不成熟（2026-10-08 用户要求：收进管理员模式）——普通用户既看不到入口，
+// 手册里也不能讲它（讲了等于空口承诺一个打不开的功能）。所以按小节整节删掉，
+// 其余逐字不动：手册仍是**一份**活文档，改文案只用改 MANUAL_FULL。
+const ADMIN_ONLY_SECTIONS = ['十七、'];
+
+/** 按小节序号整节删掉（标题行 + 它下面的条目行，直到下一个 `X、` 标题）。 */
+function dropSections(text: string, prefixes: string[]): string {
+  const out: string[] = [];
+  let skipping = false;
+  for (const raw of String(text || '').split('\n')) {
+    if (/^([一二三四五六七八九十]+、)/.test(raw)) skipping = false;
+    if (prefixes.some(function (p) { return raw.indexOf(p) === 0; })) { skipping = true; continue; }
+    if (!skipping) out.push(raw);
+  }
+  return out.join('\n');
+}
+
+/** 普通用户手册：拿掉只在管理员模式里开放的小节（真实模式）；管理员用完整版。 */
+export function manualForViewer(adminOn: boolean): string {
+  if (adminOn) return MANUAL_FULL;
+  return dropSections(MANUAL_FULL, ADMIN_ONLY_SECTIONS);
+}
+
 // ==================== 干净版手册（离线版） ====================
 // 手册是两版共用的活文档：这里**只替换与联机功能有关的小节和句子**，其余一字不动
 // （抄成两份必然改一处忘一处，最后误导用户）。
@@ -198,7 +223,7 @@ const CLEAN_LINE_FIXES: Array<[RegExp, string | null]> = [
   [/（正文、写卡、比奇、社区消息统一生效）/, '（正文、写卡、比奇统一生效）'],
 ];
 
-/** 干净版手册：按小节整体替换 + 逐句修正，其余部分与完整版逐字一致。 */
+/** 干净版手册：按小节整体替换 + 逐句修正，其余部分与完整版逐字一致（真实模式那节两版都不讲）。 */
 export function manualForClean(): string {
   const lines = String(MANUAL_FULL || '').split('\n');
   const out: string[] = [];
@@ -219,7 +244,7 @@ export function manualForClean(): string {
     if (line === null) continue;
     out.push(line);
   }
-  return out.join('\n');
+  return dropSections(out.join('\n'), ADMIN_ONLY_SECTIONS);   // 干净版没有管理员模式 → 也没有真实模式
 }
 
 const ASSISTANT_BASE = '你是 BQB Hub 使用助手，是给用户说明本软件怎么使用的小客服。' +
@@ -250,10 +275,11 @@ const CARD_ABILITY = '【找卡能力】当用户想找社区里的世界书/角
 /** 完整版 system（历史行为一字不变：人设 + 找卡能力 + 完整手册）。 */
 export const ASSISTANT_SYSTEM = ASSISTANT_BASE + CARD_ABILITY + USAGE_MANUAL;
 
-/** 当前版本实际用的 system：干净版去掉找卡能力，换用离线版手册。 */
+/** 当前版本实际用的 system：干净版去掉找卡能力、换用离线版手册；完整版普通用户的手册里
+ *  没有真实模式那一节（只在管理员模式里开放），管理员拿完整手册。 */
 export function assistantSystem(): string {
-  if (!isClean()) return ASSISTANT_SYSTEM;
-  return ASSISTANT_BASE + manualForClean();
+  if (isClean()) return ASSISTANT_BASE + manualForClean();
+  return ASSISTANT_BASE + CARD_ABILITY + manualForViewer(AdminMode.isOn());
 }
 
 // ==================== 可测纯逻辑 ====================
@@ -867,6 +893,8 @@ export const UsageAssistant: {
 
 // 初始化由 app.js 在存储就绪后调用（indexedDB 异步加载，过早读取会把历史读成空）
 
+// 遗留全局（兼容旧引用；真正发给模型的那份在 assistantSystem()，它按"干净版 / 管理员模式"现算，
+// 所以这两份全局保持"最全"的样子，不参与每次请求的拼装）。
 (globalThis as unknown as { USAGE_MANUAL: string; ASSISTANT_SYSTEM: string; UsageAssistant: typeof UsageAssistant }).USAGE_MANUAL = isClean() ? manualForClean() : USAGE_MANUAL;
 (globalThis as unknown as { USAGE_MANUAL: string; ASSISTANT_SYSTEM: string; UsageAssistant: typeof UsageAssistant }).ASSISTANT_SYSTEM = isClean() ? assistantSystem() : ASSISTANT_SYSTEM;
 (globalThis as unknown as { USAGE_MANUAL: string; ASSISTANT_SYSTEM: string; UsageAssistant: typeof UsageAssistant }).UsageAssistant = UsageAssistant;
