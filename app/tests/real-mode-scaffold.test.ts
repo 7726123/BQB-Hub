@@ -212,6 +212,9 @@ describe('真实模式：只在管理员模式里开放（2026-10-08）', () => 
     expect(user).toContain('十六、写预设');
     expect(user).toContain('十八、生图（画图主机）');
     expect(user.split('\n')[0]).toBe(USAGE_MANUAL.split('\n')[0]);
+    // 定位那一句（2026-10-08 改 Role Play）两版都在——它讲的是"这软件是什么"，与模式无关
+    expect(user).toContain('AI 角色扮演（Role Play）工作台');
+    expect(admin).toContain('AI 角色扮演（Role Play）工作台');
     // 缩进/emoji 之类的杂项：行数只少了真实模式那一节
     expect(USAGE_MANUAL.split('\n').length - user.split('\n').length).toBeGreaterThan(5);
   });
