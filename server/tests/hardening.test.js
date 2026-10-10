@@ -50,3 +50,25 @@ test('client-logs 查看：等长错误 admin key → 403（常量时间比较�
   const ok = await fetch(baseUrl + '/api/client-logs?limit=1', { headers: { 'x-admin-key': 'test-admin-key' } });
   assert.equal(ok.status, 200);
 });
+
+// CORS 预检（浏览器路径）：App 在 WebView 里跨域请求，带自定义头时会先发 OPTIONS 预检；
+// 允许头清单漏了任何一个，浏览器直接拦掉请求——表现就是 App 里「网络错误」，而 curl 直连一切正常
+// （curl 不做预检）。2026-10-11 系统版连不上服务器就是踩的这条：新加的 X-System-Key / X-Install-Id 不在清单里。
+test('CORS 预检：允许头清单覆盖 App 实际会发的自定义头（含系统版凭据头）', async () => {
+  const need = ['authorization', 'content-type', 'x-admin-token', 'x-system-key', 'x-install-id'];
+  for (const path of ['/api/app/web-bundle?channel=beta', '/api/admin/stats']) {
+    const r = await req('OPTIONS', path, {
+      headers: {
+        Origin: 'https://localhost',
+        'Access-Control-Request-Method': 'GET',
+        'Access-Control-Request-Headers': need.join(','),
+      },
+    });
+    assert.equal(r.status, 204, path + ' 预检应 204');
+    assert.equal(r.headers.get('access-control-allow-origin'), '*');
+    const allow = String(r.headers.get('access-control-allow-headers') || '').toLowerCase().split(',').map((x) => x.trim());
+    for (const h of need) {
+      assert.ok(allow.includes(h), path + ' 的 Access-Control-Allow-Headers 缺少 ' + h + '（当前：' + allow.join(', ') + '）');
+    }
+  }
+});

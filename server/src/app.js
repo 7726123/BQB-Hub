@@ -20,7 +20,9 @@ app.use((req, res, next) => {
 app.use((req, res, next) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET,POST,DELETE,OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type, X-Admin-Token');
+  // 允许头清单要覆盖 App 实际会发的所有自定义头：漏一个 → 浏览器预检失败 → App 里报「网络错误」
+  // （curl 不走预检，所以手工验证全绿也发现不了；见 tests/hardening.test.js 的 CORS 用例）
+  res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type, X-Admin-Token, X-System-Key, X-Install-Id');
   res.setHeader('Access-Control-Max-Age', '86400');
   next();
 });

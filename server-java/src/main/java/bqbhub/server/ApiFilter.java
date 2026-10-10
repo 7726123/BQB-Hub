@@ -54,7 +54,9 @@ public class ApiFilter extends OncePerRequestFilter {
         // CORS（手机 http://局域网IP 访问本服务必需）
         res.setHeader("Access-Control-Allow-Origin", "*");
         res.setHeader("Access-Control-Allow-Methods", "GET,POST,DELETE,OPTIONS");
-        res.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Admin-Token");
+        // 允许头清单要覆盖 App 实际会发的所有自定义头（含系统版凭据 X-System-Key / X-Install-Id）：
+        // 漏一个 → 浏览器预检失败 → App 里报「网络错误」（curl 不做预检，手工验证发现不了）
+        res.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Admin-Token, X-System-Key, X-Install-Id");
         res.setHeader("Access-Control-Max-Age", "86400");
 
         if ("OPTIONS".equalsIgnoreCase(req.getMethod())) {
