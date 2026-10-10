@@ -58,6 +58,22 @@ CONTRACT=1 CONTRACT_CMD="java -jar ..." node --experimental-sqlite --test tests/
 | 8 | 会话 | ✅ 同构 | 不透明随机令牌存 `sessions` 表：换 Java 后老会话天然有效，用户不用重登 |
 | 9 | `Range` 请求处理 | ✅ 更好（差异） | Java 走 Spring 静态资源：支持 `Range` → `206` 与断点续传；Node 版忽略 `Range` 整包返回 `200`。App 下载 APK/热更包都是普通 GET，两边行为一致（冒烟脚本会把这条差异标出来） |
 
+## 系统版凭据与内测渠道（2026-10-11）
+
+- 服务端多认一种**机器凭据**：`X-System-Key`（= 环境变量 `SYSTEM_KEY` 或 `config.json` 的 `systemKey`），
+  在全部管理接口上与 `X-Admin-Token` 等价（Node/Java 两侧同步实现：`AuthService.isSystem` ↔ `auth.js` 的 `isSystemReq`）。
+  可选 `systemInstallIds` 白名单：非空时，带凭据的请求还必须带白名单内的 `X-Install-Id` 才生效。
+- `GET /api/app/web-bundle?channel=beta`：只有「精确 `beta` + 凭据命中」才读 `manifest-beta.json`，
+  其余（无凭据 / 坏凭据 / 未知渠道值）一律读正式 `manifest.json`；beta 缺失或结构不完整时**回落正式**
+  （系统版永远拿得到可用包）。zip 与正式包在同一目录平铺，客户端按签名 payload 取包名，原生不区分渠道。
+- 契约：`server/tests/{adminpass,web-bundle,system-key}.test.js` + `CONTRACT.md` 的「系统版契约」小节；
+  **Node 与 Java 各 90 例逐例一致**（2026-10-11 实测，含"改 config.json + 重启目标"的白名单用例）。
+- 线上 `/server/config.json` 已并入 `systemKey`（改动前留了 `config.json.bak-<时间>` 备份）。
+  **轮换** = 改服务器 config.json + 改本机 `~/.gradle/gradle.properties` 的 `BQB_SYSTEM_KEY` + 重建系统版 APK
+  （旧包立即失效）；系统版的分发纪律见发布技能里的「系统版」一节（不发 Release / 不进公开目录）。
+- 热更渠道的打包与提升在 `scripts/hot-bundle.mjs`：`pack --channel beta` 写 `manifest-beta.json`，
+  `promote` 把 beta 原样提升为正式（含签名 / code 严格递增 / zip 存在三道守卫）。
+
 ## 部署与灰度演练（`deploy/`、`tools/`）
 
 前置：目标机要有 JDK/JRE 17+。OpenCloudOS 9（线上那台）：

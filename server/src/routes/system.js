@@ -7,7 +7,7 @@ const config = require('../config');
 const db = require('../db');
 const { createLimiter } = require('../ratelimit');
 const { verifyPassword, issueToken, verifyToken } = require('../adminpass');
-const { isAdminReq } = require('../auth');
+const { isAdminReq, isSystemReq } = require('../auth');
 
 const router = express.Router();
 
@@ -60,17 +60,23 @@ router.get('/api/app/version', (req, res) => {
 });
 
 // 网页包热更新（无需登录）：下发签名后的 manifest（payload + sig）。
+// 渠道（channel=beta，系统版内测渠道）：只对系统版开放——带对 X-System-Key（叠加 X-Install-Id 白名单）
+//   才读 manifest-beta.json；其余一律读正式 manifest.json。beta 缺失/损坏时同样回落正式，
+//   所以「还没发过 beta」不会让系统版收不到包。
 // 客户端只用 payload/sig 两个字段，其余字段仅供人工排查；未发布热包时返回空对象，客户端忽略。
 // manifest 由 scripts/hot-bundle.mjs 离线签名生成，服务器无从伪造——即便服务器被拿下，
 // 攻击者拿不到私钥也签不出能被客户端接受的包（见交接文档「热更新」章节）。
-router.get('/api/app/web-bundle', (req, res) => {
-  let man = null;
+function readManifest(name) {
   try {
-    man = JSON.parse(fs.readFileSync(path.join(config.WEB_BUNDLE_DIR, 'manifest.json'), 'utf8'));
-  } catch (e) { /* 还没发过热包 */ }
+    const m = JSON.parse(fs.readFileSync(path.join(config.WEB_BUNDLE_DIR, name), 'utf8'));
+    return (m && typeof m.payload === 'string' && typeof m.sig === 'string') ? m : null;
+  } catch (e) { return null; }
+}
+router.get('/api/app/web-bundle', (req, res) => {
+  const wantBeta = String(req.query.channel || '').trim() === 'beta' && isSystemReq(req);
+  const man = (wantBeta ? readManifest('manifest-beta.json') : null) || readManifest('manifest.json');
   res.set('Cache-Control', 'no-store');
-  if (!man || typeof man.payload !== 'string' || typeof man.sig !== 'string') return res.json({});
-  return res.json(man);
+  return res.json(man || {});
 });
 
 // 网页包 zip 下载（/web-bundle/web-1.5.96w1.zip），无需登录
@@ -238,10 +244,11 @@ const traceLimiter = createLimiter({ windowMs: 60 * 1000, max: 60 });
 const TRACE_KEEP = 1000;   // 只保留最近 1000 条，超出自动裁剪
 
 router.post('/api/admin/trace', (req, res) => {
-  if (!config.adminPasswordHash) return res.status(403).json({ ok: false, error: '管理员校验未配置' });
-  const auth = String(req.headers.authorization || '');
-  const token = auth.startsWith('Bearer ') ? auth.slice(7) : String(req.headers['x-admin-token'] || '');
-  if (!verifyToken(config.adminPasswordHash, token)) return res.status(401).json({ ok: false, error: '令牌无效或已过期' });
+  const bySystemKey = isSystemReq(req);   // 系统版：机器凭据（无令牌、无口令框）
+  if (!bySystemKey && !config.adminPasswordHash) return res.status(403).json({ ok: false, error: '管理员校验未配置' });
+  const authHeader = String(req.headers.authorization || '');
+  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : String(req.headers['x-admin-token'] || '');
+  if (!bySystemKey && !verifyToken(config.adminPasswordHash, token)) return res.status(401).json({ ok: false, error: '令牌无效或已过期' });
   const ip = req.socket.remoteAddress || '';
   if (!traceLimiter.allow(ip)) return res.status(429).json({ ok: false, error: '请求过于频繁' });
   const b = req.body || {};

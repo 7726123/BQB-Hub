@@ -4,7 +4,7 @@ const { test, before, after } = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
 const fs = require('node:fs');
-const { start, stop, baseUrl, paths, db } = require('./helpers');
+const { start, stop, baseUrl, paths, db, SYSTEM_TEST_KEY } = require('./helpers');
 
 const WEB_BUNDLE_DIR = paths.webBundleDir;
 
@@ -84,4 +84,42 @@ test('客户端上报带网页包版本（client_logs.web 列）', async () => {
   assert.equal(row.web, '1.5.97w1');
   assert.equal(row.app_version, '1.5.97');
   assert.equal(row.platform, 'android');
+});
+
+// ---- 内测渠道（channel=beta，系统版专用；见 CONTRACT.md「系统版」）----
+// 规则：只有「精确 channel=beta + X-System-Key 命中」才读 manifest-beta.json；其余一律正式包。
+// beta 缺失/损坏也必须回落正式——系统版永远拿得到可用包。
+const STABLE_MAN = { payload: 'c3RhYmxl', sig: 'c2lnLXN0YWJsZQ==', v: '1.5.100.10', code: 161010, minNative: 161 };
+const BETA_MAN = { payload: 'YmV0YQ==', sig: 'c2lnLWJldGE=', v: '1.5.100.11', code: 161011, minNative: 161 };
+
+test('channel=beta：无凭据/坏凭据一律回落正式包（含"只有精确 beta 才切渠道"）', async () => {
+  fs.writeFileSync(path.join(WEB_BUNDLE_DIR, 'manifest.json'), JSON.stringify(STABLE_MAN));
+  fs.writeFileSync(path.join(WEB_BUNDLE_DIR, 'manifest-beta.json'), JSON.stringify(BETA_MAN));
+
+  let j = await (await fetch(baseUrl + '/api/app/web-bundle?channel=beta')).json();
+  assert.equal(j.code, STABLE_MAN.code, '无凭据必须回落正式');
+
+  j = await (await fetch(baseUrl + '/api/app/web-bundle?channel=beta', { headers: { 'X-System-Key': 'wrong-key' } })).json();
+  assert.equal(j.code, STABLE_MAN.code, '坏凭据必须回落正式');
+
+  for (const url of ['/api/app/web-bundle', '/api/app/web-bundle?channel=stable', '/api/app/web-bundle?channel=whatever']) {
+    j = await (await fetch(baseUrl + url, { headers: { 'X-System-Key': SYSTEM_TEST_KEY } })).json();
+    assert.equal(j.code, STABLE_MAN.code, url + ' 应发正式包（只有精确 channel=beta 才切渠道）');
+  }
+});
+
+test('channel=beta：凭据命中且 beta 存在 → 发 beta；beta 损坏/缺失 → 回落正式', async () => {
+  const betaPath = path.join(WEB_BUNDLE_DIR, 'manifest-beta.json');
+  const withKey = { headers: { 'X-System-Key': SYSTEM_TEST_KEY } };
+
+  let j = await (await fetch(baseUrl + '/api/app/web-bundle?channel=beta', withKey)).json();
+  assert.equal(j.code, BETA_MAN.code, '凭据命中应发 beta');
+
+  fs.writeFileSync(betaPath, JSON.stringify({ v: 'broken' }));
+  j = await (await fetch(baseUrl + '/api/app/web-bundle?channel=beta', withKey)).json();
+  assert.equal(j.code, STABLE_MAN.code, 'beta 结构不完整时必须回落正式');
+
+  fs.unlinkSync(betaPath);
+  j = await (await fetch(baseUrl + '/api/app/web-bundle?channel=beta', withKey)).json();
+  assert.equal(j.code, STABLE_MAN.code, 'beta 不存在时必须回落正式');
 });

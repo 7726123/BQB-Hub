@@ -47,6 +47,7 @@ const FILE_PORTS = {
   'web-bundle.test.js': 15111,
   'worldbook-meta.test.js': 15112,
   'tls.test.js': 15113,
+  'system-key.test.js': 15114,
 };
 const FILE_NAME = path.basename((require.main && require.main.filename) || 'helpers.js');
 const PORT = FILE_PORTS[FILE_NAME] || (15150 + (process.pid % 50));
@@ -69,7 +70,10 @@ process.env.WEB_BUNDLE_DIR = paths.webBundleDir;
 process.env.PORT = String(PORT);
 process.env.CONFIG_FILE = paths.configFile;
 // 隔离配置：不读线上 config.json（避免真实 SMTP 发信 / 地区限制影响）
-fs.writeFileSync(paths.configFile, JSON.stringify({ smtp: { host: '', port: 465, user: '', pass: '' }, regionBlock: false }));
+// 系统版（内部构建）机器凭据：属接口契约（X-System-Key / X-Install-Id，见 CONTRACT.md「系统版」）
+const SYSTEM_TEST_KEY = process.env.SYSTEM_KEY || 'test-system-key-2b7f4c9d1e';
+process.env.SYSTEM_KEY = SYSTEM_TEST_KEY;
+fs.writeFileSync(paths.configFile, JSON.stringify({ smtp: { host: '', port: 465, user: '', pass: '' }, regionBlock: false, systemKey: SYSTEM_TEST_KEY }));
 fs.writeFileSync(paths.appVersionFile, JSON.stringify({ versionCode: 99, versionName: '9.9-test', note: '测试', apk: 'novel-writer-99.apk' }));
 // 管理员模式口令：固定测试口令，用例经 HTTP /api/admin/verify 换令牌（不再直接改内存 config）
 process.env.ADMIN_KEY = process.env.ADMIN_KEY || 'test-admin-key';
@@ -357,6 +361,25 @@ async function clearLimiters() {
   restartCount++;
 }
 
+/** 契约模式：无条件重启目标进程（内存态归零；会话/内容都在库里与磁盘上，不受影响）。嵌入模式无操作。 */
+async function restartTarget() {
+  if (!IS_CONTRACT) return;
+  db.close();
+  await killChild();
+  await spawnTarget();
+  dirty = 0;
+}
+
+/** 运行期改目标配置：契约模式 = 改写 config.json + 重启目标（配置在启动时读取）；
+ *  嵌入模式 = 直接改进程内配置对象。用于驱动「部署态开关」类用例（如 systemInstallIds 白名单），
+ *  用完请还原，避免影响同文件后续用例。 */
+async function updateConfig(patch) {
+  const base = JSON.parse(fs.readFileSync(paths.configFile, 'utf8'));
+  fs.writeFileSync(paths.configFile, JSON.stringify(Object.assign(base, patch)));
+  if (IS_CONTRACT) { await restartTarget(); return; }
+  Object.assign(require('../src/config'), patch);
+}
+
 // 纯内部实现的单元用例：契约模式自动 skip（见 CONTRACT.md「排除清单」）
 const embeddedTest = IS_CONTRACT
   ? (name, fn) => nodeTest.test(name, { skip: '嵌入模式专用（契约模式下无此实现细节可断言）' }, fn)
@@ -376,7 +399,7 @@ module.exports = {
   tlsOrigin, TLS_PORT,
   tlsAvailable: () => tlsReady,
   tmp, paths, db,
-  seedCode, approveAll, clearLimiters,
-  adminHash, adminToken, ADMIN_TEST_PW,
+  seedCode, approveAll, clearLimiters, updateConfig, restartTarget,
+  adminHash, adminToken, ADMIN_TEST_PW, SYSTEM_TEST_KEY,
   restartCount: () => restartCount,
 };

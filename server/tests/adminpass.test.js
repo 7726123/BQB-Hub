@@ -3,7 +3,7 @@
 // 纯函数与无状态令牌格式属内部实现细节，只在嵌入模式断言（见 CONTRACT.md）。
 const { test, before, after } = require('node:test');
 const assert = require('node:assert/strict');
-const { start, stop, req, clearLimiters, adminToken, adminHash, embeddedTest, ADMIN_TEST_PW } = require('./helpers');
+const { start, stop, req, clearLimiters, adminToken, adminHash, embeddedTest, ADMIN_TEST_PW, SYSTEM_TEST_KEY } = require('./helpers');
 
 const PW = ADMIN_TEST_PW;
 
@@ -131,4 +131,31 @@ test('留档接口：无令牌 401 / 坏令牌 401 / 令牌可写 / adminKey 可
   assert.equal(r.json.deleted, 1);
   r = await req('GET', '/api/admin/traces?limit=5', { headers: { 'x-admin-key': 'test-admin-key' } });
   assert.equal(r.json.traces.length, 0);
+});
+
+// 系统版（内部构建）机器凭据：X-System-Key 等价于管理员（覆盖全部走 isAdmin 的路由），
+// 但没有凭据/坏凭据一律拒绝。正式版客户端从不带这个头，所以对正式版行为零影响。
+test('系统版凭据：管理接口等价于管理员（stats/review/留档）；无凭据或坏 key 一律 401', async () => {
+  await clearLimiters();
+  const SYS = { 'X-System-Key': SYSTEM_TEST_KEY };
+
+  let r = await req('GET', '/api/admin/stats');
+  assert.equal(r.status, 401, '无凭据应 401');
+  r = await req('GET', '/api/admin/stats', { headers: { 'X-System-Key': 'wrong-key' } });
+  assert.equal(r.status, 401, '坏 key 应 401');
+
+  r = await req('GET', '/api/admin/stats', { headers: SYS });
+  assert.equal(r.status, 200);
+  assert.equal(typeof r.json.online, 'number', 'stats 字段应齐全');
+
+  r = await req('GET', '/api/admin/review?status=pending&limit=1', { headers: SYS });
+  assert.equal(r.status, 200, '审核队列同样认系统版凭据');
+
+  r = await req('POST', '/api/admin/trace', { headers: SYS, body: { book: '系统版', round: 1, instruction: '系统版留档', continuation: '正文' } });
+  assert.equal(r.status, 200);
+  assert.equal(r.json.ok, true);
+
+  r = await req('GET', '/api/admin/traces?limit=5', { headers: { 'x-admin-key': 'test-admin-key' } });
+  assert.equal(r.json.traces.length, 1);
+  assert.equal(r.json.traces[0].book, '系统版');
 });

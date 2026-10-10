@@ -4,8 +4,8 @@
 
 | 模式 | 命令 | 目标 | 用例数 |
 | --- | --- | --- | --- |
-| 嵌入（默认） | `npm test` | 本进程 `require('../src/app')`，DB 直连 `src/db` | 13 文件 / 104 例（100 通过 + 4 契约专用 skip） |
-| 契约 | `npm run test:contract` | **独立进程**（默认 `node src/main.js`），只经「环境变量 + HTTP + SQLite 库文件」 | 12 文件 / 84 例（81 通过 + 3 嵌入专用 skip） |
+| 嵌入（默认） | `npm test` | 本进程 `require('../src/app')`，DB 直连 `src/db` | 14 文件 / 110 例（106 通过 + 4 契约专用 skip） |
+| 契约 | `npm run test:contract` | **独立进程**（默认 `node src/main.js`），只经「环境变量 + HTTP + SQLite 库文件」 | 13 文件 / 90 例（87 通过 + 3 嵌入专用 skip） |
 
 契约模式的用途：**换实现不改用例**。将来服务端改 Spring Boot，只把目标换成 Java 包即可：
 
@@ -42,9 +42,10 @@ CONTRACT_CMD="java -jar ../server-java/target/app.jar" npm run test:contract
 | `APK_DIR` | APK 分发目录 | `<tmp>/apk` |
 | `APP_VERSION_FILE` | 版本信息 JSON（`versionCode/versionName/note/apk/apkUrl`） | `<tmp>/app-version.json` |
 | `WEB_BUNDLE_DIR` | 热更新 `manifest.json` 与 `web-*.zip` | `<tmp>/web-bundles` |
-| `CONFIG_FILE` | 本地配置 JSON（`smtp`/`regionBlock`/`adminKey`/`adminPasswordHash`） | `<tmp>/config.json` |
+| `CONFIG_FILE` | 本地配置 JSON（`smtp`/`regionBlock`/`adminKey`/`adminPasswordHash`/`systemKey`/`systemInstallIds`） | `<tmp>/config.json` |
 | `ADMIN_KEY` | `GET /api/client-logs` 的查看口令（空=关闭，403） | `test-admin-key` |
 | `ADMIN_PW_HASH` | App 管理员模式口令的派生值（空=入口关闭，403） | `test-admin-pw` 的派生值 |
+| `SYSTEM_KEY` | 系统版（内部构建）机器凭据（空=系统版功能关闭）；config.json 的 `systemKey` 优先 | `test-system-key-2b7f4c9d1e` |
 | `TLS_PORT` / `TLS_CERT_FILE` / `TLS_KEY_FILE` | 自签 TLS 第二端口；证书缺失只跑 HTTP（见第三节末「TLS 契约」） | 契约模式启动时现签一张测试自签证书（临时目录，**不入库**），端口 = HTTP 端口 + 1000 |
 
 ## 二、数据库契约（本阶段：保持 SQLite）
@@ -80,7 +81,7 @@ CONTRACT_CMD="java -jar ../server-java/target/app.jar" npm run test:contract
 - 反馈：`POST /api/feedback`（公开+限流）、`/api/admin/feedback`、`/api/admin/feedback/read|delete`
 - 留档：`POST /api/admin/trace`（Bearer 管理员令牌）、`GET|DELETE /api/admin/traces`（需 `x-admin-key`，支持 `format=html`）
 - 管理员模式：`POST /api/admin/verify` → `200 {ok:true,token}`（令牌是无状态凭证，格式自定，只要本实现能校验）
-- 分发：`GET /api/app/version`、`GET /apk/:file`、`GET /api/app/web-bundle`（`no-store`）、`GET /web-bundle/:file`（`Content-Type: application/zip`）
+- 分发：`GET /api/app/version`、`GET /apk/:file`、`GET /api/app/web-bundle`（`no-store`；`channel=beta` 见下「系统版契约」）、`GET /web-bundle/:file`（`Content-Type: application/zip`）
 - 统计/上报：`POST /api/app/ping`、`GET /api/admin/stats`、`POST /api/client-logs`、`GET /api/client-logs`
 - 代理：`POST /api/proxy/:name/*`（白名单外 404）、`OPTIONS` 预检 204
 
@@ -117,6 +118,23 @@ Node 版同时监听 HTTP 与 HTTPS（自签证书，App v1.5.65+ 走 TLS 端口
    PKCS#1 解析路径另用 `openssl genrsa -traditional` 现生成一对、以 `TLS_KEY_FILE=…` 覆盖跑一遍验证
    （Java 侧验过 4/4，见交接文档 §13.162 补记）。
 
+### 系统版契约（机器凭据与内测渠道）
+
+「系统版」是预配置管理员的内部构建（App 侧 Android flavor，见交接文档「系统版」）：不带口令，
+用机器凭据 `X-System-Key` 直连管理接口。契约落在 `adminpass.test.js`、`web-bundle.test.js`、
+`system-key.test.js`：
+
+1. **凭据等价于管理员**：带对 `X-System-Key`（= 环境变量 `SYSTEM_KEY` / config.json `systemKey`）的请求，
+   与带合法 `X-Admin-Token` 在全部管理接口上等价（`/api/admin/stats|review|review/action|feedback*|trace`
+   + admin_only 世界书）；无凭据或坏凭据一律 `401`。比较必须常量时间。
+2. **可选设备白名单**：config.json `systemInstallIds` 非空时，带凭据的请求还必须带白名单内的
+   `X-Install-Id`（客户端随机 32 位 hex 安装标识，见 `app/src/domain/stats.ts`），否则 `401`；
+   空/缺省 = 不启用（线上默认）。白名单只影响凭据路径，不带凭据的普通请求完全不受影响。
+3. **内测渠道 `GET /api/app/web-bundle?channel=beta`**：只有「精确 `channel=beta` 且凭据命中」才读
+   `manifest-beta.json`；其余（无凭据 / 坏凭据 / 未知渠道值）一律读正式 `manifest.json`。
+   beta 缺失或结构不完整时**必须回落正式包**（系统版永远拿得到可用包）。
+4. 凭据空值 = 系统版功能整体关闭（不认 key、不给 beta）；正式渠道与旧客户端行为完全不变。
+
 ## 四、排除清单（嵌入专用 3 例 + 2 个文件；契约专用 1 个文件）
 
 | 排除项 | 原因 | 契约侧等价覆盖 |
@@ -136,6 +154,7 @@ Node 版同时监听 HTTP 与 HTTPS（自签证书，App v1.5.65+ 走 TLS 端口
 2. Java 版先做到「环境变量 + health + SQLite 同库同表」——SQL 可逐条直译（方言不变是本阶段红利）。
 3. `CONTRACT_CMD` 指向 Java 包跑同一套；失败项对照本文档逐条修，或用例里标注「实现差异」。
 4. 必须在两侧都过的关键项：口令派生格式（`scrypt$16384$8$1$salt$hash`）、管理员令牌可校验、
+   系统版机器凭据与内测渠道语义（`X-System-Key` / `X-Install-Id` / `channel=beta`，见「系统版契约」）、
    HTTP 状态码语义、限流阈值、审核门语义、封面/路径穿越校验、`Asia/Shanghai` 统计口径、
    **TLS 双端口与协议感知 apkUrl**（`tests/tls.test.js`）。
 5. 将来真要换掉 SQLite 时：本文档第二节的直读夹具要改成走接口（`CONTRACT.md` 是那一步的清单）。
@@ -146,7 +165,7 @@ Node 版同时监听 HTTP 与 HTTPS（自签证书，App v1.5.65+ 走 TLS 端口
 - 契约模式的 `clearLimiters()` 是重启目标进程：实现若启动超过 `CONTRACT_BOOT_MS` 会失败（调大即可）。
 - 用例进程需要 Node ≥ 22.5 才能读 SQLite 库（`run-contract.js` 已带 `--experimental-sqlite`；
   Node 22.x 必须带，Node 24 可省）。
-- 端口按用例文件固定分配（`helpers.js` 的 `FILE_PORTS`，15100–15112）。早先用「pid 取模」，
+- 端口按用例文件固定分配（`helpers.js` 的 `FILE_PORTS`，15100–15114）。早先用「pid 取模」，
   并行跑文件时出现过两个 pid 刚好差 1000 → 撞端口（`EADDRINUSE`）的偶发失败，故改掉。
   同一个用例文件被两套运行同时跑（或上次残留进程没退）会报明确的端口占用提示，照提示清理即可。
 - 契约模式下，若端口已被**别的残留进程**占着，目标进程会因 EADDRINUSE 直接退出并报错，
@@ -156,9 +175,9 @@ Node 版同时监听 HTTP 与 HTTPS（自签证书，App v1.5.65+ 走 TLS 端口
 
 | 验证 | 做法 | 结果 |
 | --- | --- | --- |
-| 不偷看实现 | `helpers.stop()` 自检 `require.cache` 里不得出现 `server/src/**` | 11 个文件全绿（自检通过） |
+| 不偷看实现 | `helpers.stop()` 自检 `require.cache` 里不得出现 `server/src/**` | 12 个文件全绿（自检通过） |
 | 目标起不来 | `CONTRACT_CMD="node -e process.exit(3)"` | 报 `目标进程提前退出 {"code":3}` + 命令 + 目标输出，退出码 1 |
 | 行为偏差能被抓 | 复制一份 `src/`，把登录限流 `max: 10` 改成 `max: 3`，只跑「登录爆破」用例 | 断言失败：`第 4 次应仍为 401`（429 ≠ 401），定位准确 |
 | 稳定性 | 嵌入模式连跑 3 次 | 100/100、100/100、100/100 |
-| 基线 | `npm run test:contract` | 84 例：81 通过、3 跳过（嵌入专用）、0 失败；**Node 目标与 Java 目标结果逐例一致** |
+| 基线（2026-10-10 晚，加入系统版凭据与内测渠道后） | `npm test` / `npm run test:contract` | 嵌入 110 例（106+4skip）；契约 90 例：87 通过、3 跳过、0 失败；**Node 目标与 Java 目标结果逐例一致**（Java 侧含白名单重启用例） |
 

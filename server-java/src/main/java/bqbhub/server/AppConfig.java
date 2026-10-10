@@ -7,6 +7,8 @@ import org.springframework.stereotype.Component;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * 配置中心：环境变量 + 本地 config.json（对应 server/src/config.js）。
@@ -28,6 +30,10 @@ public class AppConfig {
     public final Path configFile;
     public final String adminKey;
     public final String adminPasswordHash;
+    /** 系统版（内部构建）机器凭据：等价于管理员（对应 Node 版 config.systemKey，见交接文档「系统版」） */
+    public final String systemKey;
+    /** 可选设备白名单：非空时 systemKey 还必须叠加白名单内的 X-Install-Id 才生效 */
+    public final List<String> systemInstallIds;
     public final boolean regionBlock;
     public final int tlsPort;
     public final Path tlsCertFile;
@@ -71,6 +77,8 @@ public class AppConfig {
 
         String adminKey = env("ADMIN_KEY", "");
         String adminPasswordHash = env("ADMIN_PW_HASH", "");
+        String systemKey = env("SYSTEM_KEY", "");
+        List<String> systemInstallIds = List.of();
         boolean regionBlock = false;
         Smtp smtp = new Smtp("", 465, true, "", "", "");
 
@@ -85,6 +93,17 @@ public class AppConfig {
                 }
                 if (c.hasNonNull("adminPasswordHash") && c.get("adminPasswordHash").isTextual()) {
                     adminPasswordHash = c.get("adminPasswordHash").asText().trim();
+                }
+                if (c.hasNonNull("systemKey") && c.get("systemKey").isTextual()) {
+                    systemKey = c.get("systemKey").asText().trim();
+                }
+                JsonNode ids = c.get("systemInstallIds");
+                if (ids != null && ids.isArray()) {
+                    List<String> list = new ArrayList<>();
+                    for (JsonNode n : ids) {
+                        if (n.isTextual() && !n.asText().trim().isEmpty()) list.add(n.asText().trim());
+                    }
+                    systemInstallIds = list;
                 }
                 JsonNode s = c.get("smtp");
                 if (s != null && s.isObject()) {
@@ -103,6 +122,8 @@ public class AppConfig {
 
         this.adminKey = adminKey;
         this.adminPasswordHash = adminPasswordHash;
+        this.systemKey = systemKey;
+        this.systemInstallIds = systemInstallIds;
         this.regionBlock = regionBlock;
         this.smtp = smtp;
     }

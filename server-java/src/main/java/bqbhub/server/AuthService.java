@@ -4,6 +4,8 @@ import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.security.SecureRandom;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -97,12 +99,32 @@ public class AuthService {
         jdbc.update("DELETE FROM sessions WHERE user_id = ?", userId);
     }
 
-    /** 对应 isAdminReq：需要 X-Admin-Token（由 /api/admin/verify 签发的无状态 HMAC） */
+    /** 系统版（内部构建）机器凭据：X-System-Key 命中 config.systemKey（叠加 X-Install-Id 白名单）。
+     *  对应 Node 版 auth.js 的 isSystemReq；正式版客户端没有这个头。 */
+    public boolean isSystem(HttpServletRequest req) {
+        String key = cfg.systemKey == null ? "" : cfg.systemKey.trim();
+        if (key.isEmpty()) return false;
+        String got = Validators.str(req.getHeader("X-System-Key")).trim();
+        if (got.isEmpty() || !constantTimeEquals(got, key)) return false;
+        if (cfg.systemInstallIds != null && !cfg.systemInstallIds.isEmpty()) {
+            String id = Validators.str(req.getHeader("X-Install-Id")).trim();
+            if (id.isEmpty() || !cfg.systemInstallIds.contains(id)) return false;
+        }
+        return true;
+    }
+
+    /** 对应 isAdminReq：X-Admin-Token（由 /api/admin/verify 签发的无状态 HMAC）或系统版机器凭据，二者等价 */
     public boolean isAdmin(HttpServletRequest req) {
+        if (isSystem(req)) return true;
         if (cfg.adminPasswordHash == null || cfg.adminPasswordHash.isEmpty()) return false;
         String tk = Validators.str(req.getHeader("X-Admin-Token")).trim();
         if (tk.isEmpty()) return false;
         return AdminToken.verify(cfg.adminPasswordHash, tk);
+    }
+
+    /** 常量时间字符串比较（长度不同直接判否；避免 systemKey 被逐字符时序探测） */
+    private static boolean constantTimeEquals(String a, String b) {
+        return MessageDigest.isEqual(a.getBytes(StandardCharsets.UTF_8), b.getBytes(StandardCharsets.UTF_8));
     }
 
     /** 管理端写接口取令牌：Bearer 优先，其次 X-Admin-Token（与 system.js 的 trace 写法一致） */

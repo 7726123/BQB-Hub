@@ -21,6 +21,13 @@ const defaults = {
   // App「管理员模式」口令的 scrypt 派生值（明文不落任何文件）。空值 = 该入口关闭（403）。
   // 只从服务器本地 config.json（不入库）或环境变量 ADMIN_PW_HASH 读取。
   adminPasswordHash: process.env.ADMIN_PW_HASH || '',
+  // 系统版（内部构建）专用机器凭据：等价于管理员，但只下发给「系统版」APK（预配置管理员，无口令框）。
+  // 空值 = 系统版功能整体关闭。只从服务器本地 config.json（不入库）或环境变量 SYSTEM_KEY 读取；
+  // 轮换方式 = 改这里 + 重建系统版 APK（旧包立即失效）。
+  systemKey: process.env.SYSTEM_KEY || '',
+  // 可选设备白名单：非空时，带 systemKey 的请求还必须带白名单内的 X-Install-Id 才生效
+  // （防系统版 APK 外流后异地滥用；install_id 是客户端随机 32 位 hex，见 app/src/domain/stats.ts）。
+  systemInstallIds: [],
   // HTTPS：自签证书终端 TLS（App 内置同一张 CA 作为信任锚，签发与续期见部署侧本地文档）。
   // 证书文件不存在时自动跳过 HTTPS 监听（本地开发/测试无证书照常跑 HTTP），不影响旧客户端。
   // 端口由 TLS_PORT 控制（默认 80）：具体放行哪些端口由部署方安全组决定，改端口时
@@ -36,6 +43,11 @@ try {
   if (c && typeof c.regionBlock === 'boolean') defaults.regionBlock = c.regionBlock;
   if (c && typeof c.adminKey === 'string') defaults.adminKey = c.adminKey.trim();
   if (c && typeof c.adminPasswordHash === 'string') defaults.adminPasswordHash = c.adminPasswordHash.trim();
+  if (c && typeof c.systemKey === 'string') defaults.systemKey = c.systemKey.trim();
+  if (c && Array.isArray(c.systemInstallIds)) {
+    defaults.systemInstallIds = c.systemInstallIds
+      .filter((x) => typeof x === 'string' && x.trim().length > 0).map((x) => x.trim());
+  }
   if (c && c.smtp) defaults.smtp = Object.assign(defaults.smtp, c.smtp);
 } catch (e) { /* 无配置文件时使用默认值 */ }
 

@@ -24,6 +24,7 @@ const FILES = [
   'hardening-limits.test.js',
   'review.test.js',
   'stats.test.js',
+  'system-key.test.js',
   'tls.test.js',
   'web-bundle.test.js',
   'worldbook-meta.test.js',

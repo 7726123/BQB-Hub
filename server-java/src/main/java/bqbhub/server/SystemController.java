@@ -112,16 +112,28 @@ public class SystemController {
     }
 
     // ---------------------------------------------------------------- 网页包热更新
-    @GetMapping("/api/app/web-bundle")
-    public ResponseEntity<Map<String, Object>> webBundleManifest() {
-        Map<String, Object> man = null;
+    // channel=beta（系统版内测渠道）：只对系统版开放——X-System-Key（叠加 X-Install-Id 白名单）命中
+    // 才读 manifest-beta.json；其余一律读正式 manifest.json。beta 缺失/损坏时同样回落正式，
+    // 所以「还没发过 beta」不会让系统版收不到包（对应 Node 版 routes/system.js 的同名逻辑）。
+    private Map<String, Object> readManifest(String name) {
         try {
-            man = json.readValue(Files.readString(cfg.webBundleDir.resolve("manifest.json")), Map.class);
-        } catch (Exception e) { /* 还没发过热包 */ }
-        boolean ok = man != null && man.get("payload") instanceof String && man.get("sig") instanceof String;
+            Map<String, Object> m = json.readValue(Files.readString(cfg.webBundleDir.resolve(name)), Map.class);
+            return (m != null && m.get("payload") instanceof String && m.get("sig") instanceof String) ? m : null;
+        } catch (Exception e) { return null; }
+    }
+
+    @GetMapping("/api/app/web-bundle")
+    public ResponseEntity<Map<String, Object>> webBundleManifest(
+            @RequestParam(required = false) String channel, HttpServletRequest req) {
+        Map<String, Object> man = null;
+        if ("beta".equals(Validators.trim(Validators.str(channel))) && auth.isSystem(req)) {
+            man = readManifest("manifest-beta.json");
+        }
+        if (man == null) man = readManifest("manifest.json");
+        if (man == null) man = Map.of();
         return ResponseEntity.ok()
                 .header(HttpHeaders.CACHE_CONTROL, "no-store")
-                .body(ok ? man : Map.of());
+                .body(man);
     }
 
     @GetMapping("/web-bundle/{file}")
@@ -284,10 +296,11 @@ public class SystemController {
     // ---------------------------------------------------------------- 管理员留档
     @PostMapping("/api/admin/trace")
     public Map<String, Object> tracePost(@RequestBody(required = false) Map<String, Object> body, HttpServletRequest req) {
-        if (cfg.adminPasswordHash == null || cfg.adminPasswordHash.isEmpty()) {
+        boolean bySystemKey = auth.isSystem(req);   // 系统版：机器凭据（无令牌、无口令框）
+        if (!bySystemKey && (cfg.adminPasswordHash == null || cfg.adminPasswordHash.isEmpty())) {
             throw ApiError.of(403, "管理员校验未配置").put("ok", false);
         }
-        if (!AdminToken.verify(cfg.adminPasswordHash, auth.adminToken(req))) {
+        if (!bySystemKey && !AdminToken.verify(cfg.adminPasswordHash, auth.adminToken(req))) {
             throw ApiError.of(401, "令牌无效或已过期").put("ok", false);
         }
         if (!limiters.trace.allow(AuthService.clientIp(req))) {
