@@ -1,0 +1,35 @@
+# BQB Hub 社区服务端（Java 版）——端口与运行参数
+#
+# 端口/路径一律来自环境变量（与 Node 版同名，契约要求；见 server/tests/CONTRACT.md）：
+#   PORT DATA_DIR UPLOAD_DIR APK_DIR APP_VERSION_FILE WEB_BUNDLE_DIR CONFIG_FILE
+#   ADMIN_KEY ADMIN_PW_HASH TLS_PORT TLS_CERT_FILE TLS_KEY_FILE  （TLS 暂未实现，缺口见 README）
+server:
+  port: ${PORT:8899}
+  address: 0.0.0.0
+  # 单机 2 核 / 1.6G：Tomcat 线程收窄，别让空转线程吃掉内存
+  tomcat:
+    threads:
+      max: 50
+    max-connections: 200
+  compression:
+    enabled: false
+
+spring:
+  application:
+    name: bqbhub-server-java
+  main:
+    banner-mode: off
+  # 静态资源交给 @GetMapping 里的显式路由（/apk/*、/web-bundle/*），别被默认 resource handler 抢走
+  web:
+    resources:
+      add-mappings: false
+  mvc:
+    # 未知路径要走我们自己的 404 JSON（与 Node 版同款 {error:'未找到 <path>'}）
+    throw-exception-if-no-handler-found: true
+
+logging:
+  level:
+    root: INFO
+    org.springframework: WARN
+  pattern:
+    console: "%d{yyyy-MM-dd'T'HH:mm:ss.SSSXXX} %-5level %logger{20} - %msg%n"

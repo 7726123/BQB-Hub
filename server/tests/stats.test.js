@@ -2,41 +2,19 @@
 // 口径关键：同一设备多次启动只算一台；「在线」按最后心跳时间判定；「近 7/30 天」是滚动窗口不是自然周月。
 const { test, before, after } = require('node:test');
 const assert = require('node:assert/strict');
-const path = require('node:path');
-const fs = require('node:fs');
-const os = require('node:os');
-const http = require('node:http');
+const { start, stop, baseUrl, db, adminToken } = require('./helpers');
 
-const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'novel-stats-test-'));
-process.env.DATA_DIR = tmp;
-process.env.UPLOAD_DIR = path.join(tmp, 'uploads');
-process.env.APK_DIR = path.join(tmp, 'apk');
-process.env.APP_VERSION_FILE = path.join(tmp, 'app-version.json');
-process.env.WEB_BUNDLE_DIR = path.join(tmp, 'web-bundles');
-process.env.CONFIG_FILE = path.join(tmp, 'config.json');
-fs.writeFileSync(process.env.CONFIG_FILE, JSON.stringify({ smtp: {}, regionBlock: false }));
-fs.writeFileSync(process.env.APP_VERSION_FILE, JSON.stringify({ versionCode: 157, versionName: '1.5.97', apk: 'a.apk' }));
-process.env.PORT = String(16300 + (process.pid % 70));
-// 与 auth.isAdminReq 同款凭证：管理员口令派生值 + 由它签发的令牌
-process.env.ADMIN_PW_HASH = require('../src/adminpass').hashPassword('test-admin-pw-7x');
+let ADMIN = '';
 
-const app = require('../src/app');
-const db = require('../src/db');
-const { issueToken } = require('../src/adminpass');
-const server = http.createServer(app);
-const PORT = Number(process.env.PORT);
-const base = 'http://127.0.0.1:' + PORT;
-const ADMIN = issueToken(process.env.ADMIN_PW_HASH).token;
-
-before(() => new Promise((r) => server.listen(PORT, '127.0.0.1', r)));
-after(() => new Promise((r) => server.close(() => r())));
+before(async () => { await start(); ADMIN = await adminToken(); });
+after(async () => { await stop(); });
 
 function ping(body) {
-  return fetch(base + '/api/app/ping', {
+  return fetch(baseUrl + '/api/app/ping', {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
   });
 }
-function stats(headers = {}) { return fetch(base + '/api/admin/stats', { headers }); }
+function stats(headers = {}) { return fetch(baseUrl + '/api/admin/stats', { headers }); }
 
 test('上报：合法标识写入设备表与当天表', async () => {
   const r = await ping({ id: 'dev_aaaaaaaa1111', v: '1.5.97', w: '1.5.97w1', plat: 'android' });

@@ -2,8 +2,7 @@
 // 回归背景：原先上传要等 AI 生成标签（最长 20s 超时）才发 POST，用户体感是「卡住」。
 const test = require('node:test');
 const assert = require('node:assert');
-const { start, stop, req, seedCode, approveAll } = require('./helpers');
-const cardRoutes = require('../src/routes/card');
+const { start, stop, req, seedCode, approveAll, clearLimiters } = require('./helpers');
 
 const U1 = 'metauser1', U2 = 'metauser2';
 const PW = 'pass1234';
@@ -23,7 +22,7 @@ test.before(async () => {
     assert.equal(r.status, 200, JSON.stringify(r.json));
   }
 });
-test.beforeEach(() => { cardRoutes._limiters.commentLimiter.clear(); cardRoutes._limiters.likeLimiter.clear(); });
+test.beforeEach(async () => { await clearLimiters(); });
 test.after(async () => { await stop(); });
 
 async function login(email) {

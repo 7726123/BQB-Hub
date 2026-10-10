@@ -1,78 +1,43 @@
-// 管理员口令：派生/校验纯函数 + /api/admin/verify 接口行为（未配置 403 / 口令错 401 / 正确 200 / 限流 429）
+// 管理员口令：接口行为（口令错 401 / 正确 200 / 限流 429 / 未配置 403）+ 留档令牌接口。
+// 派生格式 scrypt$N$r$p$salt$hash 属接口契约（线上 config.json 存的就是它）；
+// 纯函数与无状态令牌格式属内部实现细节，只在嵌入模式断言（见 CONTRACT.md）。
 const { test, before, after } = require('node:test');
 const assert = require('node:assert/strict');
-const path = require('node:path');
-const fs = require('node:fs');
-const os = require('node:os');
+const { start, stop, req, clearLimiters, adminToken, adminHash, embeddedTest, ADMIN_TEST_PW } = require('./helpers');
 
-// 与 helpers 同款隔离（这里单独起环境，避免与 api.test 共享限流状态）
-const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'novel-admin-test-'));
-process.env.DATA_DIR = tmp;
-process.env.UPLOAD_DIR = path.join(tmp, 'uploads');
-process.env.APK_DIR = path.join(tmp, 'apk');
-process.env.APP_VERSION_FILE = path.join(tmp, 'app-version.json');
-process.env.ADMIN_KEY = 'test-admin-key';
-process.env.CONFIG_FILE = path.join(tmp, 'config.json');
-fs.writeFileSync(process.env.CONFIG_FILE, JSON.stringify({ smtp: {}, regionBlock: false }));
-fs.writeFileSync(process.env.APP_VERSION_FILE, JSON.stringify({ versionCode: 1, versionName: '1.0', apk: 'a.apk' }));
-process.env.PORT = String(15900 + (process.pid % 90));
+const PW = ADMIN_TEST_PW;
 
-const { hashPassword, verifyPassword, issueToken, verifyToken } = require('../src/adminpass');
-const app = require('../src/app');
-const http = require('node:http');
-const server = http.createServer(app);
-const PORT = Number(process.env.PORT);
-const base = 'http://127.0.0.1:' + PORT;
+before(async () => { await start(); });
+after(async () => { await stop(); });
 
-const PW = 'pw-for-test-9f3a';
-const HASH = hashPassword(PW);
-
-before(() => new Promise((r) => server.listen(PORT, '127.0.0.1', r)));
-after(() => new Promise((r) => server.close(() => r())));
-
-test('派生值不含明文；同口令不同盐派生出不同值', () => {
-  const h1 = hashPassword(PW), h2 = hashPassword(PW);
+test('口令派生值：契约格式 scrypt$N$r$p$salt$hash；不含明文；同口令不同盐不同值', () => {
+  const h1 = adminHash(PW), h2 = adminHash(PW);
   assert.ok(!h1.includes(PW) && !h2.includes(PW));
   assert.notEqual(h1, h2);
-  assert.match(h1, /^scrypt\$\d+\$\d+\$\d+\$[A-Za-z0-9+/=]+\$[A-Za-z0-9+/=]+$/);
-  assert.equal(verifyPassword(PW, h1), true);
-  assert.equal(verifyPassword(PW, h2), true);
+  assert.match(h1, /^scrypt\$16384\$8\$1\$[A-Za-z0-9+/=]+\$[A-Za-z0-9+/=]+$/);
+  // 同盐可复现：Java 侧对拍（tools/scrypt-parity）依赖的正是这个性质
+  const salt = Buffer.from(h1.split('$')[4], 'base64');
+  assert.equal(adminHash(PW, salt), h1);
+  assert.notEqual(adminHash('other', salt), h1);
 });
 
-test('verifyPassword：错误口令 / 空值 / 异常格式一律 false', () => {
-  assert.equal(verifyPassword('wrong', HASH), false);
-  assert.equal(verifyPassword('', HASH), false);
-  assert.equal(verifyPassword(PW, ''), false);
-  assert.equal(verifyPassword(PW, undefined), false);
-  assert.equal(verifyPassword(PW, 'bcrypt$1$2$3$xx$yy'), false);
-  assert.equal(verifyPassword(PW, 'scrypt$16384$8$1$@@@$###'), false);
-});
+test('/api/admin/verify：错口令 401、空口令 401、正确 200 带令牌、连续尝试 429', async () => {
+  await clearLimiters();
+  const post = (body) => req('POST', '/api/admin/verify', { body });
 
-test('未配置口令时接口 403；配置后：错口令 401、正确 200、超限 429', async () => {
-  const post = (body) => fetch(base + '/api/admin/verify', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
-  });
-
-  // 未配置（helpers 用的隔离 config 里没有 adminPasswordHash）
-  let r = await post({ password: PW });
-  assert.equal(r.status, 403);
-
-  // 配置后（直接改内存里的 config 对象，路由每次读取）
-  const config = require('../src/config');
-  config.adminPasswordHash = HASH;
-
-  r = await post({ password: 'wrong-password' });
+  let r = await post({ password: 'wrong-password' });
   assert.equal(r.status, 401);
-  assert.equal((await r.json()).ok, false);
+  assert.equal(r.json.ok, false);
 
   r = await post({});
   assert.equal(r.status, 401);
 
   r = await post({ password: PW });
   assert.equal(r.status, 200);
-  assert.equal((await r.json()).ok, true);
+  assert.equal(r.json.ok, true);
+  assert.ok(r.json.token, '正确口令应签发令牌');
 
-  // 限流：8 次/分钟。前两次已用掉 2 次（错口令 + 空口令 + 正确 1 次 = 3 次），继续打到超限
+  // 限流：8 次/分钟（上面已用掉 3 次），继续打到超限
   let limited = false;
   for (let i = 0; i < 12; i++) {
     const rr = await post({ password: 'x' });
@@ -81,7 +46,37 @@ test('未配置口令时接口 403；配置后：错口令 401、正确 200、�
   assert.equal(limited, true, '连续尝试应触发 429');
 });
 
-test('留档令牌：签发/校验/过期/换密钥失效', async () => {
+// 未配置口令 → 403 是部署态开关，只能改运行时配置，属嵌入模式专用
+embeddedTest('未配置口令时 /api/admin/verify → 403', async () => {
+  await clearLimiters();   // 上面把 verify 的桶打满过，先清桶再断言配置态
+  const config = require('../src/config');
+  const keep = config.adminPasswordHash;
+  config.adminPasswordHash = '';
+  try {
+    const r = await req('POST', '/api/admin/verify', { body: { password: PW } });
+    assert.equal(r.status, 403);
+  } finally { config.adminPasswordHash = keep; }
+});
+
+embeddedTest('adminpass.hashPassword 与契约格式一致（helpers.adminHash 对拍，防格式漂移）', async () => {
+  const { hashPassword, verifyPassword, issueToken, verifyToken } = require('../src/adminpass');
+  const h1 = hashPassword(PW), h2 = hashPassword(PW);
+  assert.ok(!h1.includes(PW) && !h2.includes(PW));
+  assert.notEqual(h1, h2);
+  assert.match(h1, /^scrypt\$16384\$8\$1\$[A-Za-z0-9+/=]+\$[A-Za-z0-9+/=]+$/);
+  assert.equal(verifyPassword(PW, h1), true);
+  assert.equal(verifyPassword(PW, h2), true);
+  assert.equal(verifyPassword('wrong', h1), false);
+  assert.equal(verifyPassword('', h1), false);
+  assert.equal(verifyPassword(PW, ''), false);
+  assert.equal(verifyPassword(PW, undefined), false);
+  assert.equal(verifyPassword(PW, 'bcrypt$1$2$3$xx$yy'), false);
+  assert.equal(verifyPassword(PW, 'scrypt$16384$8$1$@@@$###'), false);
+  // 与 helpers.adminHash（契约实现）互认：同盐同口令必须逐字节一致
+  const salt = Buffer.from(h1.split('$')[4], 'base64');
+  assert.equal(adminHash(PW, salt), h1);
+
+  // 无状态留档令牌（实现细节：签发/校验/过期/换密钥失效）
   const h = hashPassword('token-test-pw');
   const t = issueToken(h);
   assert.ok(t && t.token && t.exp > Date.now());
@@ -95,48 +90,45 @@ test('留档令牌：签发/校验/过期/换密钥失效', async () => {
   assert.equal(verifyToken(h, short.token), false, '过期令牌必须拒绝');
 });
 
-test('留档接口：无令牌 401 / 令牌可写 / adminKey 可读可清 / 未配置 adminKey 403', async () => {
-  const config = require('../src/config');
-  config.adminPasswordHash = HASH;
-  const token = issueToken(HASH).token;
-  const body = JSON.stringify({
+test('留档接口：无令牌 401 / 坏令牌 401 / 令牌可写 / adminKey 可读可清 / HTML 视图', async () => {
+  await clearLimiters();   // 上面把 verify 的桶打满过（契约模式靠重启目标进程清桶）
+  const ADMIN = await adminToken();
+  const body = {
     book: '测试书', round: 3, model: 'test-model', windowChars: 10000, budget: 30000,
     instruction: '让小鞠出场', continuation: '第一段正文……',
     recall: { pieces: [{ head: '旧正文片段', chars: 800, src: '直收' }], chars: 800, candidates: 42 },
-  });
+  };
 
-  let r = await fetch(base + '/api/admin/trace', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body });
+  let r = await req('POST', '/api/admin/trace', { body });
   assert.equal(r.status, 401, '无令牌应 401');
 
-  r = await fetch(base + '/api/admin/trace', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer bad.token' }, body });
+  r = await req('POST', '/api/admin/trace', { token: 'bad.token', body });
   assert.equal(r.status, 401, '坏令牌应 401');
 
-  r = await fetch(base + '/api/admin/trace', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token }, body });
+  r = await req('POST', '/api/admin/trace', { token: ADMIN, body });
   assert.equal(r.status, 200);
-  assert.equal((await r.json()).ok, true);
+  assert.equal(r.json.ok, true);
 
-  // 读取需要 adminKey（本测试进程 env ADMIN_KEY=test-admin-key）
-  r = await fetch(base + '/api/admin/traces?limit=5');
+  // 读取需要 adminKey（helpers 环境里 ADMIN_KEY=test-admin-key）
+  r = await req('GET', '/api/admin/traces?limit=5');
   assert.equal(r.status, 403, '缺 adminKey 应 403');
 
-  r = await fetch(base + '/api/admin/traces?limit=5', { headers: { 'x-admin-key': 'test-admin-key' } });
+  r = await req('GET', '/api/admin/traces?limit=5', { headers: { 'x-admin-key': 'test-admin-key' } });
   assert.equal(r.status, 200);
-  const j = await r.json();
-  assert.equal(j.traces.length, 1);
-  assert.equal(j.traces[0].instruction, '让小鞠出场');
-  assert.match(j.traces[0].recall_json, /旧正文片段/);
+  assert.equal(r.json.traces.length, 1);
+  assert.equal(r.json.traces[0].instruction, '让小鞠出场');
+  assert.match(r.json.traces[0].recall_json, /旧正文片段/);
 
-  // HTML 视图
-  r = await fetch(base + '/api/admin/traces?limit=5&format=html', { headers: { 'x-admin-key': 'test-admin-key' } });
+  // HTML 视图（返回 HTML 文本，helpers.req 落到 json 字段里）
+  r = await req('GET', '/api/admin/traces?limit=5&format=html', { headers: { 'x-admin-key': 'test-admin-key' } });
   assert.equal(r.status, 200);
-  const html = await r.text();
-  assert.match(html, /管理员模式留档/);
-  assert.match(html, /让小鞠出场/);
+  assert.match(String(r.json), /管理员模式留档/);
+  assert.match(String(r.json), /让小鞠出场/);
 
   // 清空
-  r = await fetch(base + '/api/admin/traces', { method: 'DELETE', headers: { 'x-admin-key': 'test-admin-key' } });
+  r = await req('DELETE', '/api/admin/traces', { headers: { 'x-admin-key': 'test-admin-key' } });
   assert.equal(r.status, 200);
-  assert.equal((await r.json()).deleted, 1);
-  r = await fetch(base + '/api/admin/traces?limit=5', { headers: { 'x-admin-key': 'test-admin-key' } });
-  assert.equal((await r.json()).traces.length, 0);
+  assert.equal(r.json.deleted, 1);
+  r = await req('GET', '/api/admin/traces?limit=5', { headers: { 'x-admin-key': 'test-admin-key' } });
+  assert.equal(r.json.traces.length, 0);
 });

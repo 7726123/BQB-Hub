@@ -1,0 +1,4 @@
+# 管理员口令夹具（server/src/adminpass.js 格式，也是线上 config.json 的 adminPasswordHash 格式）
+# 列：note <TAB> passwordHex <TAB> saltB64 <TAB> expectStored(scrypt$N$r$p$saltB64$hashB64)
+管理员口令（ASCII）	746573742d61646d696e2d7077	ABEiM0RVZneImaq7zN3u/w==	scrypt$16384$8$1$ABEiM0RVZneImaq7zN3u/w==$P4dQtSfNzmeTyYzc1cV/dJ0birTAVe2KmmOw5SVBRsQ=
+管理员口令（中文）	e7aea1e79086e59198e58fa3e4bba4e4b8ade69687	3q2+796tvu/erb7v3q2+7w==	scrypt$16384$8$1$3q2+796tvu/erb7v3q2+7w==$wrMUmz5fptPTPwJbjrlgG2xlVu/uzRvgu1t1d+88q4I=

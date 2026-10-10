@@ -1,0 +1,4 @@
+# 运行产物：每次 run.sh / run.cmd 都会重写（Reverse 校验用），不入库
+java-generated.tsv
+# 下载的 Bouncy Castle jar（依赖，不入库）
+*.jar

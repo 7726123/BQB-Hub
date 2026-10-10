@@ -2,19 +2,15 @@
 // 管理员通过后才公开，驳回保留记录（作者可见并可自行删除）；管理员自己上传直接公开；审核动作写 review_log。
 const { test, before, after } = require('node:test');
 const assert = require('node:assert/strict');
-const { start, stop, baseUrl, req, seedCode, db } = require('./helpers');
-const config = require('../src/config');
-const { hashPassword, issueToken } = require('../src/adminpass');
+const { start, stop, baseUrl, req, seedCode, db, adminToken } = require('./helpers');
 
 const U1 = 'rvwuser1', U2 = 'rvwuser2';
 const PW = 'pass1234', CODE = '246810';
-const HASH = hashPassword('pw-review-test');
-let adminToken = '';
+let ADMIN = '';
 
 before(async () => {
   await start();
-  config.adminPasswordHash = HASH;           // 直接改内存配置：路由每次读取（同 adminpass.test 的手法）
-  adminToken = issueToken(HASH).token;
+  ADMIN = await adminToken();               // 走 HTTP 取管理员令牌（见 CONTRACT.md）
   for (const u of [U1, U2]) {
     seedCode(u + '@example.com', 'register', CODE);
     const r = await req('POST', '/api/auth/register', { body: { username: u, password: PW, email: u + '@example.com', code: CODE } });
@@ -31,7 +27,7 @@ async function login(u) {
 
 /** 带管理员令牌的原始请求（helpers.req 只支持 Authorization；管理员上传两者都要） */
 async function adminReq(method, pathname, body, userToken) {
-  const headers = { 'Content-Type': 'application/json', 'X-Admin-Token': adminToken };
+  const headers = { 'Content-Type': 'application/json', 'X-Admin-Token': ADMIN };
   if (userToken) headers.Authorization = 'Bearer ' + userToken;
   const r = await fetch(baseUrl + pathname, {
     method, headers, body: body === undefined ? undefined : JSON.stringify(body),

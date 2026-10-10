@@ -5,14 +5,11 @@ const { test, before, after } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { start, stop, req, seedCode, clearLimiters } = require('./helpers');
-const config = require('../src/config');
-const { hashPassword, issueToken } = require('../src/adminpass');
+const { start, stop, req, seedCode, clearLimiters, paths, adminToken } = require('./helpers');
 
 const U = 'coveruser', PW = 'pass1234', CODE = '112233';
-const HASH = hashPassword('pw-cover-test');
-const UPLOADS = config.UPLOAD_DIR;
-let adminToken = '';
+const UPLOADS = paths.uploads;
+let ADMIN = '';
 let token = '';
 const content = JSON.stringify({ entries: [{ type: '其他', name: 'x', content: 'y' }] });
 
@@ -21,8 +18,7 @@ const EVIL = 'data:image/png;base64,AAAA" onerror="localStorage.setItem(\'pwn\',
 
 before(async () => {
   await start();
-  config.adminPasswordHash = HASH;
-  adminToken = issueToken(HASH).token;
+  ADMIN = await adminToken();
   seedCode(U + '@example.com', 'register', CODE);
   const r = await req('POST', '/api/auth/register', { body: { username: U, password: PW, email: U + '@example.com', code: CODE } });
   assert.equal(r.status, 200, JSON.stringify(r.json));
@@ -33,7 +29,7 @@ after(async () => { await stop(); });
 async function review(type, id, action) {
   const r = await fetch('http://127.0.0.1:' + process.env.PORT + '/api/admin/review/action', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'X-Admin-Token': adminToken },
+    headers: { 'Content-Type': 'application/json', 'X-Admin-Token': ADMIN },
     body: JSON.stringify({ type, id, action }),
   });
   return { status: r.status, json: await r.json() };
@@ -45,7 +41,7 @@ test('封面：属性逃逸载荷被拒（世界书 / 预设）', async () => {
     assert.equal(r.status, 400, p + ' 应拒绝');
     assert.match(r.json.error, /封面格式不正确/);
   }
-  clearLimiters();
+  await clearLimiters();
 });
 
 test('封面：前缀合法但尾部有杂质一律拒绝', async () => {
@@ -62,7 +58,7 @@ test('封面：前缀合法但尾部有杂质一律拒绝', async () => {
     const r = await req('POST', '/api/worldbook/upload', { token, body: { title: '杂质', category: '综合', content, cover } });
     assert.equal(r.status, 400, cover + ' 应拒绝');
   }
-  clearLimiters();
+  await clearLimiters();
 });
 
 test('封面：正常 data URI 照常通过（含填充与各类图片）', async () => {
@@ -79,7 +75,7 @@ test('封面：正常 data URI 照常通过（含填充与各类图片）', asyn
     const detail = await req('GET', '/api/worldbook/detail?id=' + r.json.id, { token });
     assert.equal(detail.json.item.cover, cover, '落库应与提交完全一致');
   }
-  clearLimiters();
+  await clearLimiters();
 });
 
 test('封面：超大仍提示「过大」而不是「格式不正确」', async () => {
@@ -87,7 +83,7 @@ test('封面：超大仍提示「过大」而不是「格式不正确」', async
   const r = await req('POST', '/api/preset/upload', { token, body: { title: '大封面', category: '综合', content, cover: big } });
   assert.equal(r.status, 400);
   assert.match(r.json.error, /封面图片过大/);
-  clearLimiters();
+  await clearLimiters();
 });
 
 test('驳回：内容文件从磁盘移除，记录与留痕保留（世界书 / 预设）', async () => {
@@ -111,7 +107,7 @@ test('驳回：内容文件从磁盘移除，记录与留痕保留（世界书 /
   // 内容已不在：预览按「文件已丢失」处理，不会泄露内容
   const pv = await req('GET', '/api/worldbook/preview?id=' + wb.json.id, { token });
   assert.equal(pv.status, 404);
-  clearLimiters();
+  await clearLimiters();
 });
 
 test('通过：内容文件保持不动（审核门只放行，不删内容）', async () => {
@@ -120,7 +116,7 @@ test('通过：内容文件保持不动（审核门只放行，不删内容）',
   assert.equal((await review('worldbook', wb.json.id, 'approve')).status, 200);
   assert.ok(fs.existsSync(file), '通过后文件应仍在');
   assert.equal((await req('GET', '/api/worldbook/preview?id=' + wb.json.id, { token })).status, 200);
-  clearLimiters();
+  await clearLimiters();
 });
 
 test('插件：驳回同时清掉清单与 zip 载荷', async () => {
@@ -133,7 +129,7 @@ test('插件：驳回同时清掉清单与 zip 载荷', async () => {
 
   assert.equal((await review('plugin', up.json.id, 'reject')).status, 200);
   assert.equal(fs.existsSync(mfile), false, '驳回后清单应被删除');
-  clearLimiters();
+  await clearLimiters();
 });
 
 test('作者删除：载荷同样清理（世界书）', async () => {
@@ -142,5 +138,5 @@ test('作者删除：载荷同样清理（世界书）', async () => {
   assert.ok(fs.existsSync(file));
   assert.equal((await req('DELETE', '/api/worldbook/delete?id=' + wb.json.id, { token })).status, 200);
   assert.equal(fs.existsSync(file), false, '删除后文件应被删除');
-  clearLimiters();
+  await clearLimiters();
 });

@@ -312,6 +312,7 @@ router.delete('/api/admin/traces', (req, res) => {
   return res.json({ ok: true, deleted: info.changes });
 });
 
-router._limiters = { clLimiter, missLimiter, traceLimiter };
+// 测试钩子：导出本路由的内存限流器（adminLimiter 供测试清桶，见 tests/helpers.js）
+router._limiters = { clLimiter, missLimiter, traceLimiter, adminLimiter };
 
 module.exports = router;

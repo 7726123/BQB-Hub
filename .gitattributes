@@ -1,6 +1,8 @@
 # 行尾固定：这个文件是给 Windows 用户双击运行的批处理，仓库里必须保持 CRLF
 # （否则在 cmd.exe 下可能出错；App 打包时读的是工作区文件，避免克隆后与线上产物不一致）
 web/skill/host/启动.cmd text eol=crlf
+# 同上：服务端 scrypt 跨语言对拍的一键运行批处理，保持 CRLF（Windows 用户会双击运行）
+server/tools/scrypt-parity/run.cmd text eol=crlf
 web/skill/SKILL.md text eol=lf
 web/skill/host/serve.mjs text eol=lf
 web/skill/host/comfy-workflow.mjs text eol=lf

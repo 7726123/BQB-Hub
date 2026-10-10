@@ -1,0 +1,10 @@
+# Java 工程构建产物
+target/
+*.log
+# 本地运行时目录（默认落在工程根，实际部署用环境变量指向别处）
+data/
+uploads/
+apk/
+web-bundles/
+config.json
+app-version.json

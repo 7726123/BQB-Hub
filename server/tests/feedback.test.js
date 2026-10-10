@@ -5,52 +5,31 @@
 //   · 保留 1000 条：超限**优先删最旧的已查看**，未读是管理员还没处理的工作。
 const { test, before, after, beforeEach } = require('node:test');
 const assert = require('node:assert/strict');
-const path = require('node:path');
-const fs = require('node:fs');
-const os = require('node:os');
-const http = require('node:http');
+const { start, stop, baseUrl, db, clearLimiters, adminToken } = require('./helpers');
 
-const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'novel-feedback-test-'));
-process.env.DATA_DIR = tmp;
-process.env.UPLOAD_DIR = path.join(tmp, 'uploads');
-process.env.APK_DIR = path.join(tmp, 'apk');
-process.env.APP_VERSION_FILE = path.join(tmp, 'app-version.json');
-process.env.WEB_BUNDLE_DIR = path.join(tmp, 'web-bundles');
-process.env.CONFIG_FILE = path.join(tmp, 'config.json');
-fs.writeFileSync(process.env.CONFIG_FILE, JSON.stringify({ smtp: {}, regionBlock: false }));
-fs.writeFileSync(process.env.APP_VERSION_FILE, JSON.stringify({ versionCode: 157, versionName: '1.5.97', apk: 'a.apk' }));
-process.env.PORT = String(16400 + (process.pid % 70));
-process.env.ADMIN_PW_HASH = require('../src/adminpass').hashPassword('test-admin-pw-fb');
+let ADMIN = '';
 
-const app = require('../src/app');
-const db = require('../src/db');
-const { issueToken } = require('../src/adminpass');
-const server = http.createServer(app);
-const PORT = Number(process.env.PORT);
-const base = 'http://127.0.0.1:' + PORT;
-const ADMIN = issueToken(process.env.ADMIN_PW_HASH).token;
-
-before(() => new Promise((r) => server.listen(PORT, '127.0.0.1', r)));
-// 每个用例前清空内存限流桶：测试全在同一 IP 上跑，IP 兜底（20 条/小时）会被测试自己撞满
-const { __limiters } = require('../src/routes/feedback');
-beforeEach(() => { Object.values(__limiters).forEach((l) => l.clear()); });
-after(() => new Promise((r) => server.close(() => r())));
+before(async () => { await start(); ADMIN = await adminToken(); });
+// 每个用例前清空限流桶：测试全在同一 IP 上跑，IP 兜底（20 条/小时）会被测试自己撞满
+// （契约模式下这是重启目标进程，见 helpers.js / CONTRACT.md）
+beforeEach(async () => { await clearLimiters(); });
+after(async () => { await stop(); });
 
 let seq = 0;
 const newId = () => 'fb-' + Date.now().toString(36) + '-' + (seq++);
 
 function send(body, headers) {
-  return fetch(base + '/api/feedback', {
+  return fetch(baseUrl + '/api/feedback', {
     method: 'POST',
     headers: Object.assign({ 'Content-Type': 'application/json' }, headers || {}),
     body: JSON.stringify(body),
   });
 }
 function adminGet(qs, headers) {
-  return fetch(base + '/api/admin/feedback' + (qs || ''), { headers: Object.assign({ 'X-Admin-Token': ADMIN }, headers || {}) });
+  return fetch(baseUrl + '/api/admin/feedback' + (qs || ''), { headers: Object.assign({ 'X-Admin-Token': ADMIN }, headers || {}) });
 }
 function adminPost(p, body, headers) {
-  return fetch(base + '/api/admin/feedback' + p, {
+  return fetch(baseUrl + '/api/admin/feedback' + p, {
     method: 'POST',
     headers: Object.assign({ 'Content-Type': 'application/json', 'X-Admin-Token': ADMIN }, headers || {}),
     body: JSON.stringify(body || {}),
@@ -131,7 +110,7 @@ test('裁剪：超过 1000 条时优先删最旧的已查看，未查看保留',
 });
 
 test('管理员列表：需要令牌；状态筛选与计数正确', async () => {
-  assert.equal((await fetch(base + '/api/admin/feedback')).status, 401);
+  assert.equal((await fetch(baseUrl + '/api/admin/feedback')).status, 401);
   assert.equal((await adminGet('', { 'X-Admin-Token': 'bad' })).status, 401);
 
   const body = await (await adminGet('?status=unread')).json();
@@ -144,7 +123,7 @@ test('管理员列表：需要令牌；状态筛选与计数正确', async () =>
 });
 
 test('统计接口带上反馈未读数（管理页进页一次拿到，不用另开轮询）', async () => {
-  const j = await (await fetch(base + '/api/admin/stats', { headers: { 'X-Admin-Token': ADMIN } })).json();
+  const j = await (await fetch(baseUrl + '/api/admin/stats', { headers: { 'X-Admin-Token': ADMIN } })).json();
   const unread = db.prepare('SELECT COUNT(*) c FROM feedback WHERE read_at IS NULL').get().c;
   assert.equal(j.feedbackUnread, unread);
 });
@@ -167,7 +146,7 @@ test('删除：管理员可删单条；无令牌 401；无 id 400', async () => 
   const id = newId();
   await send({ id, text: '要被删掉的反馈' });
   const row = db.prepare('SELECT id FROM feedback WHERE install_id = ?').get(id);
-  assert.equal((await fetch(base + '/api/admin/feedback/delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: row.id }) })).status, 401);
+  assert.equal((await fetch(baseUrl + '/api/admin/feedback/delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: row.id }) })).status, 401);
   assert.equal((await adminPost('/delete', {})).status, 400);
   const del = await (await adminPost('/delete', { id: row.id })).json();
   assert.equal(del.changed, 1);

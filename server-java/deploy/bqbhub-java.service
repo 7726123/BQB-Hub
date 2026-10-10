@@ -1,0 +1,36 @@
+# BQB Hub 社区服务端（Java 版）——**切换时**用的生产单元（参考文件，本仓库不负责启用）
+#
+# 用法（切换那一刻，在服务器上）：
+#   systemctl stop novel-community
+#   cp /server-java/deploy/bqbhub-java.service /etc/systemd/system/bqbhub-java.service
+#   systemctl daemon-reload && systemctl enable --now bqbhub-java
+#   curl -s http://127.0.0.1:8899/api/health          # 应回 {"ok":true,...}
+#   # 回滚（秒级）：systemctl disable --now bqbhub-java && systemctl start novel-community
+#
+# 环境变量与 Node 版**同名同值**（契约，见 server/tests/CONTRACT.md 第一节）；
+# 这里的路径/端口就是现网 Node 服务在用的那套（8899=HTTP、80=TLS、/server/*）。
+# adminKey / adminPasswordHash / smtp 都从 CONFIG_FILE 读，不需要额外的环境变量。
+[Unit]
+Description=BQB Hub Community Server (Java)
+After=network.target
+
+[Service]
+WorkingDirectory=/server
+Environment=PORT=8899
+Environment=TLS_PORT=80
+Environment=DATA_DIR=/server/data
+Environment=UPLOAD_DIR=/server/uploads
+Environment=APK_DIR=/server/apk
+Environment=APP_VERSION_FILE=/server/app-version.json
+Environment=WEB_BUNDLE_DIR=/server/web-bundles
+Environment=CONFIG_FILE=/server/config.json
+Environment=TLS_CERT_FILE=/server/certs/server.crt
+Environment=TLS_KEY_FILE=/server/certs/server.key
+# 内存：实测空载 RSS ~192MB（见 server-java/README.md）；1.6G 的机器给 1G 上限兜底
+ExecStart=/usr/bin/java -Xmx384m -XX:MaxMetaspaceSize=128m -Xss512k -jar /server-java/bqbhub-server-java.jar
+Restart=always
+RestartSec=3
+MemoryMax=1024M
+
+[Install]
+WantedBy=multi-user.target

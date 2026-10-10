@@ -3,18 +3,17 @@
 // 各种排序（最新/热门/活跃）与级联清理。
 const test = require('node:test');
 const assert = require('node:assert');
-const { start, stop, req, seedCode, approveAll } = require('./helpers');
-const cardRoutes = require('../src/routes/card');
+const { start, stop, req, seedCode, approveAll, clearLimiters } = require('./helpers');
 
 const U1 = 'carduser1', U2 = 'carduser2', U3 = 'carduser3';
 const PW = 'pass1234';
 const CODE = '123456';
 let EMAIL = '';
 
-test.beforeEach(() => {
+test.beforeEach(async () => {
   // 评论/点赞有频率限制（生产行为），测试里每个用例自己清桶
-  cardRoutes._limiters.commentLimiter.clear();
-  cardRoutes._limiters.likeLimiter.clear();
+  // （契约模式下这是重启目标进程，见 helpers.js / CONTRACT.md）
+  await clearLimiters();
 });
 
 test.before(async () => {

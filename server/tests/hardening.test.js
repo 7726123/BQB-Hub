@@ -1,15 +1,13 @@
 // 加固回归：登录爆破保护 / 验证码防猜码 / 发信防轰炸 / client-logs 鉴权（等长错误 key 也 403）
 const { test, before, after } = require('node:test');
 const assert = require('node:assert/strict');
-const { start, stop, baseUrl, req } = require('./helpers');
+const { start, stop, baseUrl, req, clearLimiters } = require('./helpers');
 
 before(async () => { await start(); });
 after(async () => { await stop(); });
 
-const authLimiters = require('../src/routes/auth')._limiters;
-
 test('登录爆破保护：同 IP+账号 连续 10 次失败后 → 429，清桶后恢复', async () => {
-  authLimiters.loginLimiter.clear();
+  await clearLimiters();
   const email = 'brute@example.com'; // 未注册 → 每次 401
   for (let i = 0; i < 10; i++) {
     const r = await req('POST', '/api/auth/login', { body: { email, password: 'wrong' } });
@@ -17,13 +15,13 @@ test('登录爆破保护：同 IP+账号 连续 10 次失败后 → 429，清桶
   }
   const blocked = await req('POST', '/api/auth/login', { body: { email, password: 'wrong' } });
   assert.equal(blocked.status, 429);
-  authLimiters.loginLimiter.clear();
+  await clearLimiters();
   const recovered = await req('POST', '/api/auth/login', { body: { email, password: 'wrong' } });
   assert.equal(recovered.status, 401);
 });
 
 test('验证码防猜码：同邮箱 10 次错误验证码后 → 429', async () => {
-  authLimiters.codeGuessLimiter.clear();
+  await clearLimiters();
   const email = 'guess@example.com';
   for (let i = 0; i < 10; i++) {
     const r = await req('POST', '/api/auth/login-code', { body: { email, code: '000000' } });
@@ -31,18 +29,18 @@ test('验证码防猜码：同邮箱 10 次错误验证码后 → 429', async ()
   }
   const blocked = await req('POST', '/api/auth/login-code', { body: { email, code: '000000' } });
   assert.equal(blocked.status, 429);
-  authLimiters.codeGuessLimiter.clear();
+  await clearLimiters();
 });
 
 test('发信防轰炸：同 IP 超限后 send-code → 429', async () => {
-  authLimiters.sendCodeLimiter.clear();
+  await clearLimiters();
   // 触发限流：直接打满 10 次（前若干次可能是 400/500，都不影响计数）
   for (let i = 0; i < 10; i++) {
     await req('POST', '/api/auth/send-code', { body: { email: `bomb${i}@example.com` } });
   }
   const blocked = await req('POST', '/api/auth/send-code', { body: { email: 'bomb-final@example.com' } });
   assert.equal(blocked.status, 429);
-  authLimiters.sendCodeLimiter.clear();
+  await clearLimiters();
 });
 
 test('client-logs 查看：等长错误 admin key → 403（常量时间比较路径）', async () => {
