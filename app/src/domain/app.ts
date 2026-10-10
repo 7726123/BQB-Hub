@@ -633,16 +633,19 @@ const App: AppShape = {
   },
 
   async testImageHost() {
+    // 2026-10-08：把这次探测的**耗时**一起显示出来——用户据此就能区分"真的连不上"和"主机慢/正忙"。
+    const t0 = Date.now();
     const st = await ImageHost.status(4000);
-    App._syncImageHostUI(st);
+    const sec = Math.round((Date.now() - t0) / 100) / 10;
+    App._syncImageHostUI(st, sec);
     App.toast(st.ok
-      ? ('画图主机在线 · ' + (st.model || '未知模型'))
-      : ('画图主机连接失败 · ' + (st.error || '未知错误')));
+      ? ('画图主机在线 · ' + (st.model || '未知模型') + '（' + sec + 's）')
+      : ('画图主机连接失败 · ' + (st.error || '未知错误') + '（等了 ' + sec + 's）'));
     return st;
   },
 
   // 把 imageHostConfig（以及可选的探测结果）刷到设置页三栏 + 状态行上
-  _syncImageHostUI(st?: any) {
+  _syncImageHostUI(st?: any, tookSec?: number) {
     try {
       const c = ImageHost.config();
       const en = document.getElementById('imageHostEnabled') as HTMLInputElement | null;
@@ -658,10 +661,11 @@ const App: AppShape = {
         badge.style.background = c.enabled ? '#10b981' : '#6b7280';
       }
       if (state0) {
+        const took = (typeof tookSec === 'number' && tookSec > 0) ? ('（' + tookSec + 's）') : '';
         if (st) {
           state0.textContent = st.ok
-            ? ('在线 · ' + (st.model || '未知模型') + (st.steps ? (' · ' + st.steps + ' 步') : ''))
-            : ('连接失败 · ' + (st.error || '未知错误'));
+            ? ('在线 · ' + (st.model || '未知模型') + (st.steps ? (' · ' + st.steps + ' 步') : '') + took)
+            : ('连接失败 · ' + (st.error || '未知错误') + took);
         } else {
           state0.textContent = (c.enabled && c.base) ? '已配置' : (c.base ? '未启用' : '未配置');
         }

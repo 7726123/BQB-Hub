@@ -12,6 +12,8 @@ const anyG = globalThis as unknown as Record<string, unknown>;
 const ih = vi.hoisted(() => ({
   ready: true,
   statusCalls: 0,
+  statusTimeouts: [] as any[],   // 每次 status 调用传的超时（探测放宽到 3000ms 的守卫，2026-10-08）
+  statusQueue: [] as any[],      // 依次返回的探测结果（测"失败重试"用；空了就用 statusResult）
   statusResult: { ok: true, model: 'miaomiaoRealskin_anima13.safetensors', hint: 'tag 风格，用 danbooru tag', caps: ['img2img', 'hires'] } as any,
   drawCalls: [] as any[],
   drawResult: { ok: true, jobId: 'job1' } as any,
@@ -19,6 +21,7 @@ const ih = vi.hoisted(() => ({
   image: 'data:image/png;base64,AAA',
   applies: [] as any[],
   applyResult: null as any,
+  applyResults: [] as any[],     // 依次返回（测"角色先落地、再重试设头像"用；空了才用 applyResult / 默认成功）
   viewed: [] as string[]
 }));
 
@@ -38,12 +41,17 @@ vi.mock('../src/domain/imagehost', () => ({
     ready: () => ih.ready,
     config: () => ({ enabled: ih.ready, base: 'http://h:1', token: 't' }),
     save: (p: any) => p,
-    status: async () => { ih.statusCalls++; return ih.statusResult; },
+    status: async (t: any) => {
+      ih.statusCalls++; ih.statusTimeouts.push(t);
+      if (ih.statusQueue.length) return ih.statusQueue.shift();
+      return ih.statusResult;
+    },
     draw: async (o: any) => { ih.drawCalls.push(o); return ih.drawResult; },
     waitJob: async (id: any, o: any) => { if (o && o.onTick) o.onTick({ elapsed: 3000 }); return ih.waitResult; },
     imageDataUrl: async () => ih.image,
     applyAvatarToCharacter: (name: string, url: string, bookId?: string) => {
       ih.applies.push({ name: name, url: url, bookId: bookId });
+      if (ih.applyResults.length) return ih.applyResults.shift();
       if (ih.applyResult) return ih.applyResult;
       return { ok: true, message: '已把「' + name + '」的头像设为这张图（已写入世界书）' };
     }
@@ -72,11 +80,11 @@ beforeAll(async () => {
 });
 
 beforeEach(() => {
-  ih.ready = true; ih.statusCalls = 0;
+  ih.ready = true; ih.statusCalls = 0; ih.statusTimeouts = []; ih.statusQueue = [];
   ih.statusResult = { ok: true, model: 'miaomiaoRealskin_anima13.safetensors', hint: 'tag 风格，用 danbooru tag', caps: ['img2img', 'hires'] };
   ih.drawCalls = []; ih.drawResult = { ok: true, jobId: 'job1' };
   ih.waitResult = { ok: true, meta: { status: 'done', seed: 42, size: '768x768', elapsed: 9800 } };
-  ih.image = 'data:image/png;base64,AAA'; ih.applies = []; ih.applyResult = null; ih.viewed = [];
+  ih.image = 'data:image/png;base64,AAA'; ih.applies = []; ih.applyResult = null; ih.applyResults = []; ih.viewed = [];
   WB_BOOKS = [{ id: 'wb1', entries: [{ id: 'e1', type: '角色', name: '林晚', content: '…' }] }];
   C.messages = [];
   C._draft = { characters: [], entries: [], deleted: [] };
@@ -107,6 +115,22 @@ describe('生图规则注入（_imageRuleMessage）', () => {
     expect(t).toContain('不要输出生图提示词');
     expect(t).toContain('设置 → AI 与生成 → 画图主机');
     expect(t).not.toContain('你可以用 draw_image');
+  });
+
+  it('看图默认关闭、头像不主动提（2026-10-08 用户要求）：只是跑图时不看也不评价', () => {
+    C._drawToolsOn = true;
+    C._hostStatus = { at: Date.now(), ok: true, model: 'm', hint: '', caps: ['img2img'] };
+    const t = C._imageRuleMessage();
+    expect(t).toContain('默认不看、更不要评价');
+    expect(t).toContain('不要点评画面');                 // 用户没问就不评价（评价会影响用户自己的喜好）
+    expect(t).toContain('不要主动提头像');
+    expect(t).toContain('以图改图');                     // 改图流程仍允许看图（看完再决定怎么改）
+    expect(t).not.toContain('出图后软件会把刚画的图附给你看');   // 不再自动附图
+    const draw = C._tools().find((x: any) => x.function.name === 'draw_image');
+    expect(draw.function.description).not.toContain('询问要不要设为某个角色的头像');
+    expect(draw.function.description).toContain('不要主动点评画面');
+    const look = C._tools().find((x: any) => x.function.name === 'look_at_image');
+    expect(look.function.description).toContain('默认不看');
   });
 });
 
@@ -161,7 +185,7 @@ describe('门控与主机状态', () => {
     expect(draw.function.parameters.properties.base_image.description).toContain('不够成熟');
   });
 
-  it('_refreshHostStatus：未启用不发请求；在线置 true；60 秒内复用缓存；失败置 false', async () => {
+  it('_refreshHostStatus：未启用不发请求；在线置 true；60 秒内复用缓存；离线重试一次且只压 10 秒', async () => {
     ih.ready = false;
     await C._refreshHostStatus();
     expect(C._drawToolsOn).toBe(false);
@@ -171,14 +195,115 @@ describe('门控与主机状态', () => {
     await C._refreshHostStatus();
     expect(C._drawToolsOn).toBe(true);
     expect(ih.statusCalls).toBe(1);
+    // 探测超时 3 秒（2026-10-08 用户定）：1.5s 比主机自己问 ComfyUI 的 2.5s 上限还短 → 慢一点就假离线
+    expect(ih.statusTimeouts[0]).toBe(3000);
     await C._refreshHostStatus();               // 缓存命中
     expect(ih.statusCalls).toBe(1);
 
+    // 离线：**主机没答上话**（reachable=false）→ 隔 700ms 重试一次，两次都失败才判离线（2026-10-08 用户要求）
     C._hostStatus = { at: 0, ok: false, model: '', hint: '' };
-    ih.statusResult = { ok: false, error: '超时' };
+    ih.statusResult = { ok: false, reachable: false, error: '超时' };
     await C._refreshHostStatus();
     expect(C._drawToolsOn).toBe(false);
-    expect(ih.statusCalls).toBe(2);
+    expect(ih.statusCalls).toBe(3);                      // 1 次首探 + 1 次重试
+    expect(C._hostStatus.err).toBe('超时');               // 诊断信息落进缓存（离线规则会把它念给用户）
+    expect(Number(C._hostStatus.tookMs || 0)).toBeGreaterThanOrEqual(700);
+
+    // 2026-10-08 用户报过"明明后面连上了，它还说没有跑图工具"：离线结果**只压 10 秒**
+    //（主机开着但 ComfyUI 还在启动时 status 会先报 not ok；钉 60 秒就只能干等一分钟）。
+    ih.statusResult = { ok: true, reachable: true, model: 'm', hint: '', caps: ['img2img'] };
+    await C._refreshHostStatus();                        // 10 秒内：仍走缓存，不探测
+    expect(ih.statusCalls).toBe(3);
+    C._hostStatus.at = Date.now() - 11000;               // 模拟过了 10 秒
+    await C._refreshHostStatus();
+    expect(ih.statusCalls).toBe(4);                      // 重新探测
+    expect(C._drawToolsOn).toBe(true);                   // 连上了就立刻恢复
+  });
+
+  it('主机答了话但说"ComfyUI 没就绪"（reachable=true, ok=false）→ 不重试；原因与耗时写进离线规则', async () => {
+    C._drawToolsOn = false;
+    C._hostStatus = { at: 0, ok: false, model: '', hint: '' };
+    ih.statusResult = { ok: false, reachable: true, error: '连不上 ComfyUI（http://127.0.0.1:8188）：超时' };
+    await C._refreshHostStatus();
+    expect(C._drawToolsOn).toBe(false);
+    expect(ih.statusCalls).toBe(1);                      // 明确答复 → 只探一次
+    const rule = C._imageRuleMessage();
+    expect(rule).toContain('最近一次探测失败');           // 诊断交给模型转述（2026-10-08 用户要求）
+    expect(rule).toContain('连不上 ComfyUI');
+    C._hostStatus.tookMs = 2400;                          // 桩返回得太快（~0ms）→ 手动给个耗时，验证"等了几秒"会写进去
+    expect(C._imageRuleMessage()).toContain('等待 2.4 秒');
+  });
+
+  it('换书/重进面板（_load）把上一本书的图片状态清干净：句柄表 / 图号 / 「已过期」黑名单都按新书重建', () => {
+    const c: any = C;
+    // 上一本书留下的状态（2026-10-08 用户报的串台根因：这几样原先切书不清）
+    c._genImages.set('img1', { full: 'F-A', thumb: 'T-A', book: 'wbA' });
+    c._imgGone.add('img2');
+    c._imgSeq = 9;
+    c._uploads = ['img1'];
+    // _load 里会碰到的桩
+    anyG.document = { getElementById: () => null, querySelector: () => null, querySelectorAll: () => [], addEventListener: () => undefined, removeEventListener: () => undefined, body: null, visibilityState: 'visible' } as any;
+    anyG.StorageManager = anyG.StorageManager || { get: (_k: string, d: unknown) => d, set: () => undefined, remove: () => undefined };
+    anyG.App = anyG.App || { toast: () => undefined, resetChatInput: () => undefined, thinkingLevel: () => 'auto' };
+    c._loadDraft = () => {};
+    c._syncDraftFromWorldbook = () => {};
+    c.renderDraft = () => {};
+    c.renderMessages = () => {};
+
+    c._load();
+
+    expect(c._genImages.size).toBe(0);     // 句柄表清空（随后由 renderMessages→水合 按当前书从存档取回）
+    expect(c._imgGone.size).toBe(0);       // 「已过期」黑名单也是按书的，不能带到新书
+    expect(c._imgSeq).toBe(0);             // 图号从这本书存档的最大号重排（水合里抬）
+    expect(c._uploads).toEqual([]);        // 待发上传图跟着上一本书一起丢掉
+  });
+
+  it('轮间重探：开头判离线 → 后续请求前强制重探到在线，规则就地改写、draw 工具当轮挂上（不用用户再发一句）', async () => {
+    const c: any = C;
+    anyG.App = { toast: () => undefined, resetChatInput: () => undefined, thinkingLevel: () => 'auto' };
+    anyG.StorageManager = anyG.StorageManager || { get: (_k: string, d: unknown) => d, set: () => undefined, remove: () => undefined };
+    c._save = () => {};
+    c._saveDraft = () => {};
+    c.renderMessages = () => {};
+    c.renderDraft = () => {};
+    c._snapshotNow = () => {};
+    c._syncDraftFromWorldbook = () => {};
+    c.refreshContext = function () {
+      (this as any)._context = { wb: { id: 'wb1' }, bookName: '测试书', charsText: '', charCount: 0, worldSetting: true, wbParts: [] };
+    };
+    ih.statusResult = { ok: false, reachable: false, error: '超时' };   // 开头这一次：主机没答上话
+    // 规则是**同一条 system 消息**、会被就地改写，所以必须在每个请求发出的那一刻快照下来
+    const seen: any[] = [];
+    anyG.APIHandler = {
+      probeToolsSupport: () => Promise.resolve(true),
+      abort: () => undefined,
+      fetchCompletions: (msgs: any[], onChunk: any, onDone: any, _onErr: any, o: any) => {
+        const ruleMsg = (msgs || []).find(function (m: any) { return m && m.role === 'system' && String(m.content).indexOf('【生图') >= 0; });
+        seen.push({
+          tools: (((o && o.tools) || []) as any[]).map(function (t: any) { return t.function.name; }),
+          rule: String((ruleMsg || {}).content || ''),
+        });
+        if (seen.length === 1) {
+          // 第一轮（离线，没有画图工具）→ 模型只能调只读工具；顺手把节流起点挪到 5 秒前（模拟这一轮跑了会儿）
+          c._lastReprobeAt = Date.now() - 5000;
+          ih.statusResult = { ok: true, reachable: true, model: 'm', hint: 'tag', caps: ['img2img'] };
+          (o && o.onTools)([{ id: 'c1', name: 'read_current_book_json', arguments: {} }]);
+          return Promise.resolve();
+        }
+        if (onChunk) onChunk('好。');
+        onDone('好。', false, '');
+        return Promise.resolve();
+      },
+    };
+
+    await c._callAPI('给我画一张');
+
+    expect(seen.length).toBeGreaterThanOrEqual(2);
+    expect(seen[0].rule).toContain('你没有画图工具');                    // 第 1 个请求：离线规则
+    expect(seen[0].tools).not.toContain('draw_image');
+    expect(seen[1].rule).toContain('你可以用 draw_image');               // 第 2 个请求：规则已就地改成在线版
+    expect(seen[1].tools).toContain('draw_image');                      // 且当轮就把工具挂上了
+    expect(c._hostReprobes).toBe(1);
   });
 });
 
@@ -386,28 +511,60 @@ describe('set_avatar（第二段确认）', () => {
     expect(ih.applies.length).toBe(0);
   });
 
-  it('同一批里先 apply_character 再 set_avatar：头像写入照常（角色名由模型提供）', async () => {
+  // 用户 2026-10-09 要求：同一轮里"加入一个角色 + 给这个角色设头像"要能一步做完。
+  // 工具是一条条先执行的（世界书要等整批结束才直写），所以刚 apply_character 的新角色在 set_avatar
+  // 这一刻还"只在草稿里"；软件现在会先把它落地写进世界书，再重试设头像。
+  it('同一批里先 apply_character 再 set_avatar：先把角色落地写进世界书，再重试设头像', async () => {
+    // 草稿是"世界书的模型"：照真实情况让它先跟书一致（书里已有林晚）
+    C._draft = { characters: [{ name: '林晚', content: '…' }], entries: [], deleted: [] };
+    // 贴真实行为：角色还没进世界书时第一次设头像会失败（按名字找不到条目）
+    ih.applyResults = [
+      { ok: false, message: '未找到角色条目：新角色（只能给世界书里已有的角色设头像）' },
+      { ok: true, message: '已把「新角色」的头像设为这张图（已写入世界书）' }
+    ];
     const id = await drawOne();
     const out = await C._handleTools([
-      { id: 'c2', name: 'apply_character', arguments: { name: '新角色', content: '姓名：新角色' } },
+      { id: 'c2', name: 'apply_character', arguments: { name: '新角色', content: '姓名：新角色，外貌：白发' } },
       { id: 'c3', name: 'set_avatar', arguments: { character: '新角色', image_id: id } }
     ], '');
-    expect(JSON.parse(out[0]).ok).toBe(true);
-    expect(ih.applies[0].name).toBe('新角色');
+    expect(JSON.parse(out[0]).ok).toBe(true);          // apply_character 照常成功
+    const r = JSON.parse(out[1]);                      // set_avatar：失败一次 → 落地 → 重试成功
+    expect(r.ok).toBe(true);
+    expect(ih.applies.length).toBe(2);
+    expect(r.message).toContain('已写入世界书');
+    expect(r.message).toContain('已先把本轮新建的「新角色」写进世界书');
+    const names = (WB_BOOKS[0].entries || []).map((e: any) => e.name);   // 角色真的进了世界书（不只是草稿）
+    expect(names).toContain('新角色');
+    expect(names).toContain('林晚');
   });
 
   // 用户 2026-10-06 反馈："工具调用了，但世界书里没有头像"——根因是没找到角色时以前会现造临时角色、
   // 还写进对话模式那一层，却回报成功。现在：失败要如实报，并把"下一步该干什么"写进文案里。
-  it('角色还没进世界书（只在草稿里）：如实失败，并点明「还在草稿里」', async () => {
+  it('世界书写入被验收拦下（角色重名等）：不重试、如实报原因', async () => {
     C._genImages.set('img1', { full: 'data:image/png;base64,AAA' });
-    C._draft = { characters: [{ name: '新角色', content: 'x' }], entries: [], deleted: [] };
+    WB_BOOKS = [{ id: 'wb1', entries: [] }];
+    // 草稿里两条同名角色 → _doWriteToWorldbook 验收不通过，一条都不写
+    C._draft = { characters: [{ name: '新角色', content: 'x' }, { name: '新角色', content: 'y' }], entries: [], deleted: [] };
     ih.applyResult = { ok: false, message: '未找到角色条目：新角色（只能给世界书里已有的角色设头像：…）' };
     const out = await C._handleTools([{ id: 'c1', name: 'set_avatar', arguments: { character: '新角色', image_id: 'img1' } }], '');
     const r = JSON.parse(out[0]);
     expect(r.ok).toBe(false);
-    expect(r.message).toMatch(/^未找到角色条目/);      // 命中写卡失败判据
-    expect(r.message).toContain('只在草稿里');
-    expect(r.message).toContain('写进世界书');
+    expect(r.message).toMatch(/^未找到角色条目/);       // 命中写卡失败判据
+    expect(r.message).toContain('写进世界书没成功');
+    expect(r.message).toContain('重名');               // 验收原因原样带出（模型据此改名后重试）
+    expect(ih.applies.length).toBe(1);                 // 被拦下 → 不重试
+  });
+
+  it('落地成功但重试仍失败（边角）：如实报，不谎报成功', async () => {
+    C._genImages.set('img1', { full: 'data:image/png;base64,AAA' });
+    WB_BOOKS = [{ id: 'wb1', entries: [] }];
+    C._draft = { characters: [{ name: '新角色', content: '姓名：新角色' }], entries: [], deleted: [] };
+    ih.applyResult = { ok: false, message: '未找到角色条目：新角色（…）' };   // 两次都给同样的失败
+    const out = await C._handleTools([{ id: 'c1', name: 'set_avatar', arguments: { character: '新角色', image_id: 'img1' } }], '');
+    const r = JSON.parse(out[0]);
+    expect(r.ok).toBe(false);
+    expect(ih.applies.length).toBe(2);                 // 失败 → 落地 → 再试一次
+    expect(r.message).toContain('刚写进世界书、但头像仍没设上');
   });
 
   it('名字对不上世界书条目：失败文案要求「完全一致」', async () => {
@@ -435,7 +592,7 @@ describe('看图：点缩略图给的是原图（1024 档不该看起来和 512 
   });
 });
 
-describe('看图（视觉子调用）：工具门控 + 出图后自动核对', () => {
+describe('看图（视觉子调用）：工具门控 + 调用', () => {
   function stubVision(answer: string, calls: any[]) {
     anyG.APIHandler = {
       fetchCompletions: (msgs: any[], _c: any, onDone: any, _e: any, opts: any) => { calls.push({ msgs: msgs, opts: opts }); onDone(answer); }
@@ -523,31 +680,9 @@ describe('看图（视觉子调用）：工具门控 + 出图后自动核对', (
     } finally { delete anyG.APIHandler; __resetVisionForTest(); }
   });
 
-  it('出图轮的 result 里带 image_id（供"自动核对"定位那张图）', async () => {
+  it('出图轮的 result 里带 image_id（模型据此在回执里指代这张图）', async () => {
     const out = await C._handleTools([{ id: 'c1', name: 'draw_image', arguments: { prompt: 'x' } }], '');
     expect(JSON.parse(out[0]).image_id).toBe('img1');
-  });
-
-  it('_visionCheckNote：出图后自动核对 → 返回"软件替你看过"的软件记录；no 时返回空串且不调接口', async () => {
-    C._genImages.set('img1', { full: 'F', thumb: 'data:image/jpeg;base64,T', prompt: 'a girl sitting' });
-    const calls: any[] = [];
-    stubVision('画面是一位少女坐在窗边看书；书上的文字是乱码。', calls);
-    try {
-      const note = String(await C._visionCheckNote(['img1'], 'a girl sitting'));
-      expect(note).toContain('软件替你看过');
-      expect(note).toContain('乱码');
-      expect(note).toContain('不要硬说达成了');
-      expect(calls.length).toBe(1);
-      expect(String(calls[0].msgs[1].content[0].text)).toContain('a girl sitting');   // 带上生成时的描述让它核对
-    } finally { delete anyG.APIHandler; __resetVisionForTest(); }
-
-    markVision('no');
-    const calls2: any[] = [];
-    stubVision('不该被调用', calls2);
-    try {
-      expect(await C._visionCheckNote(['img1'], 'x')).toBe('');
-      expect(calls2.length).toBe(0);
-    } finally { delete anyG.APIHandler; __resetVisionForTest(); }
   });
 });
 

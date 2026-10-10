@@ -17,7 +17,9 @@ const SM = () => (globalThis as unknown as { StorageManager: { get: (k: string, 
 const ih = vi.hoisted(() => ({
   ready: true,
   statusCalls: 0,
-  statusResult: { ok: true, model: 'miaomiaoRealskin_anima13.safetensors', hint: 'tag 风格，用 danbooru tag', caps: ['img2img', 'hires'] } as any,
+  statusTimeouts: [] as any[],   // 每次 status 调用传的超时（探测 3000ms 的守卫）
+  statusQueue: [] as any[],      // 依次返回的探测结果（测"失败重试"用；空了就用 statusResult）
+  statusResult: { ok: true, reachable: true, model: 'miaomiaoRealskin_anima13.safetensors', hint: 'tag 风格，用 danbooru tag', caps: ['img2img', 'hires'] } as any,
   drawCalls: [] as any[],
   drawResult: { ok: true, jobId: 'job1' } as any,
   waitResult: { ok: true, meta: { status: 'done', seed: 7, size: '768x768', elapsed: 9000 } } as any,
@@ -43,7 +45,11 @@ vi.mock('../src/domain/imagehost', () => ({
   ImageHost: {
     ready: () => ih.ready,
     config: () => ({ enabled: ih.ready, base: 'http://h:1', token: 't' }),
-    status: async () => { ih.statusCalls++; return ih.statusResult; },
+    status: async (t: any) => {
+      ih.statusCalls++; ih.statusTimeouts.push(t);
+      if (ih.statusQueue.length) return ih.statusQueue.shift();
+      return ih.statusResult;
+    },
     draw: async (o: any) => { ih.drawCalls.push(o); return ih.drawResult; },
     waitJob: async (_id: any, o: any) => { if (o && o.onTick) o.onTick({ elapsed: 3000 }); return ih.waitResult; },
     imageDataUrl: async () => ih.image
@@ -156,6 +162,9 @@ describe('比奇生图：门控与规则文案', () => {
     expect(on).toContain('默认用 TA 的头像当底图');   // 用户 2026-10-06：画面里有角色时自动拿头像当底图（保脸）
     expect(on).toContain('大改');                 // 比奇只做大改（不暴露小改/中改）
     expect(on).toContain('配张图');               // 主场景：续写后直接配图，不问画什么
+    expect(on).toContain('默认不看、更不要评价');   // 2026-10-08：只是跑图时不看也不评价
+    expect(on).toContain('不要评价画面');
+    expect(on).not.toContain('出图后软件会把刚画的图附给你看');   // 不再自动附图
     expect(on).not.toContain('你没有画图工具');
 
     BiqiAgent._drawToolsOn = false;
@@ -166,7 +175,7 @@ describe('比奇生图：门控与规则文案', () => {
     expect(off).not.toContain('不要再问');
   });
 
-  it('_refreshHostStatus：未配置不发请求；在线置 true；60 秒内复用缓存；失败置 false', async () => {
+  it('_refreshHostStatus：未配置不发请求；在线置 true；60 秒内复用缓存；离线重试一次且只压 10 秒', async () => {
     ih.ready = false;
     await BiqiAgent._refreshHostStatus();
     expect(BiqiAgent._drawToolsOn).toBe(false);
@@ -176,14 +185,49 @@ describe('比奇生图：门控与规则文案', () => {
     await BiqiAgent._refreshHostStatus();
     expect(BiqiAgent._drawToolsOn).toBe(true);
     expect(ih.statusCalls).toBe(1);
+    expect(ih.statusTimeouts[0]).toBe(3000);           // 探测超时 3 秒（2026-10-08）
     await BiqiAgent._refreshHostStatus();
     expect(ih.statusCalls).toBe(1);                    // 缓存命中
 
+    // 主机没答上话（reachable=false）→ 隔 700ms 重试一次，两次都失败才判离线（2026-10-08 用户要求）
     BiqiAgent._hostStatus = { at: 0, ok: false, model: '', hint: '' };
-    ih.statusResult = { ok: false, error: '超时' };
+    ih.statusResult = { ok: false, reachable: false, error: '超时' };
     await BiqiAgent._refreshHostStatus();
     expect(BiqiAgent._drawToolsOn).toBe(false);
-    expect(ih.statusCalls).toBe(2);
+    expect(ih.statusCalls).toBe(3);                    // 1 首探 + 1 重试
+    expect(BiqiAgent._hostStatus.err).toBe('超时');      // 诊断信息落进缓存（离线规则会念出来）
+
+    // 2026-10-08：离线结果只压 10 秒（主机/ComfyUI 刚启动时 status 会先报 not ok，很快会恢复）
+    ih.statusResult = { ok: true, reachable: true, model: 'm', hint: '', caps: ['img2img'] };
+    await BiqiAgent._refreshHostStatus();
+    expect(ih.statusCalls).toBe(3);                    // 10 秒内仍走缓存
+    BiqiAgent._hostStatus.at = Date.now() - 11000;
+    await BiqiAgent._refreshHostStatus();
+    expect(ih.statusCalls).toBe(4);                    // 重新探测
+    expect(BiqiAgent._drawToolsOn).toBe(true);
+  });
+
+  it('轮间重探（比奇）：强制重探忽略负缓存，探到在线就地改写生图规则；离线规则带诊断文案', async () => {
+    BiqiAgent._drawToolsOn = false;
+    BiqiAgent._hostStatus = { at: Date.now(), ok: false, model: '', hint: '', err: '超时', tookMs: 3000 };
+    BiqiAgent._imgRuleMsg = { role: 'system', content: '【生图】本轮你没有画图工具——x\n' };
+    BiqiAgent._hostReprobes = 0;
+    BiqiAgent._lastReprobeAt = 0;
+    // 离线规则里把"最近一次探测失败 + 等了几秒"带给模型（用户据此区分"连不上"和"慢/忙"）
+    expect(BiqiAgent._imageRuleMessage()).toContain('最近一次探测失败');
+    expect(BiqiAgent._imageRuleMessage()).toContain('等待 3.0 秒');
+
+    ih.statusResult = { ok: true, reachable: true, model: 'm', hint: 'tag', caps: ['img2img'] };
+    const got = await BiqiAgent._maybeReprobeHost();
+    expect(got).toBe(true);
+    expect(BiqiAgent._drawToolsOn).toBe(true);
+    expect(ih.statusCalls).toBe(1);                    // force：不理会"刚判离线"的负缓存
+    expect(String(BiqiAgent._imgRuleMsg.content)).toContain('你可以用 draw_image');   // 规则就地换在线版
+
+    // 节流：紧接着再来一次不会再探（即使又回到离线态）
+    BiqiAgent._drawToolsOn = false;
+    await BiqiAgent._maybeReprobeHost();
+    expect(ih.statusCalls).toBe(1);
   });
 });
 
@@ -332,7 +376,8 @@ describe('比奇生图：_runLoop 注入与全链路', () => {
     const calls: any[] = [];
     g.APIHandler = {
       fetchCompletions: (msgs: any[], _onData: any, onDone: any, onErr: any, opts: any) => {
-        // 出图后会插一次"看图核对"子调用（system 是看图助手）：它不消耗脚本，直接给个固定回答
+        // 独立看图子调用（system 是看图助手）：2026-10-08 起出图后不再自动触发，只有模型自己调
+        // look_at_image 才会走到这里；桩留着，不消耗脚本。
         const isVision = String(((msgs[0] || {}).content) || '').indexOf('图片核对助手') >= 0;
         calls.push({ msgs, tools: (opts && opts.tools) || [], vision: isVision });
         if (isVision) { onDone('（看图子调用的回答）画面正常，没有明显崩坏。'); return; }
@@ -354,12 +399,11 @@ describe('比奇生图：_runLoop 注入与全链路', () => {
     BiqiAgent._isSending = true;
     await BiqiAgent._runLoop('画一张她在雨里的图');
 
-    // 调用分两类：主对话轮与出图后的**自动核对子调用**（看图助手 system + content 数组里带图）
+    // 调用分两类：主对话轮与独立看图子调用。2026-10-08 起出图**不再**自动看图 → 这里没有子调用
     const visionCalls = calls.filter((c: any) => c.vision);
     const mainCalls = calls.filter((c: any) => !c.vision);
     expect(mainCalls.length).toBe(2);                       // 出图轮 + 收尾轮
-    expect(visionCalls.length).toBe(1);                     // 出图后自动核对：一次独立子调用
-    expect(Array.isArray(visionCalls[0].msgs[1].content)).toBe(true);
+    expect(visionCalls.length).toBe(0);                     // 只是跑图：不看也不评价
     // 第一轮：系统消息 = 比奇人设 + 生图规则（正向），工具有 draw_image
     expect(mainCalls[0].msgs[0].role).toBe('system');
     expect(String(mainCalls[0].msgs[1].content)).toContain('不要再问');
@@ -423,7 +467,7 @@ describe('看图（视觉子调用）：工具门控 + 调用', () => {
   });
 });
 
-describe('主对话直接看图（三态 + 摘图重试）', () => {
+describe('主对话看图（附图只由 look_at_image 触发 + 摘图重试）', () => {
   // 各轮**共用同一个 msgs 数组**（原地追加），所以必须在请求回调当场记录这一刻有几张图
   function snap(msgs: any[], o: any) {
     const imgs = (msgs || []).filter((m: any) => m && m.role === 'user' && Array.isArray(m.content));
@@ -433,7 +477,7 @@ describe('主对话直接看图（三态 + 摘图重试）', () => {
     };
   }
 
-  it("caps='yes'：出图后附图给主对话（不再发独立看图子调用）；附图不进消息历史", async () => {
+  it("caps='yes'：出图后**不**自动附图（作者没要求就不看），也不发子调用", async () => {
     seedBook();
     BiqiAgent._genImages.clear(); BiqiAgent._imgSeq = 0;
     markVision('yes');
@@ -454,35 +498,35 @@ describe('主对话直接看图（三态 + 摘图重试）', () => {
 
       const mains = seen.filter((x: any) => x.label !== 'vision');
       expect(mains.length).toBe(2);                     // 出图轮 + 收尾轮
-      expect(visionSubcalls).toBe(0);                   // 能看图 → 不再有"没有预设"的子调用
+      expect(visionSubcalls).toBe(0);                   // 没有"没有预设"的子调用
       expect(mains[0].imgs.length).toBe(0);
-      expect(mains[1].imgs.length).toBe(1);
-      expect(mains[1].imgs[0].text).toContain('刚生成');
-      expect(mains[1].imgs[0].url).toContain('data:image/png;base64,AAA');
+      expect(mains[1].imgs.length).toBe(0);             // 出图后也不自动附图（用户只是跑图）
       expect(JSON.stringify(BiqiAgent.messages)).not.toContain('image_url');
+      expect(BiqiAgent._attachQueue.length).toBe(0);
     } finally { delete g.APIHandler; __resetVisionForTest(); }
   });
 
   it("端点不接受图片（400 + image_url）→ 摘图同轮重试一次、记 no，对话不失败", async () => {
     seedBook();
     BiqiAgent._genImages.clear(); BiqiAgent._imgSeq = 0;
+    BiqiAgent._genImages.set('img1', { full: 'data:image/png;base64,F', thumb: 'data:image/jpeg;base64,THUMB', book: BOOK_ID });
     markVision('yes');
     const seen: any[] = [];
     g.APIHandler = {
       fetchCompletions: (msgs: any[], _onData: any, onDone: any, onErr: any, opts: any) => {
         seen.push(snap(msgs, opts));
         const n = seen.length;
-        if (n === 1) { opts.onTools([{ id: 'c1', name: 'draw_image', arguments: { prompt: 'x' } }]); return; }
+        if (n === 1) { opts.onTools([{ id: 'c1', name: 'look_at_image', arguments: { image_id: '图1', question: '画了什么' } }]); return; }
         if (n === 2) { onErr('HTTP 400: image_url is not supported by this model'); return; }
         onDone('画好了。');
       }
     };
     try {
-      BiqiAgent.messages = [{ role: 'user', content: '画一张' }, { role: 'assistant', content: '', _steps: [] }];
+      BiqiAgent.messages = [{ role: 'user', content: '看看图1' }, { role: 'assistant', content: '', _steps: [] }];
       BiqiAgent._isSending = true;
-      await BiqiAgent._runLoop('画一张');
+      await BiqiAgent._runLoop('看看图1');
 
-      expect(seen.length).toBe(3);                      // 出图轮 / 失败轮（带图）/ 重试轮（无图）
+      expect(seen.length).toBe(3);                      // 看图轮 / 失败轮（带图）/ 重试轮（无图）
       expect(seen[1].imgs.length).toBe(1);
       expect(seen[2].imgs.length).toBe(0);
       expect(visionState()).toBe('no');

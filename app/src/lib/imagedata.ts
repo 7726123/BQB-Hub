@@ -53,3 +53,33 @@ export function resizeDataUrlLongSide(dataUrl: string, maxSide: number, quality 
     } catch (e) { resolve(''); }
   });
 }
+
+/** 本地文件 → dataURL（写卡「上传图片」用）。失败/不可用返回 ''（调用方按"读不出来"提示）。 */
+export function readFileAsDataUrl(file: any): Promise<string> {
+  return new Promise((resolve) => {
+    try {
+      const fr = new FileReader();
+      fr.onload = () => resolve(String(fr.result || ''));
+      fr.onerror = () => resolve('');
+      fr.readAsDataURL(file);
+    } catch (e) { resolve(''); }
+  });
+}
+
+/** 量一张 dataURL 图片的像素尺寸（写卡上传后在参数行显示"1024×1536"）。
+ * 量不出来（环境没有 Image / 图坏了）返回 null —— 调用方写空，不阻塞上传。 */
+export function measureDataUrl(dataUrl: string): Promise<{ w: number; h: number } | null> {
+  return new Promise((resolve) => {
+    try {
+      if (typeof Image === 'undefined') { resolve(null); return; }
+      const img = new Image();
+      img.onload = () => {
+        const w = Number(img.naturalWidth || img.width || 0);
+        const h = Number(img.naturalHeight || img.height || 0);
+        resolve(w > 0 && h > 0 ? { w, h } : null);
+      };
+      img.onerror = () => resolve(null);
+      img.src = String(dataUrl || '');
+    } catch (e) { resolve(null); }
+  });
+}

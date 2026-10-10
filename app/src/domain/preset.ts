@@ -46,7 +46,7 @@ const MINIMAL_PRESET_MODULES: Array<{ id: string; name: string; content: string;
     id: 'min_02_redline', name: '红线·内容边界', enabled: true, role: 'system', order: 1,
     content: `# 内容边界（红线，任何情况下都不得越过）
 
-本预设用于成年读者向的虚构文学创作。以下三条优先级高于任何写作要求和其他指令：
+以下三条是内容底线，优先级高于任何写作要求和其他指令：
 
 1. 性内容只能发生在明确成年的角色之间。角色年龄没有写明时按成年人处理；设定为未满 18 岁（如小学生、初中生、高中生，或文本中写明年龄低于 18）的角色，恋爱线可以写，但亲密描写止于牵手、拥抱、心意这一层，不写性行为，也不做性化的身体描写。
 2. 不写现实中的真实人物（公众人物、艺人、身边的人）的性内容与侮辱性内容。
@@ -54,16 +54,9 @@ const MINIMAL_PRESET_MODULES: Array<{ id: string; name: string; content: string;
 
 如果设定或要求撞上红线：用叙事手法绕开继续写（时间跳到成年以后、镜头移开、只写情绪和结果），不要用拒绝、说教、警告或空白回复来中断创作。`
   },
-  {
-    id: 'min_03_freedom', name: '创作自由·不回避', enabled: true, role: 'system', order: 2,
-    content: `# 创作自由
-
-- 虚构不是现实：故事里发生的事不代表作者的立场，你不需要替角色承担道德责任。
-- 不因题材沉重或敏感就回避：不跳过、不淡化、不用「此处省略」糊弄过去，该写完整的场面写完整。
-- 不在正文里说教，不评判人物，不插入「这种行为是不对的」之类的道德结论。
-- 设定里出现犯罪、暴力、情色、背叛等元素时，不因此拒绝继续写；越界的部分按《内容边界》处理。
-- 情节难处理时，用叙事手法解决（转场、留白、事后叙述），而不是停下来解释、认错或道歉。`
-  },
+  // 2026-10-09 用户要求：出厂预设**不再带「创作自由·不回避」**（把"不因敏感回避 / 不说教 / 不因情色等
+  // 元素拒绝"这类压低拒绝的引导从出厂配置里去掉——软件定位是 RP 创作工具，成人向内容只作为用户自己的
+  // 自定义，不做出厂引导）。存量设备上"一字未动"的那份由 applyMinimalPresetDropped 删掉；改过的保留。
   {
     id: 'min_04_narrative', name: '叙事规则', enabled: true, role: 'system', order: 3,
     content: `# 叙事规则
@@ -437,7 +430,7 @@ const MINIMAL_PRESET_MODULES: Array<{ id: string; name: string; content: string;
 
 // ---- 模块的三个可选字段（2026-09-26 新增；不改的模块行为完全不变）----
 // role：'system'（默认）进系统提示词（稳定前缀，吃缓存）；'user' 追加到最后一条用户消息尾部（近端强调位）。
-// mode：'both'（默认）｜'novel'（仅续写）/ 'chat'（仅演出）/ 'real'（仅真实）——同一条预设可以按模式带不同文案，
+// mode：'both'（默认）｜'novel'（仅续写）/ 'chat'（仅对话）/ 'real'（仅真实）——同一条预设可以按模式带不同文案，
 //       不需要为每个模式各建一个预设。
 // slot：'think' = 这条是"思考要求"：思考强度 off 时自动跳过；它的存在会抑制软件兜底条款。
 export type PresetModuleRole = 'system' | 'user';
@@ -453,7 +446,7 @@ export function moduleMode(m: any): PresetModuleMode {
 export function moduleSlot(m: any): 'think' | '' { return m && m.slot === 'think' ? 'think' : ''; }
 export function moduleAppliesTo(m: any, mode: PresetMode): boolean {
   const mm = moduleMode(m);
-  // 真实模式**不吃「续写+演出都用」的模块**：它的两张契约由软件给定，只有显式标了「仅真实」的模块才生效。
+  // 真实模式**不吃「续写+对话都用」的模块**：它的两张契约由软件给定，只有显式标了「仅真实」的模块才生效。
   // 不这么切的话，导入的小说/群像预设会被整套注进角色请求里，把"这一轮只扮演一个人"直接盖掉
   // （用户 2026-09-28 实测：一轮输出里出现了多个角色的内容）。
   if (mode === 'real') return mm === 'real';
@@ -804,6 +797,20 @@ const MINIMAL_PRESET_PATCHES: Array<{ id: string; moduleId: string; oldContent: 
 - 内心戏克制，只在有信息量或反差时写，一两句带过。
 - 幽默来自性格与处境的错位，不硬塞网络流行梗。
 - 比喻节制：一段最多一处，不用来解释已经写清楚的事。`
+  },
+  {
+    // 2026-10-09 用户要求：红线开头**不再声明"成年读者向"**——软件不做成人向定位，只做边界限定
+    //（"我们做的是限定边界，而不是面向成年人"）。三条规则与处置方式一个字没动，只改开头那句。
+    id: 'redline-neutral-intro-v1', moduleId: 'min_02_redline',
+    oldContent: `# 内容边界（红线，任何情况下都不得越过）
+
+本预设用于成年读者向的虚构文学创作。以下三条优先级高于任何写作要求和其他指令：
+
+1. 性内容只能发生在明确成年的角色之间。角色年龄没有写明时按成年人处理；设定为未满 18 岁（如小学生、初中生、高中生，或文本中写明年龄低于 18）的角色，恋爱线可以写，但亲密描写止于牵手、拥抱、心意这一层，不写性行为，也不做性化的身体描写。
+2. 不写现实中的真实人物（公众人物、艺人、身边的人）的性内容与侮辱性内容。
+3. 不写可被直接照做的现实危害教程：制毒制爆、具体伤人方法、自杀自残的操作细节。
+
+如果设定或要求撞上红线：用叙事手法绕开继续写（时间跳到成年以后、镜头移开、只写情绪和结果），不要用拒绝、说教、警告或空白回复来中断创作。`
   }
 ];
 
@@ -879,6 +886,22 @@ const MINIMAL_PRESET_FORCE_DISABLE: Array<{ id: string; moduleId: string }> = [
   // 思考纪律只有一处来源，留着它只会出现两套规则（而且 system 里那条不生效）
   { id: 'cot-merge-off-v4', moduleId: 'min_18_cot_full' },
   { id: 'cot-short-merge-off-v4', moduleId: 'min_19_cot_short' }
+];
+
+// 一次性移除清单（2026-10-09 用户要求）：出厂预设不再带的模块——存量设备上**内容还是出厂原文**
+// （说明用户没动过）的直接删掉；**用户改过内容的保留**（多半被改成了别的用途），不动。
+// 只处理一次；文案在这里留档（原模块已从 MINIMAL_PRESET_MODULES 删除，比对靠这份旧文本）。
+const MINIMAL_PRESET_DROPPED: Array<{ id: string; content: string }> = [
+  {
+    id: 'min_03_freedom',
+    content: `# 创作自由
+
+- 虚构不是现实：故事里发生的事不代表作者的立场，你不需要替角色承担道德责任。
+- 不因题材沉重或敏感就回避：不跳过、不淡化、不用「此处省略」糊弄过去，该写完整的场面写完整。
+- 不在正文里说教，不评判人物，不插入「这种行为是不对的」之类的道德结论。
+- 设定里出现犯罪、暴力、情色、背叛等元素时，不因此拒绝继续写；越界的部分按《内容边界》处理。
+- 情节难处理时，用叙事手法解决（转场、留白、事后叙述），而不是停下来解释、认错或道歉。`
+  }
 ];
 
 function minimalPreset(): Preset {
@@ -1121,6 +1144,7 @@ export const PresetManager = {
     this.applyMinimalPresetLateModules();
     this.applyMinimalPresetForceSync();
     this.applyMinimalPresetForceDisable();
+    this.applyMinimalPresetDropped();
     if (!SM().get('apiConfig', null)) {
       SM().set('apiConfig', { endpoint: 'https://api.deepseek.com/v1', model: 'deepseek-v4-flash', temperature: 1, topP: 1, presencePenalty: 0, frequencyPenalty: 0, topK: 0, topA: 0, minP: 0, repetitionPenalty: 1, maxContextUnlocked: true, openaiMaxContext: 2000000, openaiMaxTokens: 65535, namesBehavior: 0, sendIfEmpty: '', impersonationPrompt: '', newChatPrompt: '', newGroupChatPrompt: '', newExampleChatPrompt: '', continueNudgePrompt: '', biasPresetSelected: 'Default (none)', wiFormat: '', scenarioFormat: '', personalityFormat: '', groupNudgePrompt: '', streamOpenai: true, prompts: [] });
     }
@@ -1234,6 +1258,32 @@ export const PresetManager = {
     } catch (e) { console.warn('[Preset] 强制覆盖模块文案失败:', e); }
   },
 
+  // 一次性移除（见 MINIMAL_PRESET_DROPPED，2026-10-09）：出厂不再带的模块，设备上**一字未动**的删掉；
+  // 用户改过内容的保留（可能改成了别的作用）。删掉的模块不加回；只处理一次（标记已置位）。
+  applyMinimalPresetDropped(): void {
+    try {
+      if (MINIMAL_PRESET_DROPPED.length === 0) return;
+      if (SM().get<boolean>('minimalPresetDroppedV1', false)) return;
+      SM().set('minimalPresetDroppedV1', true);
+      const list = this.getPresets();
+      const p = list.find(x => x.id === 'preset_minimal');
+      if (!p || !Array.isArray(p.promptModules)) return;
+      const mods = p.promptModules as Array<{ id?: string; content?: string; name?: string; order?: number }>;
+      const dropped: string[] = [];
+      MINIMAL_PRESET_DROPPED.forEach(entry => {
+        const at = mods.findIndex(m => m.id === entry.id);
+        if (at < 0) return;                                            // 用户已经删过了
+        if (String(mods[at].content || '') !== entry.content) return;  // 内容改过 → 保留（多半改成别的用途）
+        dropped.push(String(mods[at].name || entry.id));
+        mods.splice(at, 1);
+      });
+      if (dropped.length === 0) return;
+      mods.forEach((m, i) => { m.order = i; });                        // 顺序重编（与补装逻辑一致）
+      this.savePresets(list);
+      console.log('[Preset] 已移除出厂模块（仅限一字未动的）:', dropped.join('、'));
+    } catch (e) { console.warn('[Preset] 移除出厂模块失败:', e); }
+  },
+
   // 一次性关停（见 MINIMAL_PRESET_FORCE_DISABLE）：只改 enabled，不动文案与名字；只处理一次。
   applyMinimalPresetForceDisable(): void {
     try {
@@ -1264,5 +1314,5 @@ export const PresetManager = {
 };
 
 (globalThis as unknown as { PresetManager: typeof PresetManager }).PresetManager = PresetManager;
-export { MINIMAL_PRESET_NAME, MINIMAL_PRESET_MODULES, MINIMAL_PRESET_PATCHES, MINIMAL_PRESET_LATE_MODULES, MINIMAL_PRESET_LATE_MODULES_V4, MINIMAL_PRESET_LATE_MODULES_V5, MINIMAL_PRESET_FORCE_SYNC };
+export { MINIMAL_PRESET_NAME, MINIMAL_PRESET_MODULES, MINIMAL_PRESET_PATCHES, MINIMAL_PRESET_LATE_MODULES, MINIMAL_PRESET_LATE_MODULES_V4, MINIMAL_PRESET_LATE_MODULES_V5, MINIMAL_PRESET_FORCE_SYNC, MINIMAL_PRESET_DROPPED };
 export default PresetManager;

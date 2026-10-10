@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import '../src/infra/storage';
 import '../src/domain/preset';
-import { MINIMAL_PRESET_MODULES, MINIMAL_PRESET_PATCHES, THINK_TAIL_FALLBACK, stPromptsToModules, nativeModulesToModules, moduleLooksLikeCot, moduleIsCotSpec, stReasoningToLevel, samplerFromJson, stRegexScriptsToRules } from '../src/domain/preset';
+import { MINIMAL_PRESET_MODULES, MINIMAL_PRESET_PATCHES, MINIMAL_PRESET_DROPPED, THINK_TAIL_FALLBACK, stPromptsToModules, nativeModulesToModules, moduleLooksLikeCot, moduleIsCotSpec, stReasoningToLevel, samplerFromJson, stRegexScriptsToRules } from '../src/domain/preset';
 import { RegexEngine as RE } from '../src/lib/regex'; // P3-A：regex 不再挂全局，直接 import
 import { RegexEngine } from '../src/lib/regex';
 
@@ -17,7 +17,7 @@ const toasts: string[] = [];
 
 describe('PresetManager', () => {
   beforeEach(() => {
-    for (const k of ['presets', 'systemPrompts', 'currentPresetId', 'currentSysPromptId', 'apiConfig', 'regexRules', 'builtinMinimalPresetV1', 'minimalPresetLateModulesV1', 'minimalPresetLateModulesV2', 'minimalPresetLateModulesV3', 'minimalPresetLateModulesV4', 'minimalPresetForceSyncDone']) sm().remove(k);
+    for (const k of ['presets', 'systemPrompts', 'currentPresetId', 'currentSysPromptId', 'apiConfig', 'regexRules', 'builtinMinimalPresetV1', 'minimalPresetLateModulesV1', 'minimalPresetLateModulesV2', 'minimalPresetLateModulesV3', 'minimalPresetLateModulesV4', 'minimalPresetForceSyncDone', 'minimalPresetDroppedV1']) sm().remove(k);
     toasts.length = 0;
   });
 
@@ -38,14 +38,20 @@ describe('PresetManager', () => {
   // 内置最小预设的文本约束：这些不是文风问题，而是与 app 注入管线的耦合点，改错会直接坏功能
   it('内置最小预设：启用文本满足注入管线约束', () => {
     PSM.initDefaults();
-    const mods = ((PSM.getPresets()[0] as unknown as { promptModules: Array<{ content: string; enabled: boolean; role: string }> }).promptModules);
-    // 启用 = 12 个系统模块 + 3 个「思维链」尾部模块（role='user' 不进 system：续写/演出/真实各一条；
-    // 系统侧那两条细则自 2026-09-26 合并起默认关闭）
-    expect(mods.filter((m) => m.enabled)).toHaveLength(15);
+    const mods = ((PSM.getPresets()[0] as unknown as { promptModules: Array<{ id: string; content: string; enabled: boolean; role: string }> }).promptModules);
+    // 启用 = 11 个系统模块 + 3 个「思维链」尾部模块（role='user' 不进 system：续写/对话/真实各一条；
+    // 系统侧那两条细则自 2026-09-26 合并起默认关闭；2026-10-09 起出厂不再带「创作自由·不回避」→ 12 → 11）
+    expect(mods.filter((m) => m.enabled)).toHaveLength(14);
     expect(mods.filter((m) => m.enabled && m.role === 'user')).toHaveLength(3);
-    expect(mods.filter((m) => m.enabled && m.role !== 'user')).toHaveLength(12);
+    expect(mods.filter((m) => m.enabled && m.role !== 'user')).toHaveLength(11);
+    // 出厂不再带"不因敏感回避 / 不因情色拒绝"这类压低拒绝的引导（用户 2026-10-09 要求）
+    expect(mods.some((m) => m.id === 'min_03_freedom')).toBe(false);
+    expect(mods.filter((m) => m.enabled).map((m) => m.content).join('\n')).not.toContain('不因题材沉重或敏感就回避');
     // 进系统提示词的那部分：文本里的 user 会被 app 换成主角名，标签会诱导弹标签
     const sp = mods.filter((m) => m.enabled && m.role !== 'user').map((m) => m.content).join('\n\n');
+    // 红线开头不再声明"成年读者向"（软件做的是边界限定，不做成人向定位；用户 2026-10-09 要求）
+    expect(sp).not.toContain('成年读者向');
+    expect(sp).toContain('以下三条是内容底线');
     expect(sp).not.toContain('<thinking>');            // 原生推理模型会被诱导弹标签
     expect(sp).not.toMatch(/\$\{/);                    // 预设展开会剥壳
     expect(sp.replace(/\{\{user\}\}/g, '')).not.toMatch(/\buser\b/i); // app 会把任意 user 换成主角名
@@ -96,6 +102,65 @@ describe('PresetManager', () => {
     q('min_18_cot_full').enabled = true;
     PSM.applyMinimalPresetForceDisable();
     expect(q('min_18_cot_full').enabled).toBe(true);
+  });
+
+  // 一次性移除（2026-10-09 用户要求）：出厂预设不再带「创作自由·不回避」——设备上还是出厂原文的删掉，
+  // 用户改过的保留（多半被改成了别的作用）。只处理一次。
+  it('移除出厂模块：内容是出厂原文 → 删除并重编顺序；用户改过 → 保留；只处理一次', () => {
+    PSM.initDefaults();
+    const legacyText = MINIMAL_PRESET_DROPPED[0].content;
+    const pushOld = (content: string, name = '创作自由·不回避') => {
+      const list = PSM.getPresets().map((p) => (p.id === 'preset_minimal'
+        ? { ...p, promptModules: [...(p as any).promptModules.filter((m: any) => m.id !== 'min_03_freedom'), { id: 'min_03_freedom', name, content, enabled: true, role: 'system', order: 99 }] }
+        : p));
+      PSM.savePresets(list as never);
+    };
+    const modsOf = (): any[] => (PSM.getPresets().find((p) => p.id === 'preset_minimal') as any).promptModules;
+
+    // ① 出厂原文 → 删掉，且 order 重编为下标
+    pushOld(legacyText);
+    sm().remove('minimalPresetDroppedV1');
+    PSM.applyMinimalPresetDropped();
+    expect(modsOf().some((m: any) => m.id === 'min_03_freedom')).toBe(false);
+    expect(modsOf().every((m: any, i: number) => m.order === i)).toBe(true);
+
+    // ② 只处理一次：用户之后自己再加一条同 id 的（自己写的），不会再被删
+    pushOld('我自己写的模块内容');
+    PSM.applyMinimalPresetDropped();
+    expect(modsOf().filter((m: any) => m.id === 'min_03_freedom').length).toBe(1);
+
+    // ③ 用户改过内容 → 保留（换成"出厂原文"以外就被视作改过）
+    pushOld('我把它改成了别的作用');
+    sm().remove('minimalPresetDroppedV1');
+    PSM.applyMinimalPresetDropped();
+    expect(modsOf().filter((m: any) => m.id === 'min_03_freedom').length).toBe(1);
+    // ④ 出厂列表里也不再有这个模块（新装用户根本拿不到）
+    expect(MINIMAL_PRESET_MODULES.some((m) => m.id === 'min_03_freedom')).toBe(false);
+  });
+
+  // 红线开头去声明（2026-10-09 用户要求）：「本预设用于成年读者向的虚构文学创作」→「以下三条是内容底线」。
+  // 补丁机制：设备上是旧出厂原文 → 换新；用户改过 → 保留。
+  it('红线开头不再声明"成年读者向"：旧文案自动同步、改过的保留', () => {
+    PSM.initDefaults();
+    const patch = MINIMAL_PRESET_PATCHES.find((x) => x.id === 'redline-neutral-intro-v1')!;
+    expect(patch).toBeTruthy();
+    const setRedline = (content: string) => {
+      const list = PSM.getPresets().map((p) => (p.id === 'preset_minimal'
+        ? { ...p, promptModules: (p as any).promptModules.map((mm: any) => (mm.id === 'min_02_redline' ? { ...mm, content } : mm)) }
+        : p));
+      PSM.savePresets(list as never);
+    };
+    const redlineOf = (): string => (PSM.getPresets().find((p) => p.id === 'preset_minimal') as any)
+      .promptModules.find((mm: any) => mm.id === 'min_02_redline').content;
+    setRedline(patch.oldContent);
+    sm().remove('minimalPresetPatchApplied');
+    PSM.applyMinimalPresetPatches();
+    expect(redlineOf()).toContain('以下三条是内容底线');
+    expect(redlineOf()).not.toContain('成年读者向');
+    setRedline('我的红线：只写成年人之间的恋爱线');
+    sm().remove('minimalPresetPatchApplied');
+    PSM.applyMinimalPresetPatches();
+    expect(redlineOf()).toBe('我的红线：只写成年人之间的恋爱线');
   });
 
   // 内置预设文案补丁：v1.5.75 首发版已写进设备，改源码不会自动生效，靠补丁在启动时同步
@@ -474,7 +539,7 @@ describe('尾部模块：位置/模式/思考标记', () => {
   // 会让 initDefaults() 走"已有预设"分支、装不进内置预设）。这里自己清一遍。
   beforeEach(() => {
     for (const k of ['presets', 'systemPrompts', 'currentPresetId', 'currentSysPromptId', 'apiConfig', 'regexRules',
-      'builtinMinimalPresetV1', 'minimalPresetLateModulesV1', 'minimalPresetLateModulesV2', 'minimalPresetLateModulesV3', 'minimalPresetLateModulesV4', 'minimalPresetForceSyncDone']) sm().remove(k);
+      'builtinMinimalPresetV1', 'minimalPresetLateModulesV1', 'minimalPresetLateModulesV2', 'minimalPresetLateModulesV3', 'minimalPresetLateModulesV4', 'minimalPresetForceSyncDone', 'minimalPresetDroppedV1']) sm().remove(k);
   });
   const setMods = (mods: any[]) => {
     PSM.savePresets([{ id: 'p_tail', name: '尾部测试', prompts: [], promptModules: mods, systemPromptId: 'sp_default', isDefault: false, createdAt: 1 } as any]);
@@ -706,7 +771,7 @@ describe('酒馆预设导入映射（stPromptsToModules / nativeModulesToModules
 describe('预设自带思维链的识别与采样参数跟随（酒馆对齐）', () => {
   beforeEach(() => {
     for (const k of ['presets', 'systemPrompts', 'currentPresetId', 'currentSysPromptId', 'apiConfig', 'regexRules', 'regexRulesOwner', 'regexRulesBackup',
-      'builtinMinimalPresetV1', 'minimalPresetLateModulesV1', 'minimalPresetLateModulesV2', 'minimalPresetLateModulesV3', 'minimalPresetLateModulesV4', 'minimalPresetForceSyncDone']) sm().remove(k);
+      'builtinMinimalPresetV1', 'minimalPresetLateModulesV1', 'minimalPresetLateModulesV2', 'minimalPresetLateModulesV3', 'minimalPresetLateModulesV4', 'minimalPresetForceSyncDone', 'minimalPresetDroppedV1']) sm().remove(k);
   });
   const setMods = (mods: any[]) => {
     PSM.savePresets([{ id: 'p_cot', name: '思维链测试', prompts: [], promptModules: mods, systemPromptId: 'sp_default', isDefault: false, createdAt: 1 } as any]);

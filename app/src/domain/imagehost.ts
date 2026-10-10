@@ -147,13 +147,16 @@ export const ImageHost = {
 
   async status(timeoutMs = 1500): Promise<any> {
     const c = this.config();
-    if (!c.base) return { ok: false, error: '未配置画图主机地址' };
+    if (!c.base) return { ok: false, reachable: false, error: '未配置画图主机地址' };
     const r = await _fetchJson(c.base + '/api/comfy/status', { headers: _headers(c) }, timeoutMs);
-    if (!r.ok) return { ok: false, error: r.error || '连不上画图主机' };
+    // reachable：**主机自己答上话了**（HTTP 2xx）。用它把两种情况分开（2026-10-08）：
+    //   reachable=false → 超时/网络抖动/主机没起（探测会重试一次）；
+    //   reachable=true + ok:false → 主机到了，是 ComfyUI 还没就绪（明确答复：不重试，文案也不该说"连不上主机"）。
+    if (!r.ok) return { ok: false, reachable: false, error: r.error || '连不上画图主机' };
     const d = r.data || {};
     const wf = d.workflow || {};
     return {
-      ok: !!d.ok, version: d.version || '', device: d.device || '',
+      ok: !!d.ok, reachable: true, version: d.version || '', device: d.device || '',
       // 主机能力（老主机不带 → 空数组：不给"以图改图"参数、hires 退回单次直出）
       caps: Array.isArray(d.caps) ? d.caps.map((x: any) => String(x)) : [],
       // 档位声明（老主机不带 → 空对象：档位走 QUALITY_TIERS 兜底）
@@ -281,7 +284,7 @@ export const ImageHost = {
           }
         }
       }
-      return { ok: false, message: '未找到角色条目：' + nm + (bookTitle ? ('（在《' + bookTitle + '》里找过）') : '') + '（只能给世界书里已有的角色设头像：名字要与条目名完全一致；还只存在草稿里的新角色要等它写进世界书之后再设）' };
+      return { ok: false, message: '未找到角色条目：' + nm + (bookTitle ? ('（在《' + bookTitle + '》里找过）') : '') + '（只能给世界书里已有的角色设头像：名字要与条目名完全一致）' };
     } catch (e) {
       return { ok: false, message: '失败：写入头像时出错（' + ((e && (e as Error).message) || e) + '）' };
     }

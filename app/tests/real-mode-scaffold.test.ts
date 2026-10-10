@@ -34,8 +34,17 @@ describe('真实模式（real）：模式枚举与门控', () => {
     expect(modals).toContain('<option value="real">仅真实</option>');
   });
 
-  it('模块列表标签含「仅真实」（与 ·仅续写 / ·仅演出 同一处）', () => {
+  it('模块列表标签含「仅真实」（与 ·仅续写 / ·仅对话 同一处）', () => {
     expect(ui).toContain("m.mode === 'real' ? '·仅真实'");
+  });
+
+  // 2026-10-09 用户要求：预设里不出现"演出模式"这个叫法——模式一律叫「对话」（与侧栏「对话模式」一致）
+  it('「适用模式」下拉与模块标签都用「对话」：不出现"演出模式" / "·仅演出"', () => {
+    expect(modals).toContain('<option value="chat">只用在对话模式</option>');
+    expect(modals).toContain('<option value="both">续写 + 对话都用</option>');
+    expect(modals).not.toContain('演出模式');
+    expect(ui).toContain("m.mode === 'chat' ? '·仅对话'");
+    expect(ui).not.toContain('·仅演出');
   });
 
   it('moduleMode / moduleAppliesTo：real 是合法模式，门控与 novel/chat 一致', () => {

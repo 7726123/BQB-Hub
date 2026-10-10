@@ -610,11 +610,11 @@ describe('写卡上下文注入：每次都注入，无开关', () => {
     const html = fs.readFileSync(path.join(root, 'web', 'index.html'), 'utf8');
     expect(html).not.toContain('cwInjectWorld');           // 复选框已删
     expect(cw).not.toMatch(/SM\(\)\.get[^)]*cwInjectWorld/); // 不再从存储读它
-    // 旁边两个开关仍然有效（别误删）
-    expect(html).toContain('id="cwNsfw"');
-    expect(html).toContain('id="cwHandgun"');
-    expect(cw).toMatch(/SM\(\)\.get[^)]*cwNsfw/);
-    expect(cw).toMatch(/SM\(\)\.get[^)]*cwHandgun/);
+    // 2026-10-09：「亲密」「其他」合并成一个开关「其他」（缺省开），页头只剩它一个
+    expect(html).toContain('id="cwOther"');
+    expect(html).not.toContain('id="cwNsfw"');
+    expect(html).not.toContain('id="cwHandgun"');
+    expect(cw).toMatch(/SM\(\)\.get[^)]*cwOther/);
   });
 });
 
@@ -1262,15 +1262,16 @@ describe('写卡思考纪律：预设分块可编辑 + 钉在请求最后一条'
     await c._callAPI('写入吧');
     expect(String(captured[captured.length - 1].content)).toContain('【思考纪律');
 
-    // 用户把该分块清空 → 完全不注入
+    // 2026-10-09 起「思考纪律」是系统维护段（界面已隐藏）：老存储里的自定义/清空都不再生效，
+    // 仍按内置默认注入为最后一条（保留本条回归，防"用户可清空"的死路被改回来）
     anyG.StorageManager = {
       get: (k: string, d: unknown) => (k === 'cwPresetBlocks'
-        ? { base: '基础指令', method: '', selfcheck: '', think: '', nsfw: '', handgun: '', __version: Cw()._defaultBlocks().__version }
+        ? { base: '基础指令', method: '', selfcheck: '', think: '' }
         : d),
       set: () => undefined, remove: () => undefined,
     };
     captured = null;
     await c._callAPI('写入吧');
-    expect(captured.some((m: any) => String(m.content || '').indexOf('【思考纪律') >= 0)).toBe(false);
+    expect(String(captured[captured.length - 1].content)).toContain('【思考纪律');
   });
 });

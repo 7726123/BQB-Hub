@@ -11,10 +11,12 @@ import { ImageCache } from '../lib/imagecache';
 import { visionState, lookAtImageTracked } from '../lib/vision';
 
 /** 主机状态缓存（60 秒）。放在各 Agent 自己身上，字段由 probeHost 原地写回。
- *  caps/tiers 可缺省：老缓存/测试桩里没有这些字段时按"主机没声明"处理（空）。 */
-export interface HostStatusCache { at: number; ok: boolean; model: string; hint: string; caps?: string[]; tiers?: HostTiers }
+ *  caps/tiers 可缺省：老缓存/测试桩里没有这些字段时按"主机没声明"处理（空）。
+ *  err/tookMs：最近一次探测的原因与耗时（2026-10-08 加）——离线时把这两个显示出来，
+ *  用户/模型就能区分"真的连不上"和"等了几秒没等到回应（慢了）"。 */
+export interface HostStatusCache { at: number; ok: boolean; model: string; hint: string; caps?: string[]; tiers?: HostTiers; err?: string; tookMs?: number }
 
-export function emptyHostStatus(): HostStatusCache { return { at: 0, ok: false, model: '', hint: '', caps: [], tiers: {} }; }
+export function emptyHostStatus(): HostStatusCache { return { at: 0, ok: false, model: '', hint: '', caps: [], tiers: {}, err: '', tookMs: 0 }; }
 
 /** 消息里那行「图3」编号（与 id 一一对应：img3 → 图3）。没有编号的（空串/异常值）返回 ''。 */
 export function imageLabel(id: any): string {
@@ -22,18 +24,43 @@ export function imageLabel(id: any): string {
   return m ? ('图' + m[1]) : '';
 }
 
-/** 这一轮能不能生图：未配置直接 false（不发请求）；否则探测一次并缓存 60 秒。 */
-export async function probeHost(cache: HostStatusCache, timeoutMs = 1500): Promise<boolean> {
+/** 探测缓存有效期：在线 60 秒（省请求）；**离线只压 10 秒**——2026-10-08 用户报的
+ *  「明明后面连上了，它还说没有跑图工具」就是这么来的：主机开着但 ComfyUI 还在启动（要 20~30 秒）
+ *  时 status 会先报 not ok，把这条"暂时没连上"钉 60 秒，用户就只能干等一分钟。 */
+export const PROBE_TTL_OK = 60000;
+export const PROBE_TTL_FAIL = 10000;
+/** 探测"没答上话"时，隔多久重试一次（毫秒）：一次失败不急着定性（2026-10-08 用户要求）。 */
+export const PROBE_RETRY_DELAY = 700;
+
+function _sleep(ms: number): Promise<void> { return new Promise((r) => setTimeout(r, ms)); }
+
+/** 这一轮能不能生图：未配置直接 false（不发请求）；否则探测一次并缓存（在线 60s / 离线 10s）。
+ *  超时 3000ms（2026-10-08 用户定：设置页（4000ms）能判对、写卡/比奇的 1500ms 却假离线）。
+ *  为什么 1.5 秒不够：主机自己问 ComfyUI 的 `/system_stats` 要 **2500ms** 才算超时——App 这一层
+ *  比主机那一层还短，只要链路慢一点（主机刚起 / ComfyUI 在加载模型 / 电脑忙 / Wi-Fi 刚唤醒）
+ *  就先放弃了，而用户点「测试连接」看到的是"在线"。放宽到 3 秒后，探测至少不会比主机自己更早放弃。
+ *  force=true：忽略缓存，强制重新探测（"一条消息中途发现主机起来了"用它，见 _maybeReprobeHost）。
+ *  失败时把原因与耗时写回 cache（err/tookMs），离线规则里会把它们显示出来（诊断用）。 */
+export async function probeHost(cache: HostStatusCache, timeoutMs = 3000, force = false): Promise<boolean> {
   try {
-    if (!ImageHost.ready()) { cache.ok = false; return false; }
+    if (!ImageHost.ready()) { cache.ok = false; cache.err = '未配置画图主机'; cache.tookMs = 0; return false; }
     const now = Date.now();
-    if (now - (cache.at || 0) < 60000) return !!cache.ok;
-    const st = await ImageHost.status(timeoutMs);
-    cache.at = now; cache.ok = !!st.ok; cache.model = st.model || ''; cache.hint = st.hint || '';
+    if (!force && now - (cache.at || 0) < (cache.ok ? PROBE_TTL_OK : PROBE_TTL_FAIL)) return !!cache.ok;
+    const t0 = Date.now();
+    let st: any = await ImageHost.status(timeoutMs);
+    // 一次失败不急着定性：**主机没答上话**（超时 / 网络抖动 / 主机刚起）时隔 700ms 再试一次，
+    // 两次都不行才算离线；主机答了话但报 ok:false（= 它到了，ComfyUI 还没就绪）是明确答复，不重试。
+    if (!st.ok && st.reachable !== true) {
+      await _sleep(PROBE_RETRY_DELAY);
+      st = await ImageHost.status(timeoutMs);
+    }
+    cache.at = Date.now(); cache.ok = !!st.ok; cache.model = st.model || ''; cache.hint = st.hint || '';
     cache.caps = Array.isArray(st.caps) ? st.caps.slice() : [];
     cache.tiers = (st.tiers && typeof st.tiers === 'object') ? st.tiers : {};
+    cache.err = st.ok ? '' : String(st.error || '未知原因');
+    cache.tookMs = Date.now() - t0;
     return !!st.ok;
-  } catch (e) { cache.ok = false; return false; }
+  } catch (e) { cache.ok = false; cache.err = String((e && (e as Error).message) || e); return false; }
 }
 
 export interface TierInfo { key: string; size: number; steps?: number; hires?: boolean; label: string }
@@ -163,7 +190,7 @@ export async function resolveBaseImage(ref: unknown, store: Map<string, any>, bo
       if (rec && (rec.thumb || rec.full)) {
         store.set(id, {
           full: rec.full || rec.thumb, thumb: rec.thumb || rec.full, seed: rec.seed, size: rec.size,
-          seconds: rec.seconds, prompt: rec.prompt, base: rec.base, hires: rec.hires, book: rec.book
+          seconds: rec.seconds, prompt: rec.prompt, base: rec.base, hires: rec.hires, book: rec.book, uploaded: !!rec.uploaded
         });
         url = String(wantThumb ? (rec.thumb || rec.full) : (rec.full || rec.thumb));
       } else {
@@ -215,7 +242,7 @@ export async function hydrateImages(store: Map<string, any>, bookId: string | un
     if (rec && (rec.thumb || rec.full)) {
       store.set(id, {
         full: rec.full || rec.thumb, thumb: rec.thumb || rec.full, seed: rec.seed, size: rec.size,
-        seconds: rec.seconds, prompt: rec.prompt, base: rec.base, hires: rec.hires, book: rec.book
+        seconds: rec.seconds, prompt: rec.prompt, base: rec.base, hires: rec.hires, book: rec.book, uploaded: !!rec.uploaded
       });
       loaded.push(id);
     } else {
@@ -230,7 +257,10 @@ export async function hydrateImages(store: Map<string, any>, bookId: string | un
 // 没有角色卡、没有用户原话，只能判"有没有崩坏"，判不了"和设定/要求符不符"。改成三条路：
 //   · visionCaps='yes'    → 把图作为 user 消息（content 数组）附进**主对话本轮请求**，模型真看真答；
 //   · visionCaps='unknown'→ 仍走一次独立子调用（既当"能不能看图"的探针，也把它的回答当工具结果给模型）；
-//   · visionCaps='no'     → 不附、不试（今天的行为，看图工具也不挂牌）。
+//   · visionCaps='no'     → 不附、不试（看图工具也不挂牌）。
+// 2026-10-08 用户要求：**出图后不再自动附图、也不再自动核对**（用户只是跑图时既费时又等于替用户做了
+// 审美判断）。现在只有模型**自己调 look_at_image** 才会走上面的三条路——写卡/比奇的提示词写清
+// "默认不看、不评价；作者明确要看/要评价、或做以图改图需要看图时才看"。
 // 三条约束（踩过才知道）：
 //   · 图片只能挂在 **user** 消息上：tool 结果只能是字符串，system 分支会被 api 层 String() 掉（见 api.ts）。
 //   · **不落库、不进历史**：只活在这一次请求的 msgs 数组里（整轮结束随数组丢弃）。进了历史的话，40 轮窗口
@@ -243,10 +273,6 @@ export interface AttachImage { dataUrl: string; label: string }
 
 /** 附图上限（与看图子调用一致）：一次最多两张，再多只附前两张（token 随图线性涨）。 */
 export const ATTACH_MAX_IMAGES = 2;
-
-/** 出图后自动附图时给模型的说明（附的就是它刚画的那张）。 */
-export const DRAW_ATTACH_HINT = '【看图】这是你刚生成的那张图（软件附在了这条消息下面，你直接看）：'
-  + '核对画面是否与你写的描述相符、有没有明显崩坏（手指/文字/结构/糊）；有问题可以主动问作者要不要重画。';
 
 /** 造一条附图 user 消息。看不到图时要求模型直说——不猜（网关静默丢图时用户能知道原因）。 */
 export function imageTurnMessage(imgs: AttachImage[], hint: string): any | null {
@@ -404,7 +430,9 @@ export async function drawImageToStore(opts: {
   const prompt = String(opts.prompt || '').trim();
   if (!prompt) return { ok: false, error: '工具调用参数无效：prompt 不能为空' };
 
-  const st = await ImageHost.status(2000);
+  // 出图前再探一次（拿最新的 model/hint/caps/tiers，也顺带确认主机还在）——超时与 probeHost 对齐成
+  // 3000ms（2026-10-08）：主机正忙/ComfyUI 在加载时 2 秒也会假离线，而它给的文案正是"画图主机离线"。
+  const st = await ImageHost.status(3000);
   const host = { ok: !!st.ok, model: st.model || '', hint: st.hint || '', caps: Array.isArray(st.caps) ? st.caps.slice() : [], tiers: (st.tiers && typeof st.tiers === 'object') ? st.tiers : {} };
   if (!st.ok) {
     return { ok: false, host: host, error: '失败：画图主机离线（' + (st.error || '') + '）。请告诉用户检查电脑上的 ComfyUI 和画图主机是否在运行，不要重试。' };
@@ -481,11 +509,13 @@ export async function drawImageToStore(opts: {
   }
   try { if (opts.onImage) opts.onImage(id); } catch (e) { /* ignore */ }
   // 落本地存档（重开 App 后还能看到缩略图、点开原图、基于它改图；清空讨论 / 删书时一起删）。
-  // imagecache 自己不抛、失败不影响本次出图；写完顺手按上限剔除。
+  // imagecache 自己不抛、失败不影响本次出图；写完**只裁剪这本书**里超出上限的老图
+  //（2026-10-08 用户定：不跨书删、不动没打开的书的图、超限不提示）。
+  const _book = String(opts.bookId || '');
   void ImageCache.put({
-    book: String(opts.bookId || ''), id: id, thumb: thumb, full: full, at: Date.now(),
+    book: _book, id: id, thumb: thumb, full: full, at: Date.now(),
     seed: meta.seed, size: sizeText, seconds: seconds, prompt: prompt, base: baseLabel, hires: hires, jobId: String(d.jobId || '')
-  }).then(function () { return ImageCache.prune(); }).catch(function () { /* 存档失败不影响出图 */ });
+  }).then(function () { return ImageCache.prune(_book); }).catch(function () { /* 存档失败不影响出图 */ });
   return { ok: true, host: host, id: id, tier: tier, seed: meta.seed, size: sizeText, seconds: seconds, prompt: prompt, base: baseLabel, baseNote: baseNote, hires: hires };
 }
 
@@ -516,8 +546,13 @@ export function genImagesHtml(store: Map<string, any>, m: any, viewCall?: string
     const no = imageLabel(gid);   // '图N'——只由数字拼成，直接内联安全
     cells.push('<span class="cw-img-cell"><img src="' + src + '" title="点击看大图" onclick="' + onclick + '">'
       + (no ? '<b class="cw-img-no">' + no + '</b>' : '') + '</span>');
-    const extra = (g.base ? (' · 改自' + String(g.base)) : '') + (g.hires ? ' · 两步重修' : '');
-    metas.push((no ? no + ' · ' : '') + String(g.size || '') + ' · seed ' + ((g.seed == null) ? '?' : g.seed) + ' · ' + g.seconds + 's' + extra);
+    // 上传的图片（写卡「上传图片」）：没有 seed/耗时，参数行只报尺寸 + "上传的图片"
+    if (g.uploaded) {
+      metas.push((no ? no + ' · ' : '') + String(g.size || '') + ' · 上传的图片');
+    } else {
+      const extra = (g.base ? (' · 改自' + String(g.base)) : '') + (g.hires ? ' · 两步重修' : '');
+      metas.push((no ? no + ' · ' : '') + String(g.size || '') + ' · seed ' + ((g.seed == null) ? '?' : g.seed) + ' · ' + g.seconds + 's' + extra);
+    }
   }
   if (!cells.length) return '';
   return '<div class="cw-imgs">' + cells.join('') + '</div>' +

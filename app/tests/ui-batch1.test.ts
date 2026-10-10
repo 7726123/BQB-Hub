@@ -113,9 +113,10 @@ describe('UsageAssistant 纯逻辑', () => {
     // 酒馆卡玩法（导入 → 写卡改造）是用户最常问的一条，手册必须覆盖
     expect(ASSISTANT_SYSTEM).toContain('导入角色卡');
     expect(ASSISTANT_SYSTEM).toContain('改造成适配卡');
-    // 写卡思考太长怎么办（用户 2026-09-26 反馈"几万字、左右脑互搏"）：手册要能指到「思考纪律」分块
+    // 写卡思考太长怎么办（用户 2026-09-26 反馈"几万字、左右脑互搏"）：手册要能指到解法。
+    // 2026-10-09 起「思考纪律」是内置维护段（界面不再可编辑），手册改指「思考强度」这一档
     expect(ASSISTANT_SYSTEM).toContain('思考纪律');
-    expect(ASSISTANT_SYSTEM).toContain('清空＝完全不注入');
+    expect(ASSISTANT_SYSTEM).toContain('思考强度');
   });
 
   // 用户要求：高级设置底部那块「想让长文生成更稳」撤掉，改由助手回答。

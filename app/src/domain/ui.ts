@@ -574,7 +574,8 @@ const UIManager: UIManagerShape = {
       const _tail = m.role === 'user';
       const _think = m.slot === 'think';
       const _tag = _tail ? (_think ? 'user·思维链' : 'user·末尾') : 'system';
-      const _modeTag = m.mode === 'novel' ? '·仅续写' : (m.mode === 'chat' ? '·仅演出' : (m.mode === 'real' ? '·仅真实' : ''));
+      // 「chat」这一档的模式名用界面上的正式叫法「对话」（2026-10-09 用户要求：预设里不该出现"演出模式"这个叫法）
+      const _modeTag = m.mode === 'novel' ? '·仅续写' : (m.mode === 'chat' ? '·仅对话' : (m.mode === 'real' ? '·仅真实' : ''));
       return '<div class="module-row" data-drag-item="' + m.id + '" data-drag-id="' + m.id + '" data-drag-idx="' + i + '">' +
         '<span class="drag-handle" title="拖动排序">≡</span>' +
         '<span class="mod-name" title="' + htmlEscape(m.name) + '">' + htmlEscape(m.name) + '</span>' +

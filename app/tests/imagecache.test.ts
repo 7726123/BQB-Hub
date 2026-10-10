@@ -2,7 +2,7 @@
 // 环境说明：node 里没有 indexedDB → 模块自动用**内存后端**；真机走 IndexedDB。
 // 两条路径共用同一套 prune / 降级逻辑，所以这里测的是真逻辑（后端差异只在读写原语）。
 import { describe, it, expect, beforeEach } from 'vitest';
-import { ImageCache, planPrune, cacheKey, BOOK_KEEP, TOTAL_BYTES, type CacheMeta } from '../src/lib/imagecache';
+import { ImageCache, planPrune, cacheKey, BOOK_KEEP, type CacheMeta } from '../src/lib/imagecache';
 
 function rec(book: string, id: string, at: number, full = 'F'.repeat(100), thumb = 'T') {
   return { book: book, id: id, thumb: thumb, full: full, at: at, seed: 7, size: '768x768', seconds: 6, prompt: 'a girl' };
@@ -47,33 +47,42 @@ describe('imagecache：存取与按书删', () => {
   });
 });
 
-describe('imagecache：剔除（上限）', () => {
-  it('planPrune：每书保留最新 bookKeep 张，多出来的（最旧）删掉', () => {
+describe('imagecache：剔除（上限）—— 2026-10-08 用户定的口径', () => {
+  it('planPrune：只按书裁剪，保留该书最新 bookKeep 张、删掉最早的', () => {
     const metas: CacheMeta[] = [1, 2, 3, 4].map(function (i) {
       return { key: 'b|img' + i, book: 'b', id: 'img' + i, at: i, bytes: 10 };
     });
-    expect(planPrune(metas, { bookKeep: 2 }).sort()).toEqual(['b|img1', 'b|img2']);
+    expect(planPrune(metas, { book: 'b', bookKeep: 2 }).sort()).toEqual(['b|img1', 'b|img2']);
   });
 
-  it('planPrune：总量超上限时跨书按最旧删', () => {
+  it('planPrune：**别的书一张都不动**（传了 book 就只算这本书；不再有"全局总量"那条规则）', () => {
     const metas: CacheMeta[] = [
-      { key: 'a|x', book: 'a', id: 'x', at: 1, bytes: 60 },
-      { key: 'b|y', book: 'b', id: 'y', at: 2, bytes: 60 }
+      { key: 'a|img1', book: 'a', id: 'img1', at: 1, bytes: 60 },
+      { key: 'a|img2', book: 'a', id: 'img2', at: 2, bytes: 60 },
+      { key: 'a|img3', book: 'a', id: 'img3', at: 3, bytes: 60 },
+      { key: 'b|img1', book: 'b', id: 'img1', at: 4, bytes: 60 },
+      { key: 'b|img2', book: 'b', id: 'img2', at: 5, bytes: 60 }
     ];
-    expect(planPrune(metas, { bookKeep: 10, totalBytes: 70 })).toEqual(['a|x']);
+    // 裁 a 书（只留最新 1 张）：只该删 a 的前两张，b 的两张原样保留
+    expect(planPrune(metas, { book: 'a', bookKeep: 1 }).sort()).toEqual(['a|img1', 'a|img2']);
+    // 裁 b 书：只动 b
+    expect(planPrune(metas, { book: 'b', bookKeep: 1 })).toEqual(['b|img1']);
+    // 缺省（不传 book）：仍按"每本书各自裁剪"处理（老行为的最小残留，测试/兜底用）
+    expect(planPrune(metas, { bookKeep: 1 }).sort()).toEqual(['a|img1', 'a|img2', 'b|img1']);
   });
 
-  it('prune()：真的会删（内存后端）', async () => {
+  it('prune(book)：真的会删，且只删这本书的（内存后端）', async () => {
     for (let i = 1; i <= 3; i++) await ImageCache.put(rec('wb1', 'img' + i, i));
-    expect(await ImageCache.prune({ bookKeep: 2 })).toBe(1);
+    await ImageCache.put(rec('wb2', 'img1', 9));
+    expect(await ImageCache.prune('wb1', { bookKeep: 2 })).toBe(1);
     expect(await ImageCache.get('wb1', 'img1')).toBeNull();
     expect(await ImageCache.get('wb1', 'img2')).toBeTruthy();
-    expect((await ImageCache.stats()).count).toBe(2);
+    expect(await ImageCache.get('wb2', 'img1')).toBeTruthy();     // 另一本书：一张没动
+    expect((await ImageCache.stats()).count).toBe(3);
   });
 
-  it('常量：每书 12 张 / 总量 120MB', () => {
+  it('常量：每书 12 张（不再有全局总量上限）', () => {
     expect(BOOK_KEEP).toBe(12);
-    expect(TOTAL_BYTES).toBe(120 * 1024 * 1024);
   });
 });
 
@@ -106,7 +115,7 @@ describe('imagecache：降级（绝不抛、绝不影响出图）', () => {
     expect(await ImageCache.put(rec('wb1', 'img1', 1))).toBe('fail');
     expect(await ImageCache.get('wb1', 'img1')).toBeNull();
     expect(await ImageCache.delByBook('wb1')).toBe(0);
-    expect(await ImageCache.prune()).toBe(0);
+    expect(await ImageCache.prune('wb1')).toBe(0);
     expect(await ImageCache.maxSeq('wb1')).toBe(0);
     expect(await ImageCache.bookOf('img1')).toBe('');
     expect(await ImageCache.stats()).toEqual({ count: 0, bytes: 0 });

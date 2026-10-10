@@ -42,7 +42,7 @@ export const Modals: {
     <div class="form-group"><label>模块名称</label><input type="text" id="moduleEditName" placeholder="如：角色设定、文风指引"></div>
     <div class="form-row">
       <div class="form-group"><label>类型</label><select id="moduleEditKind"><option value="system">system</option><option value="user_think">user（思维链）</option></select></div>
-      <div class="form-group"><label>适用模式</label><select id="moduleEditMode"><option value="both">续写 + 演出都用</option><option value="novel">只用在续写模式</option><option value="chat">只用在演出模式</option><option value="real">仅真实</option></select></div>
+      <div class="form-group"><label>适用模式</label><select id="moduleEditMode"><option value="both">续写 + 对话都用</option><option value="novel">只用在续写模式</option><option value="chat">只用在对话模式</option><option value="real">仅真实</option></select></div>
     </div>
     <div style="font-size:12px;color:var(--text-muted);line-height:1.5;margin:-2px 0 10px;">类型＝这条模块的去处，位置由软件负责，模块里不用写「放在历史之后」这类说明。<br>・system：按顺序拼进<b>最前面的系统提示词</b>（世界书、正文/演出记录之前）——大部分设定、文风、协议放这里。<br>・user（思维链）：放在<b>最后一条用户消息的末尾</b>（贴着生成点，实测越靠后越管用）——讲「思考多长、想什么、什么时候停」的模块选它；思考强度设为关闭（或模型没有原生思考通道）时软件会自动跳过它。<br>导入的酒馆预设里 role=user 但与思考无关的条目（文风、禁词等）显示为「user（末尾·非思维链）」：同样放末尾，但不受思考开关影响。</div>
     <div class="form-group"><label>模块内容</label><textarea id="moduleEditContent" rows="8" placeholder="输入该模块的提示词内容..."></textarea></div>

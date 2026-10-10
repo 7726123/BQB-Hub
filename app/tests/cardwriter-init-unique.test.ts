@@ -174,11 +174,11 @@ describe('写卡预设：只做设计不写正文 + 分块升级', () => {
     expect(b.base).toContain('最多给一两句示例对白'); // 卡面语料仍允许，避免把示例对话也禁掉
   });
 
-  it('分块升级（旧版本 → 当前默认）：base/method 换新默认，用户改过的 selfcheck/亲密/其他 原样保留', async () => {
+  it('分块合并（2026-10-09）：base/method 一律内置默认；selfcheck 保留；「亲密」+「其他」→ other（亲密在前）', async () => {
     const store: Record<string, any> = {
       cwPresetBlocks: {
         base: '我的旧base', method: '我的旧method',
-        selfcheck: '我的自检', nsfw: '我的亲密方法论', handgun: '',
+        selfcheck: '我的自检', nsfw: '我的亲密方法论', handgun: '我的其他要求',
         __version: 17
       },
       cwNsfw: true, cwHandgun: false
@@ -189,11 +189,10 @@ describe('写卡预设：只做设计不写正文 + 分块升级', () => {
       remove: (k: string) => { delete store[k]; }
     };
     const b = (Cw() as any)._loadBlocks();
-    expect(b.base).toContain('只做设计，不写正文');   // 系统维护段：升级后拿到新版
+    expect(b.base).toContain('只做设计，不写正文');   // 系统维护段：一律内置默认（老自定义不再生效）
     expect(b.method).toContain('引导用户去「写作」页试写');
-    expect(b.selfcheck).toBe('我的自检');             // 个人偏好段：用户改过的不动
-    expect(b.nsfw).toBe('我的亲密方法论');
-    expect(b.handgun).toBe('');
+    expect(b.selfcheck).toBe('我的自检');             // 自检：用户改过的不动
+    expect(b.other).toBe('我的亲密方法论\n\n我的其他要求');   // 合并：亲密在前、其他在后
     // 断言"升级到了当前默认版本"，不写死数字：默认规则每次升版都递增，
     // 写死会让这条测试在每次改提示词时无谓地失败（真正的回归是"没升级"，即仍是 17）
     expect(b.__version).toBe(Cw()._defaultBlocks().__version);

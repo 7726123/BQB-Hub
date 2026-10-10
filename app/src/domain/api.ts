@@ -538,7 +538,10 @@ export const APIHandler = {
   // 结果缓存；请求失败/无 tool_calls/未配 Key 一律视为不支持（false）。
   // 注意：探测必须与 fetchCompletions 走同一通道——HTTPS 端点先按本地代理改写，
   // 直连失败时用原生 CapacitorHttp 兜底。否则像 opencode.ai 这类不带 CORS 头的端点，
-  // WebView fetch 被拦后会把"探测失败"误判成"不支持工具"（写卡右上角误报）。
+  // WebView fetch 被拦后会把"探测失败"误判成"不支持工具"。
+  // 2026-10-09 用户要求：写卡不再自动探测、也不再显示「⚠️ 不支持工具」——现在的模型基本都
+  // 支持工具，这种探测失败（网关不返回 tool_calls / 网络抖动）只会误报。本函数保留供测试与
+  // 后续诊断用，不再挂在写卡发送入口。
   async probeToolsSupport(overrides: FetchOverrides = {}): Promise<boolean> {
     const apiConfig = (overrides.apiConfig || (typeof PresetManager !== 'undefined' ? PresetManager.getActiveAPIConfig() : null) || {}) as Record<string, string | number | undefined>;
     const endpoint = String(apiConfig.endpoint || '');

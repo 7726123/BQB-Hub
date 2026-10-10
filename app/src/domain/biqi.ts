@@ -12,9 +12,9 @@ import { PluginManager } from './plugins';
 import { SettingSyncManager } from './settingsync';
 import { WorldBookManager, REAL_ONLY_ENTRY_TYPES } from './worldbook';
 import { renderMdStrong } from '../lib/mdtext';
-import { probeHost, drawImageToStore, genImagesHtml, imageLabel, hydrateImages, lookAtImageTool, appendAttachSpec, countImageTurns, stripImageTurns, DRAW_ATTACH_HINT, type AttachSpec, type HostStatusCache } from './imagedraw';
+import { probeHost, drawImageToStore, genImagesHtml, imageLabel, hydrateImages, lookAtImageTool, appendAttachSpec, countImageTurns, stripImageTurns, type AttachSpec, type HostStatusCache } from './imagedraw';
 import { ImageCache } from '../lib/imagecache';
-import { visionState, markVision, lookAtImageTracked, looksLikeVisionError } from '../lib/vision';
+import { visionState, markVision, looksLikeVisionError } from '../lib/vision';
 
 export interface BiqiMessage { role: 'user' | 'assistant'; content: string; _steps?: string[]; imageIds?: string[] }
 
@@ -102,11 +102,16 @@ export const BiqiAgent: {
   _imageToolDraw(): unknown;
   _imageToolLook(): unknown;
   _toolLookImage(a: any): Promise<string>;
-  _visionCheckNote(imgIds: string[], prompt: string): Promise<string>;
   _visionNoToast: boolean;
   _attachQueue: AttachSpec[]; // 主对话「直接看图」：待附图队列（每条用户消息清空）
   _imgStripped: boolean; // 本轮已因"端点不接受图片"摘过一次图（防重试循环）
   _imageRuleMessage(): string;
+  // 生图规则消息与"轮间重探"（2026-10-08）：离线时允许在轮与轮之间强制重探，探到在线就地改写规则、当轮挂上工具。
+  _imgRuleMsg: any;
+  _hostReprobes: number;
+  _lastReprobeAt: number;
+  _maybeReprobeHost(): Promise<boolean>;
+  _hostDiagHint(): string;
   _refreshHostStatus(): Promise<void>;
   _toolDrawImage(a: any): Promise<string>;
   _genImages: Map<string, any>;
@@ -147,6 +152,9 @@ export const BiqiAgent: {
   _imgStripped: false,
   _drawToolsOn: false, // 本轮是否给 draw_image（= 主机已启用且在线的探测结果）
   _hostStatus: { at: 0, ok: false, model: '', hint: '' } as HostStatusCache, // 画图主机状态缓存（60 秒）
+  _imgRuleMsg: null as any, // 本轮的「生图规则」system 消息引用（轮间重探成功后就地改写）
+  _hostReprobes: 0,   // 本轮已"轮间重探"次数（每次 _runLoop 重置；上限 2）
+  _lastReprobeAt: 0,  // 上一次轮间重探时间（4 秒节流）
   _ratio: BIQI_DEFAULT_RATIO,
   _snapped: false,
   _kbOpen: false,
@@ -529,9 +537,13 @@ export const BiqiAgent: {
       }
       return { role: m.role, content: text };
     });
+    const _imgRuleMsg: any = { role: 'system', content: this._imageRuleMessage() };
+    this._imgRuleMsg = _imgRuleMsg;            // 引用留着：轮间重探探到在线时**就地改写**它
+    this._hostReprobes = 0;
+    this._lastReprobeAt = 0;
     const msgs: any[] = [
       { role: 'system', content: this._presetText() },   // 用户可编辑的预设（两模式共用一份）
-      { role: 'system', content: this._imageRuleMessage() },
+      _imgRuleMsg,
     ].concat(hist);
     let finalText = '';
     let lastErr = '';
@@ -554,6 +566,11 @@ export const BiqiAgent: {
     try {
       for (let round = 0; round < BIQI_MAX_ROUNDS; round++) {
         setStatus(this._steps.length ? '正在整理回答…' : '正在思考…');
+        // 轮间重探（2026-10-08 用户要求）：开头判成"主机离线"时整轮都没有画图工具，
+        // 用户把主机/ComfyUI 启动好后本来要再发一句；这里在后续每个请求前给一次机会（有节流与上限）。
+        if (round > 0) {
+          try { await this._maybeReprobeHost(); } catch (e) { /* 重探失败不影响本轮 */ }
+        }
         let r = await this._sendTurn(msgs, onPartial);
         // 「直接看图」兜底：这一轮给模型附了图、而端点报"不接受图片"（4xx + image/vision/模态 这类词）
         // → 摘掉图片、把该模型记为"看不了图"，**同一轮立刻重试一次**，主对话不因图片整场失败。
@@ -571,7 +588,6 @@ export const BiqiAgent: {
           content: r.text || '',
           tool_calls: r.tools.map((t, i) => ({ id: t.id || ('biqi_' + i), type: 'function', function: { name: t.name, arguments: JSON.stringify(t.arguments || {}) } })),
         });
-        const outs: string[] = [];
         for (let i = 0; i < r.tools.length; i++) {
           const t = r.tools[i];
           if (t.name === 'read_worldbook') setStatus('正在看世界书…');
@@ -581,26 +597,13 @@ export const BiqiAgent: {
           else setStatus('正在修改临时世界书…');
           let out = '';
           try { out = await this._executeTool(t); } catch (e: any) { out = JSON.stringify({ ok: false, error: String((e && e.message) || e) }); }
-          outs.push(out);
           const line = this._stepLine(t, out);
           if (line) pushStep(line);
           msgs.push({ role: 'tool', tool_call_id: t.id || ('biqi_' + i), content: out });
         }
-        // 看图（三条路，与写卡一致，见 imagedraw.ts 的 IMG_TURN_FLAG）：
-        //  · 'yes'     → 把刚出/要看的图附进本轮请求（临时 user 消息），模型自己看；
-        //  · 'unknown' → 走一次独立子调用（探针 + 把回答当软件记录注入）；
-        //  · 'no'      → 什么都不做。
+        // 看图（2026-10-08 用户要求：**出图后不再自动附图/自动核对**——只是跑图时既费时，又等于替
+        // 作者做了审美判断）。现在只有模型自己调 look_at_image 才会附图（三态见 imagedraw.ts）。
         try {
-          const ids: string[] = [];
-          for (const o of outs) {
-            try { const j = JSON.parse(String(o || '{}')); if (j && j.image_id) ids.push(String(j.image_id)); } catch (e) { /* ignore */ }
-          }
-          if (ids.length && visionState() === 'yes') {
-            this._attachQueue.push({ refs: ids, hint: DRAW_ATTACH_HINT });
-          } else if (ids.length && visionState() === 'unknown') {
-            const note = await this._visionCheckNote(ids, String((((this._genImages.get(ids[0]) || {}) as any).prompt) || ''));
-            if (note) msgs.push({ role: 'system', content: note });
-          }
           // look_at_image 排进队列的图（附在所有 tool 结果之后，模型下一轮就能看到）
           for (const sp of this._attachQueue.splice(0)) {
             await appendAttachSpec({
@@ -730,14 +733,17 @@ export const BiqiAgent: {
   // 看图工具：两条实现（看待图能力）——能看图（'yes'）时软件把那张图**附进本轮请求**，模型亲眼看完
   // 自己回答（不额外调用、更准）；还没试过（'unknown'）时走一次独立的看图子调用（无预设/无角色卡，
   // 只够判断"有没有崩坏"）。传的是 420px 缩略图；看不了图的模型（'no'）不给这个工具。
+  // 2026-10-08 起：**出图后不再自动附图/自动核对**，看不看完全由模型按上面的规则自己决定（默认不看）。
   _imageToolLook(): unknown {
     const canSee = visionState() === 'yes';
     return {
       type: 'function',
       function: {
         name: 'look_at_image',
-        description: '看一眼已经生成的图：可以问"手有没有画坏""背景是不是夜晚""这张和图4比哪张更像苏黎"。'
-          + '**什么时候用**：你要判断画得对不对、有没有崩坏，或作者问起某张图的细节。'
+        description: '看一眼已经生成的图（**默认不看**：出图后不要为了点评而调它——作者没让你评价就不要评价）。'
+          + '**什么时候用**：① 作者明确让你看/评价某张图（"有没有崩坏""画得对不对"）——按他问的范围回答；'
+          + '② 作者让你改某张图、你需要看清它才能决定怎么改（或改完确认要改的那处有没有到位）；'
+          + '③ 作者问起某张图的细节（"她那把伞是什么颜色"）。'
           + (canSee
             ? '**你能直接看图**：调用后软件会把那张图附到你的消息里，你亲眼看到、直接回答（约 1 秒，不额外调用模型）。'
             : '拿到的是**另一次看图调用的文字回答**（不是你亲眼所见）——据此向作者说明，但不要说成"我亲眼看到的"。'),
@@ -812,19 +818,48 @@ export const BiqiAgent: {
           : '')
         + '- 提示词落在最近上下文里能确定的东西上（人物外观、当前场景、正在发生的事）；他没说的细节按上下文最合理的样子补，别自己另起一个故事；\n'
         + (visionState() === 'yes'
-          // 能看图：出图后软件自动附图、look_at_image 也改成附图 → 模型是"亲眼看到"，不再要求它打折扣
-          ? '- **看图**：你**能直接看到图**——出图后软件会把刚画的图附给你看（不用额外调用）；要看别的图（比如某角色的头像）就调 look_at_image，软件会把那张图附给你。看完直接说结论（"我看到……"），不要再说"我看不到图"。\n'
-          : '- **看图**：要确认画面细节就调 look_at_image——它用一次独立的看图调用核对（约 3~6 秒），把它的回答转给你；那不是你亲眼所见，**不要对作者说"我看到了"**。\n')
-        + '- 出图后用一两句中文说明画的是什么，问他要不要换一张或调整；失败（主机离线/超时/主机不支持改图）就如实说原因，不要重试超过一次，也不要假装画了。';
+          ? '- **看图（默认不看、更不要评价）**：出图后软件**不会**把图附给你，你也不用为了"看一眼"去调 look_at_image——作者要的是图，不是你的评价（你说好说坏会先入为主影响他自己的喜好，也会拖慢每一轮）。只有这两种情况才看：① 作者明确让你看/评价（就按他问的范围答，别扩展成整张点评）；② 作者让你改某张图、你需要看清才能决定怎么改（以及改完确认要改的地方有没有到位）。\n'
+            + '  你能直接看到图：调用后软件会把那张图附到你的消息里，你亲眼看到、直接回答（约 1 秒，不额外调用模型）。看完直接说结论（"我看到……"），不要再说"我看不到图"。\n'
+          : '- **看图（默认不看、更不要评价）**：出图后软件**不会**把图附给你，你也不用为了"看一眼"去调 look_at_image——作者要的是图，不是你的评价（你说好说坏会先入为主影响他自己的喜好，也会拖慢每一轮）。只有这两种情况才看：① 作者明确让你看/评价（就按他问的范围答，别扩展成整张点评）；② 作者让你改某张图、你需要看清才能决定怎么改。看的时候调 look_at_image——它用一次独立的看图调用（约 3~6 秒），把它的回答转给作者；那不是你亲眼所见，**不要对作者说"我看到了"**。\n')
+        + '- 出图后用一两句中文说明画的是什么；**不要评价画面**（作者没问就不点评），问他要不要换一张或调整就行；失败（主机离线/超时/主机不支持改图）就如实说原因，不要重试超过一次，也不要假装画了。\n'
+        + '- **如果更早的回复里说过"没有画图工具/画不了"**：那是当时连不上画图主机——现在工具就在你手里，直接按上面的规则办，不要再重复那句话。';
     }
     return '【生图】本轮你没有画图工具——作者还没配置画图主机，或者画图主机没在运行。因此：\n'
       + '- **不要提议"要不要我画一张"**，不要说"我可以帮你出图/生成图片/配图"，也不要输出生图提示词；专注设定与剧情。\n'
-      + '- 只有当作者主动要求画图时，才说明：需要先在「设置 → AI 与生成 → 画图主机」填上电脑的地址和配对 token，并让电脑上的画图主机保持运行。';
+      + '- 只有当作者主动要求画图时，才说明：需要先在「设置 → AI 与生成 → 画图主机」填上电脑的地址和配对 token，并让电脑上的画图主机保持运行。\n'
+      + this._hostDiagHint()
+      + '- 这个检查**每轮都会重做**（主机刚启动、ComfyUI 还在加载时会先连不上，几秒后就会恢复）：作者说"我电脑开着/主机在跑"时，让他稍等几秒再说一句（如"现在再试试"）即可，不要下"永远画不了"的结论。';
   },
 
   // 画图主机状态探测（60 秒缓存，见 imagedraw.ts）：_runLoop 每轮开头调一次
   async _refreshHostStatus(): Promise<void> {
     this._drawToolsOn = await probeHost(this._hostStatus);
+    this._lastReprobeAt = Date.now();   // 轮间重探的节流起点（开头刚探完，别紧接着再探）
+  },
+
+  // 轮间重探（2026-10-08 用户要求）：见 _runLoop 里的调用点。只在本轮还没画图工具时试，
+  // 每条消息最多 2 次、两次之间至少隔 4 秒；探到在线就地改写生图规则并挂上工具。
+  async _maybeReprobeHost(): Promise<boolean> {
+    if (this._drawToolsOn) return false;
+    if ((this._hostReprobes || 0) >= 2) return false;     // 未配置时 probeHost 自己会立刻返回 false，不用另判
+    if ((this._hostReprobes || 0) >= 2) return false;
+    if (Date.now() - (this._lastReprobeAt || 0) < 4000) return false;
+    this._hostReprobes = (this._hostReprobes || 0) + 1;
+    this._lastReprobeAt = Date.now();
+    this._drawToolsOn = await probeHost(this._hostStatus, 3000, true);
+    if (this._drawToolsOn && this._imgRuleMsg) this._imgRuleMsg.content = this._imageRuleMessage();
+    return this._drawToolsOn;
+  },
+
+  // 探测诊断（2026-10-08）：最近一次探测的原因与耗时，交给模型转述（"等了 3 秒没回应"≠"连不上"）。
+  _hostDiagHint(): string {
+    const st: any = this._hostStatus || {};
+    if (!st.err) return '';
+    const ms = Number(st.tookMs || 0);
+    return '- 【软件刚探测过】最近一次探测失败：' + String(st.err).slice(0, 80)
+      + (ms > 0 ? ('（等待 ' + (ms / 1000).toFixed(1) + ' 秒）') : '')
+      + '。把这条如实转述给作者（例如"等了 3 秒没等到回应"），不要只说"连不上"；'
+      + '如果作者说电脑上主机开着，让他稍等几秒再说一句「现在再试试」。\n';
   },
 
   // 出一次图，返回给模型看的 JSON 文本（图片同步挂在最后一条 assistant 消息上）
@@ -866,7 +901,7 @@ export const BiqiAgent: {
         message: '图片已生成并显示在对话里（' + out.id + (label ? ('，界面编号 ' + label) : '') + '，' + t.label + '档，耗时 ' + out.seconds + ' 秒'
           + (out.base ? ('，基于' + out.base + '改的' + (out.hires ? '（两步放大重修）' : '')) : '') + '）。'
           + (out.baseNote ? ('（本次没有用底图：' + out.baseNote + '——末尾补一句告诉作者。）') : '')
-          + '用一两句中文说明画面，并问作者要不要调整或换一张。'
+          + '用一两句中文说明画的是什么，交给作者看图；**不要评价画面**（作者没问就不点评）。'
       });
     } catch (e: any) {
       return JSON.stringify({ ok: false, error: '失败：出图时出错（' + String((e && e.message) || e) + '）' });
@@ -882,41 +917,17 @@ export const BiqiAgent: {
       bookId: (typeof WorldBookManager !== 'undefined' && WorldBookManager.getActiveId && WorldBookManager.getActiveId()) || undefined,
       onStatus: () => { this._status = '正在看图…'; this.renderMessages(); }
     });
-    // 能看图（'yes'）：不用现在取图——把引用排进队列，由本轮末尾统一附进请求（与出图后的自动附图同一条路）
+    // 能看图（'yes'）：不用现在取图——把引用排进队列，由本轮末尾统一附进请求
     if (r.ok && r.attach) this._attachQueue.push(r.attach);
     if (!r.ok && r.message.indexOf('看不了图片') >= 0 && !this._visionNoToast) {
       this._visionNoToast = true;
-      try { App.toast('当前模型看不了图片：已关闭"看图/图核对"（不影响出图与改图）'); } catch (e) { /* ignore */ }
+      try { App.toast('当前模型看不了图片：已关闭"看图"（不影响出图与改图）'); } catch (e) { /* ignore */ }
     }
     return JSON.stringify(r.ok ? { ok: true, result: r.message } : { ok: false, error: r.message });
   },
 
-  // 出图后的一次独立核对（**只在 visionCaps='unknown' 时用**：既把能力试出来，也把结论交给模型）；
-  // 已确认能看图时走"把图附进本轮请求让它自己看"，确认看不了时跳过。
-  async _visionCheckNote(imgIds: string[], prompt: string): Promise<string> {
-    const id = String((imgIds && imgIds[0]) || '');
-    if (!id || visionState() === 'no') return '';
-    const g: any = this._genImages.get(id);
-    const img = String((g && (g.thumb || g.full)) || '');
-    if (!img) return '';
-    this._status = '正在核对刚生成的图…';
-    this.renderMessages();
-    const ask = '这是刚刚生成的一张插图（缩略图）。请核对两点：① 画面主要内容是否与描述相符；'
-      + '② 有没有**明显**的崩坏（手指畸形、乱码文字、结构错误、明显模糊）。两三句话直接说结论。'
-      + (prompt ? ('\n（生成时用的描述：' + String(prompt).slice(0, 300) + '）') : '');
-    const r = await lookAtImageTracked({ images: [img], question: ask, callLabel: 'vision' });
-    if (r.state === 'no') {
-      if (!this._visionNoToast) {
-        this._visionNoToast = true;
-        try { App.toast('当前模型看不了图片：已关闭"看图/图核对"（不影响出图与改图）'); } catch (e) { /* ignore */ }
-      }
-      return '';
-    }
-    const ans = String(r.answer || '').trim();
-    if (!r.ok || !ans) return '';
-    return '【软件替你看过刚生成的那张图（既不是作者说的，也不是你自己看到的）】' + ans
-      + '\n请据此如实向作者说明这张图；与你刚才的预期不符时以这段为准，不要硬说达成了。若确实有明显崩坏，可以主动问一句「要不要我重画一张」。';
-  },
+  // 注：出图后**不再**有"自动核对"（2026-10-08 用户要求）——那会每次都替作者看一眼并评价，
+  // 既费时又等于替作者做了审美判断。看图统一走 look_at_image 工具（模型按规则自己决定）。
 
   async _executeTool(t: ToolCall): Promise<string> {
     const a = (t.arguments || {}) as Record<string, string>;
