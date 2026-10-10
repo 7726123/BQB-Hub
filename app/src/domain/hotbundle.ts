@@ -17,9 +17,11 @@
 // 切换前一律先 saveCurrentChapter 落盘；仍然绝不在"前台 + 用户正在写"时无故重载。
 import { ClientLog } from './clientlog';
 import { BootSplash } from './bootsplash';
+import { ensureInstallId } from '../lib/installid';
 import { defaultServerBase } from '../lib/server-url';
 import { getWebVersion, setWebVersion } from '../lib/webver';
 import { isClean } from '../lib/buildflags';
+import { isSystemEdition, systemKeyHeaders, applyEditionFromNative } from '../lib/edition';
 
 export interface HotBundleState {
   active: string;      // 正在运行的热包版本（'' = 内置资源）
@@ -30,6 +32,8 @@ export interface HotBundleState {
   rolledBack?: string; // 上次启动失败被回退的版本（原生读一次即清）
   serving?: string;    // 实际加载的目录（'public' = 内置资源；排查用）
   isAsset?: boolean;   // 是否正跑内置资源
+  edition?: string;    // 'system' = 系统版 APK（预配置管理员 + 内测渠道）；正式版没有这个字段
+  systemKey?: string;  // 系统版机器凭据（只放内存，不落 localStorage、不进日志）
 }
 export interface HotBundleManifest { payload?: string; sig?: string; v?: string }
 export interface HotBundleInstallResult { ok?: boolean; version?: string; code?: number; seeded?: number }
@@ -81,9 +85,20 @@ export function manualResultText(r: { installed?: boolean; version?: string; rea
 /**
  * 取一次（已签名）manifest。**不解析也不信任其中任何字段**——只有原生 install 认签名后的 payload，
  * 这里读 v 仅用于"跳不跳"一次的判断（见 check 的注释）。
+ *
+ * 系统版额外做两件事：① 带 `channel=beta`（内测渠道，服务端按机器凭据放行；普通版永远拿正式包）；
+ * ② 带上凭据头（X-System-Key + X-Install-Id，服务端可配设备白名单）。beta 缺失时服务端回落正式包。
  */
+function _manifestHeaders(): Record<string, string> | undefined {
+  if (!isSystemEdition()) return undefined;
+  const h: Record<string, string> = Object.assign({}, systemKeyHeaders());
+  try { h['X-Install-Id'] = ensureInstallId(); } catch (e) { /* 拿不到标识就不带（服务端白名单会拒绝） */ }
+  return Object.keys(h).length ? h : undefined;
+}
+
 function _fetchManifest(server: string): Promise<HotBundleManifest> {
-  return fetch(server + '/api/app/web-bundle?_=' + Date.now(), { cache: 'no-store' })
+  const url = server + '/api/app/web-bundle?_=' + Date.now() + (isSystemEdition() ? '&channel=beta' : '');
+  return fetch(url, { cache: 'no-store', headers: _manifestHeaders() })
     .then(function (r) {
       if (!r.ok) throw new Error('http ' + r.status);
       return r.json() as Promise<HotBundleManifest>;
@@ -180,6 +195,9 @@ export const HotBundle = {
     try {
       Promise.resolve(p.getState()).then(function (st) {
         if (!st) return;
+        // 系统版判定（edition/systemKey）随原生状态一起到达：正式版没有这个字段 → 保持 normal（行为零变化）。
+        // 判定到达会触发 AdminMode.refresh()（见 lib/edition 的订阅），管理入口/真实模式随之显隐。
+        applyEditionFromNative(st);
         // 合并而不是整体替换：check 可能已经先落了占位状态、并把"安装完成"写进 pending；
         // 整体替换会把刚写上的 pending 冲掉（紧接着的 applyPending 就找不到待生效的包 → 收了启动画面却不切换，
         // 用户看到的就是"很快就进 App 了，但没换成新版"）。

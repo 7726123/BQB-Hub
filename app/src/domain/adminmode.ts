@@ -1,74 +1,66 @@
-// 管理员模式（客户端管理能力开关）。
+// 管理员模式（系统版专用；正式版没有这个能力）。
 //
-// 入口：连续点击「检查更新」10 下（间隔 > TAP_GAP_MS 视为重新计数）
-//   · 未开启时 → 弹口令框，口令由**服务器后端**校验（本地不存任何口令/明文）
-//   · 已开启时 → 同一手势退出
+// 判定依据是**安装包**：「系统版」APK（Android flavor `system`，资源里预置机器凭据）会被原生在
+// 运行期判成 system edition（见 lib/edition.ts，值来自 HotBundle.getState() 的 edition 字段）。
+// 正式版/干净版里 isOn() 恒为 false——没有连点手势、没有本地开关，改 localStorage 也不起作用
+// （2026-10 起：正式版彻底移除管理员模式，连手势代码都不再存在于公共网页包里）。
 //
-// 作用：拿到服务器签发的管理员令牌（12h）后，① 侧边栏出现与「社区」同级的「管理」页签
-//   （内含使用统计与审核队列，见 domain/community.ts 与 index.html 的 #tab-admin），
-//   ② 每轮生成内容留档上报（sendTrace），
-//   ③ 真实模式（入口、世界书「初始记忆 / 部分人知道」条目类型、预设「仅真实」）只在这个模式下开放
-//   ——2026-10-08 用户要求：真实模式还不成熟，普通用户先看不到（见 realmode.ts 的 syncEntry）。
+// 作用：① 侧边栏「管理」页签（使用统计、审核队列、意见反馈）；
+//       ② 每轮生成内容留档上报（sendTrace）；
+//       ③ 真实模式（入口、世界书「初始记忆 / 部分人知道」条目类型、预设「仅真实」）。
 //
-// 正文窗口不受本模式影响：与普通用户完全一致，只由设置里的「正文窗口」决定
-// （lib/contextbudget.ts）。旧版会把窗口压到 1 万字，随窗口设置可调而下线。
+// 服务端鉴权：管理请求默认带系统版机器凭据 X-System-Key（+ X-Install-Id 白名单），
+// 无口令、无过期；兜底：长按顶部角标可用口令换 12h 留档令牌（X-Admin-Token），
+// 用于凭据轮换后旧 APK 应急（见 renewToken）——正常情况下永远用不到。
 import { SM } from '../infra/gate';
 import { defaultServerBase } from '../lib/server-url';
 import { isClean } from '../lib/buildflags';
+import { isSystemEdition, systemKey, onEditionChange } from '../lib/edition';
+import { ensureInstallId } from '../lib/installid';
 
-export const ADMIN_TAPS = 10;
-export const ADMIN_TAP_GAP_MS = 2500;
 const BADGE_ID = 'adminModeBadge';
+/** 角标长按多久触发「口令换令牌」兜底入口（防误触） */
+const BADGE_LONGPRESS_MS = 700;
 
 interface AdminAppLike {
   toast?: (m: string) => void;
-  loadEditorContent?: () => void;
-  renderAll?: () => void;
 }
 interface AdminUILike {
-  showConfirm?: (msg: string, cb: () => void) => void;
   closeModal?: (id: string) => void;
+  showAdminAuth?: () => void;
 }
 
 export const AdminMode = {
-  KEY: 'adminMode',
-  TOKEN_KEY: 'adminTraceToken',   // 留档上报令牌（/api/admin/verify 签发，12h；只存令牌，不存口令）
-  _taps: 0,
-  _lastTap: 0,
+  TOKEN_KEY: 'adminTraceToken',   // 兜底令牌（口令换的，12h；只存令牌，不存口令）
 
+  /** 系统版 = 管理员模式常开；正式版/干净版恒关（没有任何开关能打开） */
   isOn(): boolean {
     if (isClean()) return false;   // 干净版：没有管理端（口令由服务器校验，本版本不联服务器）
-    try { return SM().get<boolean>(this.KEY, false) === true; } catch (e) { return false; }
-  },
-  set(on: boolean): void {
-    try { SM().set(this.KEY, !!on); } catch (e) { /* 忽略 */ }
-    this.syncBadge();
-    // 让侧边栏「管理」入口立刻出现/消失（别等社区页重新渲染）
-    try {
-      const CC = (globalThis as unknown as { CommunityChat?: { syncAdminEntry?: () => void } }).CommunityChat;
-      if (CC && CC.syncAdminEntry) CC.syncAdminEntry();
-    } catch (e) { /* 忽略 */ }
-    // 真实模式（入口 + 世界书条目类型 + 预设「仅真实」）也跟着这个开关立刻显隐：
-    // 与「管理」入口同一条规矩——改完开关不用重启，界面上立刻是对的样子。
-    try {
-      const RM = (globalThis as unknown as { RealMode?: { syncEntry?: () => void } }).RealMode;
-      if (RM && RM.syncEntry) RM.syncEntry();
-    } catch (e) { /* 忽略 */ }
+    return isSystemEdition();
   },
 
-  /** 记一次「检查更新」点击。返回 'enter'（该弹口令框）/ 'exit'（该退出）/ null（继续正常检查更新） */
-  tap(now?: number): 'enter' | 'exit' | null {
-    if (isClean()) return null;   // 干净版：连点也不会进入管理员模式
-    const t = typeof now === 'number' ? now : Date.now();
-    if (t - this._lastTap > ADMIN_TAP_GAP_MS) this._taps = 0;   // 间隔过久 → 重新计数
-    this._lastTap = t;
-    this._taps++;
-    if (this._taps < ADMIN_TAPS) return null;
-    this._taps = 0;
-    return this.isOn() ? 'exit' : 'enter';
+  /**
+   * 管理请求头：系统版机器凭据（X-System-Key + X-Install-Id 白名单）；
+   * 手工换过兜底令牌时再叠 X-Admin-Token（服务端两套凭据任一生效）。
+   * 正式版返回空对象（没有管理请求会走到这里）。
+   */
+  adminRequestHeaders(): Record<string, string> {
+    const h: Record<string, string> = {};
+    try {
+      const tk = this.traceToken();
+      if (tk) h['X-Admin-Token'] = tk;
+    } catch (e) { /* 忽略 */ }
+    if (isSystemEdition()) {
+      const key = systemKey();
+      if (key) {
+        h['X-System-Key'] = key;
+        try { h['X-Install-Id'] = ensureInstallId(); } catch (e) { /* 拿不到标识就不带（服务端白名单会拒绝，如实反映） */ }
+      }
+    }
+    return h;
   },
 
-  /** 留档令牌（未开启/过期则为空串） */
+  /** 兜底令牌（未换过/过期则为空串） */
   traceToken(): string {
     try {
       const t = SM().get<{ token: string; exp: number } | null>(this.TOKEN_KEY, null);
@@ -84,19 +76,18 @@ export const AdminMode = {
     } catch (e) { /* 忽略 */ }
   },
 
-  /** 上报一轮留档（指令 / 续写 / 记忆召回内容）。仅管理员模式 + 有令牌时发送；失败静默。 */
+  /** 上报一轮留档（指令 / 续写 / 记忆召回内容）。仅系统版 + 有凭据时发送；失败静默。 */
   sendTrace(payload: Record<string, unknown>): void {
     try {
       if (isClean()) return;   // 干净版：不留档上报
       if (!this.isOn()) return;
-      const token = this.traceToken();
-      if (!token) { console.log('[AdminTrace] 无有效令牌（重启后需重新连点 10 下进一次管理员模式）'); return; }
+      const headers = Object.assign({ 'Content-Type': 'application/json' }, this.adminRequestHeaders());
       fetch(defaultServerBase() + '/api/admin/trace', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
+        headers: headers,
         body: JSON.stringify(payload),
       }).then(function (r) {
-        if (r.status === 401) { AdminMode._saveToken('', 0); console.warn('[AdminTrace] 令牌失效，已清除'); }
+        if (r.status === 401) { AdminMode._saveToken('', 0); console.warn('[AdminTrace] 凭据无效且无有效令牌，已清除令牌'); }
         else if (!r.ok) console.warn('[AdminTrace] 上报失败 HTTP ' + r.status);
         else console.log('[AdminTrace] 已留档：第 ' + (payload.round || '?') + ' 轮');
       }).catch(function (e) { console.warn('[AdminTrace] 上报异常：' + String((e as Error).message || e).slice(0, 80)); });
@@ -116,7 +107,7 @@ export const AdminMode = {
       });
       const j = await r.json().catch(function () { return {}; });
       if (r.ok && j && j.ok) {
-        if (j.token) this._saveToken(String(j.token), Number(j.exp) || 0);   // 供本轮测试的留档上报
+        if (j.token) this._saveToken(String(j.token), Number(j.exp) || 0);
         return { ok: true };
       }
       return { ok: false, error: (j && j.error) || ('校验失败（HTTP ' + r.status + '）') };
@@ -125,37 +116,33 @@ export const AdminMode = {
     }
   },
 
-  /** 口令校验通过后开启管理员模式 */
-  async enableWithPassword(password: string): Promise<{ ok: boolean; error?: string }> {
+  /** 兜底入口（长按角标触发）：口令换 12h 令牌。正常路径靠机器凭据，不需要它。 */
+  async renewToken(password: string): Promise<{ ok: boolean; error?: string }> {
     const r = await this.verify(password);
     if (!r.ok) return r;
-    this.set(true);
     const UI = (globalThis as unknown as { UIManager?: AdminUILike }).UIManager;
     if (UI && UI.closeModal) UI.closeModal('modalAdminAuth');
     const App = (globalThis as unknown as { App?: AdminAppLike }).App;
-    if (App && App.toast) App.toast('管理员模式已开启：侧边栏「管理」入口已可用（令牌 12 小时有效）；再连点 10 下「检查更新」退出');
+    if (App && App.toast) App.toast('令牌已更新（12 小时有效）；系统版机器凭据不受影响');
     return { ok: true };
   },
 
-  /** 退出：只关掉管理能力（正文、水位线与归档区都不动——它们由窗口设置决定） */
-  exit(): void {
-    this.set(false);
-    const App = (globalThis as unknown as { App?: AdminAppLike }).App;
-    if (App && App.toast) App.toast('已退出管理员模式：侧边栏「管理」入口已隐藏（写作与记忆设置不受影响）');
+  /** 界面联动刷新（系统版判定到达/变化时调用）：角标、「管理」入口、真实模式入口 */
+  refresh(): void {
+    this.syncBadge();
+    // 让侧边栏「管理」入口立刻出现/消失（别等社区页重新渲染）
+    try {
+      const CC = (globalThis as unknown as { CommunityChat?: { syncAdminEntry?: () => void } }).CommunityChat;
+      if (CC && CC.syncAdminEntry) CC.syncAdminEntry();
+    } catch (e) { /* 忽略 */ }
+    // 真实模式（入口 + 世界书条目类型 + 预设「仅真实」）也跟着这个开关立刻显隐
+    try {
+      const RM = (globalThis as unknown as { RealMode?: { syncEntry?: () => void } }).RealMode;
+      if (RM && RM.syncEntry) RM.syncEntry();
+    } catch (e) { /* 忽略 */ }
   },
 
-  /** 退出前确认（由 update.ts 的连击触发） */
-  requestExit(): void {
-    const UI = (globalThis as unknown as { UIManager?: AdminUILike }).UIManager;
-    const self = this;
-    if (UI && UI.showConfirm) {
-      UI.showConfirm('退出管理员模式？\n退出后侧边栏「管理」入口（使用统计与审核队列）会隐藏；正文、水位线与归档区不受影响。', function () { self.exit(); });
-    } else {
-      this.exit();
-    }
-  },
-
-  /** 顶部角标：管理员模式开启时常驻提示（纯 DOM 注入，不改 HTML/CSS 文件） */
+  /** 顶部角标：系统版常驻提示（可长按 → 口令换令牌兜底入口） */
   syncBadge(): void {
     try {
       const doc = (globalThis as unknown as { document?: Document }).document;
@@ -168,14 +155,44 @@ export const AdminMode = {
       if (!el) {
         el = doc.createElement('div');
         el.id = BADGE_ID;
+        // 注意 pointer-events 是 auto（与旧版不同）：角标是长按兜底入口的落点。
+        // 只在系统版出现，最多吃顶部 20px 的点击，换来"令牌更新"有一个不显眼的入口。
         el.setAttribute('style', 'position:fixed;left:0;right:0;top:0;z-index:9999;text-align:center;'
-          + 'font-size:12px;line-height:20px;background:#8a5a00;color:#fff;opacity:.92;pointer-events:none;'
+          + 'font-size:12px;line-height:20px;background:#8a5a00;color:#fff;opacity:.92;'
           + 'font-family:-apple-system,"Microsoft YaHei",sans-serif');
+        this._bindBadgeLongPress(el);
         doc.body.appendChild(el);
       }
-      el.textContent = '管理员模式：侧边栏「管理」已开启 · 连点 10 下「检查更新」退出';
+      el.textContent = '系统版 · 内测通道 BETA · 长按可更新令牌';
     } catch (e) { /* 忽略 */ }
   },
+
+  /** 角标长按 → 打开口令框（兜底换令牌；正常路径用不到，凭据轮换后旧 APK 应急） */
+  _bindBadgeLongPress(el: HTMLElement): void {
+    const self = this;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const clear = function (): void { if (timer) { clearTimeout(timer); timer = null; } };
+    const arm = function (): void {
+      clear();
+      timer = setTimeout(function () { timer = null; self._openAuthFallback(); }, BADGE_LONGPRESS_MS);
+    };
+    el.addEventListener('touchstart', arm, { passive: true });
+    ['touchend', 'touchmove', 'touchcancel'].forEach(function (ev) { el.addEventListener(ev, clear, { passive: true }); });
+    // 桌面浏览器调试环境没有 touch 事件，用鼠标长按近似
+    el.addEventListener('mousedown', arm);
+    ['mouseup', 'mouseleave'].forEach(function (ev) { el.addEventListener(ev, clear); });
+  },
+  _openAuthFallback(): void {
+    try {
+      const UI = (globalThis as unknown as { UIManager?: AdminUILike }).UIManager;
+      if (UI && UI.showAdminAuth) UI.showAdminAuth();
+    } catch (e) { /* 没有弹窗可用：不影响任何流程 */ }
+  },
 };
+
+// 系统版判定到达（原生 getState 返回）或测试切换时，联动刷新界面。
+onEditionChange(function () {
+  try { AdminMode.refresh(); } catch (e) { /* UI 未就绪时静默 */ }
+});
 
 export default AdminMode;

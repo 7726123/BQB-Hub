@@ -49,13 +49,13 @@ interface CapacitorLike {
 }
 
 import { SM } from '../infra/gate';
-import { AdminMode } from './adminmode';
 import { BootSplash } from './bootsplash';
 import { ClientLog } from './clientlog';
 import { HotBundle } from './hotbundle';
 import { UsagePing } from './stats';
 import { defaultServerBase } from '../lib/server-url';
 import { isClean } from '../lib/buildflags';
+import { isSystemEdition } from '../lib/edition';
 
 export const UpdateManager: {
   server: string;
@@ -144,18 +144,9 @@ export const UpdateManager: {
       if (manual) App.toast('本版本通过应用商店更新，应用内不含在线检查');
       return;
     }
-    // 管理员模式入口：连点 10 下「检查更新」（间隔 > 2.5s 重新计数）。
-    // 未开启 → 弹口令框（服务器校验）；已开启 → 退出。命中时不再走更新检查。
+    // 手动检查的节流：连点保护已随管理员模式手势一起删除（入口已不在正式版），
+    // 但连续点按仍不必每次都真发请求——10 秒内只认真查一次。
     if (manual) {
-      try {
-        const act = AdminMode.tap();
-        if (act === 'enter') { UIManager.showAdminAuth(); return; }
-        if (act === 'exit') { AdminMode.requestExit(); return; }
-      } catch (e) { /* 连击计数异常不影响更新检查 */ }
-    }
-    if (manual) {
-      // 连点「检查更新」是管理员模式入口（要连点 10 下，见 AdminMode）——若不拦，一次进模式会
-      // 触发 9 次检查、弹出 9 条提示（w2 那次就是这么冒出一串"安装失败"的）。10 秒内只认真查一次。
       const now = Date.now();
       if (now - (self._lastManualAt || 0) < 10000) return;
       self._lastManualAt = now;
@@ -174,32 +165,38 @@ export const UpdateManager: {
         // 服务器可达性已被本次版本请求证明：捎带上报本地攒的错误日志（fire-and-forget 旁路）
         try { if (typeof ClientLog !== 'undefined') ClientLog.flush('version'); } catch (e) { /* 旁路失败忽略 */ }
         if (!j || !j.versionCode) { BootSplash.hide(); if (manual) App.toast('服务器未配置更新'); return; }
-        if (!shouldUpdate(j.versionCode, self.local!.versionCode)) {
-          // 没有新 APK 时顺带看一眼网页包（热更新，无需安装）。
-          // 启动画面（web/index.html 内联）此时还盖着：这次检查 + 下载 + 就地换页面的等待全由它盖住。
-          // 提示分工：装了/已就绪/失败由 HotBundle 自己提示；"没有更新的包"这里统一提示，避免弹两条。
-          if (!manual) BootSplash.text('正在检查更新…');
-          try {
-            HotBundle.check(manual, function (r) {
-              if (manual) {
-                // 刚装好、或之前装好还没重启 → 问一句要不要立即生效（原地换目录 + 重载）
-                if (r && (r.installed || r.ready)) { offerHotApply(r.version); return; }
-                if (r && r.reason) return;   // 失败提示已由 HotBundle 弹出
-                App.toast('已是最新版本 v' + (self.local!.versionName || ''));
-                return;
-              }
-              // 自动检查：就绪/失败/超时都收画面（就地切换成功那条分支不会回调——
-              // 那时页面正在重载，启动画面由新包自己的接上，收了反而闪一下旧界面）
-              BootSplash.onSkip(null);
-              BootSplash.busy(false);
-              BootSplash.hide();
-            });
-          } catch (e) { BootSplash.hide(); }
+        const hasApkUpdate = shouldUpdate(j.versionCode, self.local!.versionCode);
+        // 系统版（内部构建）不弹整包安装框：系统版由维护者手动重建安装（正式版 APK 装到系统版手机上
+        // 是「第二个应用」而不是升级）。检测到新 APK 只留一条日志，然后照常看网页包（内测渠道）。
+        if (hasApkUpdate && isSystemEdition()) {
+          try { ClientLog.note('更新', '系统版：检测到新 APK v' + (j.versionName || '') + '（' + j.versionCode + '），按内部构建流程手动重建'); } catch (e) { /* 忽略 */ }
+        } else if (hasApkUpdate) {
+          BootSplash.hide();     // 有新 APK：让更新弹窗直接露出来
+          self.remote = j;
+          self._showDialog();
           return;
         }
-        BootSplash.hide();     // 有新 APK：让更新弹窗直接露出来
-        self.remote = j;
-        self._showDialog();
+        // 没有新 APK（或系统版）时顺带看一眼网页包（热更新，无需安装）。
+        // 启动画面（web/index.html 内联）此时还盖着：这次检查 + 下载 + 就地换页面的等待全由它盖住。
+        // 提示分工：装了/已就绪/失败由 HotBundle 自己提示；"没有更新的包"这里统一提示，避免弹两条。
+        if (!manual) BootSplash.text('正在检查更新…');
+        try {
+          HotBundle.check(manual, function (r) {
+            if (manual) {
+              // 刚装好、或之前装好还没重启 → 问一句要不要立即生效（原地换目录 + 重载）
+              if (r && (r.installed || r.ready)) { offerHotApply(r.version); return; }
+              if (r && r.reason) return;   // 失败提示已由 HotBundle 弹出
+              App.toast('已是最新版本 v' + (self.local!.versionName || ''));
+              return;
+            }
+            // 自动检查：就绪/失败/超时都收画面（就地切换成功那条分支不会回调——
+            // 那时页面正在重载，启动画面由新包自己的接上，收了反而闪一下旧界面）
+            BootSplash.onSkip(null);
+            BootSplash.busy(false);
+            BootSplash.hide();
+          });
+        } catch (e) { BootSplash.hide(); }
+        return;
       })
       .catch(function () { BootSplash.hide(); if (manual) App.toast('检查失败：网络错误'); });
   },

@@ -755,7 +755,7 @@ const UIManager: UIManagerShape = {
   // Dialogs
   showConfirm(message: any, callback: any) { document.getElementById('confirmMessage')!.textContent = message; this.confirmCallback = callback; this.showModal('modalConfirm'); },
 
-  // 管理员模式口令弹窗（入口：连点 10 下「检查更新」，见 domain/adminmode.ts）
+  // 兜底令牌弹窗（系统版专用；入口：长按顶部角标。正常路径靠机器凭据，用不到它，见 domain/adminmode.ts）
   showAdminAuth() {
     const el = document.getElementById('adminPwInput') as HTMLInputElement | null;
     if (el) el.value = '';
@@ -769,7 +769,7 @@ const UIManager: UIManagerShape = {
   async submitAdminAuth() {
     const el = document.getElementById('adminPwInput') as HTMLInputElement | null;
     const pw = el ? el.value : '';
-    const r = await AdminMode.enableWithPassword(pw);
+    const r = await AdminMode.renewToken(pw);
     if (!r.ok) {
       App.toast(r.error || '口令校验失败');
       if (el) { el.value = ''; el.focus(); }

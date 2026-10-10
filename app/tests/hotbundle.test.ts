@@ -10,6 +10,7 @@ import { HotBundle, manualResultText } from '../src/domain/hotbundle';
 import { offerHotApply } from '../src/domain/update';
 import { ClientLog } from '../src/domain/clientlog';
 import { formatVersion, getWebVersion, setWebVersion } from '../src/lib/webver';
+import { isSystemEdition, __setEditionForTest } from '../src/lib/edition';
 
 interface Calls { getState: number; confirm: string[]; install: { serverBase: string; payload: string; sig: string }[]; clearBlocked: number }
 let calls: Calls;
@@ -44,6 +45,7 @@ const flush = () => new Promise((r) => setTimeout(r, 0));
 beforeEach(() => {
   setWebVersion('');
   notes.length = 0; toasts.length = 0;
+  __setEditionForTest('normal');   // 系统版判定是模块级状态：不还原会串到下一个用例
   HotBundle._state = null;      // 模块级状态：不清会串到下一个用例（导致跳过安装）
   HotBundle._lastResult = null;
   HotBundle._prefetchP = null;  // 同上：预取是一次性的，残留会让下一个用例少发一次请求
@@ -335,8 +337,8 @@ describe('启动并行预取 manifest', () => {
   });
 });
 
-// 背景（2026-09-22 线上）：连点 10 下进管理员模式时每一下都会触发检查，而 w2 已装好后
-// 再检查会撞上原生「不比当前版本新」的降级防护，被当成"安装失败"弹给用户。
+// 背景（2026-09-22 线上；当时管理员模式的入口还挂在「检查更新」上，现已整体移除）：连点期间
+// 每一下都会触发检查，而 w2 已装好后再检查会撞上原生「不比当前版本新」的降级防护，被当成"安装失败"弹给用户。
 // 现在改成先比本地版本状态，装好待重启/正在跑都不再走安装。
 describe('已装未生效 / 已在运行：不再触发安装（避免"安装失败"误报）', () => {
   const manifest = { payload: 'cGF5bG9hZA==', sig: 'c2ln', v: '1.5.97w2' };
@@ -1101,5 +1103,46 @@ describe('立即生效的询问（offerHotApply）', () => {
       UI.confirmCallback!();                    // 用户点「确定」
       expect(calls).toContain('applied');
     } finally { delete (globalThis as unknown as Record<string, unknown>).UIManager; }
+  });
+});
+
+// 系统版（Android flavor `system`，见 lib/edition.ts）：运行期判定随 getState 一起到达；
+// 之后 manifest 请求带 channel=beta 与机器凭据头（服务端按凭据放行内测渠道）。
+// 正式版必须完全不变——不带渠道参数、不带任何凭据头。
+describe('系统版：内测渠道与运行期判定', () => {
+  const manifest = { payload: 'cGF5bG9hZA==', sig: 'c2ln', v: '1.5.100.40' };
+
+  function capturingFetch(seen: Array<{ url: string; headers?: Record<string, string> }>) {
+    (globalThis as unknown as Record<string, unknown>).fetch = (url: string, init?: { headers?: Record<string, string> }) => {
+      seen.push({ url: String(url), headers: init && init.headers });
+      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(manifest) });
+    };
+  }
+
+  test('正式版：manifest 请求不带 channel、不带凭据头', async () => {
+    const seen: Array<{ url: string; headers?: Record<string, string> }> = [];
+    capturingFetch(seen);
+    HotBundle.prefetch('启动');
+    await flush();
+    expect(seen.length).toBe(1);
+    expect(seen[0].url).not.toContain('channel=');
+    expect(seen[0].headers).toBeUndefined();
+  });
+
+  test('系统版：getState 带回 edition/systemKey → 判定生效，manifest 带 channel=beta + X-System-Key + X-Install-Id', async () => {
+    stateReply = { active: '', pending: '', code: 0, blocked: '', nativeCode: 161, edition: 'system', systemKey: 'k-sys-1' };
+    const seen: Array<{ url: string; headers?: Record<string, string> }> = [];
+    capturingFetch(seen);
+
+    HotBundle.init();
+    await flush();
+    expect(isSystemEdition()).toBe(true);   // 原生上报到达后运行期判定生效（管理入口/真实模式随之显隐）
+
+    HotBundle.prefetch('启动');
+    await flush();
+    expect(seen.length).toBe(1);
+    expect(seen[0].url).toContain('channel=beta');
+    expect(seen[0].headers && seen[0].headers['X-System-Key']).toBe('k-sys-1');
+    expect(seen[0].headers && seen[0].headers['X-Install-Id']).toMatch(/^[0-9a-f]{32}$/);
   });
 });

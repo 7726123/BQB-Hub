@@ -85,13 +85,12 @@ describe('干净版：任何启动链路都不发请求', () => {
     expect(calls).toEqual([]);
   });
 
-  it('管理员模式：存档里有开关也不生效，连点也进不去', () => {
+  it('管理员模式：存档里有开关也不生效（入口只认系统版 APK 的运行期判定）', () => {
     const g = globalThis as unknown as Record<string, unknown>;
     g.StorageManager = { get: (k: string, d?: unknown) => (k === 'adminMode' ? true : d), set: () => undefined };
     expect(AdminMode.isOn()).toBe(false);
-    let act: unknown = null;
-    for (let i = 0; i < 12; i++) act = AdminMode.tap(1000 + i * 10);
-    expect(act).toBe(null);
+    // 连点手势已整体删除（不管是不是干净版，正式版网页包里都不再有这个入口）
+    expect((AdminMode as unknown as Record<string, unknown>).tap).toBeUndefined();
     g.StorageManager = { get: (_k: string, d?: unknown) => d, set: () => undefined };
   });
 });

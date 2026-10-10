@@ -96,11 +96,13 @@ jobs:
           sed -i 's|mirrors\.cloud\.tencent\.com/gradle/|services.gradle.org/distributions/|' android/gradle/wrapper/gradle-wrapper.properties
           grep distributionUrl android/gradle/wrapper/gradle-wrapper.properties
       # JVM 单测：LocalProxyServer 纯函数（端口解析/头透传/重定向）；不依赖设备
-      - run: ./gradlew testDebugUnitTest
+      # 注：加入 edition flavor 后变体名带 flavor 前缀（normalDebug）。CI 没有 BQB_SYSTEM_KEY →
+      # system flavor 不存在（管理员版只在本机私钥环境构建），这里只需验正式版变体。
+      - run: ./gradlew testNormalDebugUnitTest
         working-directory: android
         env:
           GRADLE_MIRRORS: "false"
-      - run: ./gradlew assembleDebug
+      - run: ./gradlew assembleNormalDebug
         working-directory: android
         env:
           GRADLE_MIRRORS: "false"  # 官方仓库，避免国内镜像在 runner 上不稳定
@@ -109,5 +111,5 @@ jobs:
         continue-on-error: true
         with:
           name: bqb-hub-apk
-          path: android/app/build/outputs/apk/debug/*.apk
+          path: android/app/build/outputs/apk/normal/debug/*.apk
           if-no-files-found: ignore

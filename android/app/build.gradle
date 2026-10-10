@@ -16,6 +16,23 @@ android {
             ignoreAssetsPattern '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
         }
     }
+    // 版本（edition）维度：normal = 正式版；system = 系统版（内部构建：预配置管理员 + 内测渠道）。
+    // system flavor 只在提供 BQB_SYSTEM_KEY 时存在——凭据从 ~/.gradle/gradle.properties 读（不入库），
+    // CI / 别的机器天然构建不出管理员版。详见交接文档「系统版」。
+    flavorDimensions "edition"
+    productFlavors {
+        normal { dimension "edition" }
+        if (project.hasProperty('BQB_SYSTEM_KEY')) {
+            system {
+                dimension "edition"
+                applicationIdSuffix ".system"           // 与正式版并存安装（两个包的数据互相独立）
+                resValue "string", "app_name", "BQB Hub 系统版"
+                resValue "string", "title_activity_main", "BQB Hub 系统版"
+                resValue "bool", "system_edition", "true"
+                resValue "string", "system_key", project.property('BQB_SYSTEM_KEY')
+            }
+        }
+    }
     signingConfigs {
         // release 签名配置（本轮不切换，仅供将来发布正式包）：
         // 密钥信息只从 ~/.gradle/gradle.properties（不入库）读取，未配置时不生效——

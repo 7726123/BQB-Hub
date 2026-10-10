@@ -133,11 +133,12 @@ describe('审核动作（管理员）', () => {
     expect(fetchMock).not.toHaveBeenCalled();   // 桩不回调 → 没有请求
   });
 
-  it('队列加载失败：面板给出令牌过期提示', async () => {
+  it('队列加载失败（401）：面板给出「凭据无效」提示与应急处置指引', async () => {
     vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response('{}', { status: 401 }))));
     CC().loadReviewQueue();
     await new Promise((r) => setTimeout(r, 0));
-    expect(els['rvwList'].innerHTML).toContain('管理员令牌');
+    expect(els['rvwList'].innerHTML).toContain('管理凭据无效');
+    expect(els['rvwList'].innerHTML).toContain('长按顶部角标');
   });
 });
 
@@ -258,13 +259,14 @@ describe('管理面板：使用统计', () => {
     expect(store['admStatVersions'].textContent).toBe('版本：—　｜　代码版本：—');
   });
 
-  it('令牌过期（401）：给出「连点 10 下检查更新」的自救提示，不抛错', async () => {
+  it('凭据失效（401）：给出「凭据无效 + 处置指引」提示，不抛错', async () => {
     vi.spyOn(AdminMode, 'isOn').mockReturnValue(true);
     const store = mount();
     stubStats({ error: '需要管理员令牌' }, false);
     expect(() => CC().loadAdminStats()).not.toThrow();
     await new Promise((r) => setTimeout(r, 0));
-    expect(store['admStatMeta'].textContent).toContain('连点 10 下');
+    expect(store['admStatMeta'].textContent).toContain('管理凭据无效');
+    expect(store['admStatMeta'].textContent).toContain('长按顶部角标');
   });
 
   it('进入管理页：切到 admin 视图并同时拉统计与审核队列', async () => {

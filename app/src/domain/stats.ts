@@ -13,44 +13,17 @@ import { defaultServerBase } from '../lib/server-url';
 import { getWebVersion } from '../lib/webver';
 import { ClientLog } from './clientlog';
 import { isClean } from '../lib/buildflags';
+import { isSystemEdition } from '../lib/edition';
+import { ensureInstallId, validInstallId } from '../lib/installid';
 
-const ID_KEY = 'usageInstallId';
+// 安装标识相关实现已抽到 lib/installid.ts（叶子模块，防 import 环）；这里原样转发，旧调用点（反馈/测试）不受影响。
+export { ensureInstallId, newInstallId, validInstallId } from '../lib/installid';
+
 const PENDING_KEY = 'usagePendingPing';
 /** 前台心跳间隔（服务端按最后心跳 5 分钟内算在线，留出一次丢包余量） */
 export const HEARTBEAT_MS = 3 * 60 * 1000;
 
-/** 取（必要时生成）本机安装标识：匿名统计与「反馈」共用同一个随机 id（限流按设备维度需要它）。
- *  清应用数据即重置；不跨 App、不跨站点，不是硬件设备号。 */
-export function ensureInstallId(): string {
-  try {
-    let id = _ls(ID_KEY);
-    if (!validInstallId(id)) {
-      id = newInstallId();
-      _lsSet(ID_KEY, id);
-    }
-    return id;
-  } catch (e) { return newInstallId(); }
-}
 const REPORT_TIMEOUT_MS = 8000;
-
-/** 生成安装标识：32 位十六进制。crypto 不可用时退化为 Math.random（标识只需唯一，不需密码学强度）。 */
-export function newInstallId(cryptoLike?: { getRandomValues?: (a: Uint8Array) => Uint8Array }): string {
-  const bytes = new Uint8Array(16);
-  const c = cryptoLike || (globalThis as unknown as { crypto?: { getRandomValues?: (a: Uint8Array) => Uint8Array } }).crypto;
-  if (c && c.getRandomValues) {
-    c.getRandomValues(bytes);
-  } else {
-    for (let i = 0; i < bytes.length; i++) bytes[i] = Math.floor(Math.random() * 256);
-  }
-  let out = '';
-  for (let i = 0; i < bytes.length; i++) out += (bytes[i] + 0x100).toString(16).slice(1);
-  return out;
-}
-
-/** 服务端与客户端共同遵守的标识格式（服务器用它挡垃圾数据，本地也自检一遍）。 */
-export function validInstallId(id: string): boolean {
-  return /^[A-Za-z0-9_-]{8,64}$/.test(String(id || ''));
-}
 
 // 与 update.ts / clientlog.ts 同一套服务器解析规则（用户改过社区地址时同源）
 function _serverBase(): string {
@@ -85,12 +58,7 @@ export const UsagePing = {
 
   /** 安装标识（首次调用时生成并落盘，之后稳定不变） */
   id(): string {
-    let id = _ls(ID_KEY);
-    if (!validInstallId(id)) {
-      id = newInstallId();
-      _lsSet(ID_KEY, id);
-    }
-    return id;
+    return ensureInstallId();
   },
 
   /** 待上报标记（离线启动时置位，下次心跳成功即清除并补报） */
@@ -128,7 +96,9 @@ export const UsagePing = {
         id: id,
         v: String(this._appVersion || ''),
         w: getWebVersion(),          // 空 = 跑 APK 内置资源（服务端如实记录，回退后不会谎报旧热包）
-        plat: _platform(),
+        // platform：系统版加 -sys 后缀（管理页/日志里能分出狗粮流量）。
+        // 启动首报可能还是原生判定到达前的 'android'，下一次心跳即纠正（3 分钟节流）。
+        plat: _platform() + (isSystemEdition() ? '-sys' : ''),
       });
       // 明确离线时不发（浏览器/系统会立刻拒绝，白跑一趟）；留标记等 online 事件或下次心跳
       const nav = (globalThis as unknown as { navigator?: { onLine?: boolean } }).navigator;

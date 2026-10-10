@@ -11,8 +11,15 @@
 // 用法：
 //   node scripts/hot-bundle.mjs keygen                        生成密钥对（私钥落盘，公钥打印）
 //   node scripts/hot-bundle.mjs pack [选项]                    打包并签名（默认写出到 server/web-bundles/）
+//   node scripts/hot-bundle.mjs promote [--out dir]            beta → 正式：把 manifest-beta.json 提升为 manifest.json
 //   node scripts/hot-bundle.mjs verify <manifest.json> [zip]   校验签名与 zip/文件哈希
-// 选项：--version <v>  --min-native <code>  --code <n>  --out <dir>  --key <path>  --force
+// 选项：--version <v>  --min-native <code>  --code <n>  --channel <stable|beta>  --out <dir>  --key <path>  --force
+//
+// 渠道（系统版内测，见交接文档「系统版」）：
+//   pack --channel beta → 写 manifest-beta.json（beta 的 zip 与正式包同目录平铺，共享同一个 code 序列）；
+//   服务端只对带系统版凭据的请求下发 manifest-beta.json，普通用户永远拿 manifest.json。
+//   验收满意后 promote：把 beta manifest 原样拷成正式 manifest（同一签名产物，build once → promote）。
+//   注意：客户端拒绝降级（code 必须严格递增），promote 会拦下「beta code ≤ 正式 code」。
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -244,27 +251,87 @@ function pack(opts) {
   const priv = fs.readFileSync(keyPath, 'utf8');
   const sig = crypto.createSign('sha256').update(payload).sign(priv);
 
+  // 渠道：stable（默认，写 manifest.json）或 beta（系统版内测，写 manifest-beta.json）。
+  // zip 一律与正式包同目录平铺（客户端从签名 payload 里取 zip 名 → 原生无需区分渠道）。
+  const channel = String(opts.channel || 'stable').toLowerCase();
+  if (channel !== 'stable' && channel !== 'beta') {
+    console.error('✘ --channel 只支持 stable / beta，收到：' + opts.channel);
+    return 1;
+  }
+  const manName = channel === 'beta' ? 'manifest-beta.json' : 'manifest.json';
+
   fs.mkdirSync(outDir, { recursive: true });
   fs.writeFileSync(path.join(outDir, zipName), zipBuf);
   const manifest = {
     payload: payload.toString('base64'),
     sig: sig.toString('base64'),
     v, code, minNative,   // 仅便于人工核对；客户端只信 payload（这两个字段不入签名）
+    channel,
     built: new Date().toISOString(),
     apkVersionName: appVerName,
     apkVersionCode: appVerCode,
   };
-  fs.writeFileSync(path.join(outDir, 'manifest.json'), JSON.stringify(manifest, null, 2) + '\n', 'utf8');
+  fs.writeFileSync(path.join(outDir, manName), JSON.stringify(manifest, null, 2) + '\n', 'utf8');
 
   const rawTotal = entries.reduce((n, e) => n + e.data.length, 0);
-  console.log('✔ 热更新包已生成：' + v + '（code ' + code + '，最低 APK ' + minNative + '）');
+  console.log('✔ 热更新包已生成：' + v + '（code ' + code + '，最低 APK ' + minNative + '，渠道 ' + channel + '）');
   console.log('  zip      : ' + zipName + '  ' + zipBuf.length + ' 字节（未压缩 ' + rawTotal + ' 字节，'
     + entries.length + ' 个文件）');
   console.log('  zipSha256: ' + sha256(zipBuf));
   console.log('  排除（与 APK 资源相同，客户端自动从 APK 补齐）：'
     + (excluded.length ? excluded.length + ' 个，如 ' + excluded.slice(0, 3).join(', ') : '无'));
-  console.log('  输出目录 : ' + outDir);
-  console.log('  下一步：把 ' + zipName + ' 与 manifest.json 传到服务器 web-bundles 目录。');
+  console.log('  输出目录 : ' + outDir + '（' + manName + '）');
+  console.log('  下一步：把 ' + zipName + ' 与 ' + manName + ' 传到服务器 web-bundles 目录。');
+  if (channel === 'beta') console.log('  注意：beta 只对系统版（机器凭据）下发；验收满意后 node scripts/hot-bundle.mjs promote');
+  return 0;
+}
+
+/**
+ * beta → 正式：把 manifest-beta.json 原样提升为 manifest.json（同一签名产物，不重建不重签）。
+ * 守卫：① 签名可校验（有公钥时）；② beta code 必须严格大于正式 code（客户端拒绝降级，
+ * 否则正式用户装不上）；③ payload 指向的 zip 必须在同目录。
+ */
+function promote(opts) {
+  const outDir = path.resolve(String(opts.out || DEFAULT_OUT));
+  const fromPath = path.resolve(String(opts.from || path.join(outDir, 'manifest-beta.json')));
+  const toPath = path.resolve(String(opts.to || path.join(outDir, 'manifest.json')));
+  let beta = null;
+  try { beta = readJson(fromPath); } catch (e) { beta = null; }
+  if (!beta || typeof beta.payload !== 'string' || typeof beta.sig !== 'string') {
+    console.error('✘ 找不到可用的 beta manifest：' + fromPath + '（先 pack --channel beta）');
+    return 1;
+  }
+  // 签名校验（公钥存在就必须过——防提升一个被改过的/不开源的 manifest）
+  const pubPath = opts.pub ? path.resolve(String(opts.pub)) : path.join(root, 'keys', 'hot-bundle.pub.pem');
+  if (fs.existsSync(pubPath)) {
+    const ok = crypto.createVerify('sha256')
+      .update(Buffer.from(beta.payload, 'base64'))
+      .verify(fs.readFileSync(pubPath, 'utf8'), Buffer.from(beta.sig, 'base64'));
+    if (!ok) { console.error('✘ 拒绝提升：beta manifest 签名校验不过（' + fromPath + '）'); return 1; }
+  } else {
+    console.warn('⚠ 没找到公钥 ' + pubPath + '，跳过签名校验（只做 code / zip 守卫）');
+  }
+  let stable = null;
+  try { stable = readJson(toPath); } catch (e) { stable = null; }
+  const betaCode = Number(beta.code) || 0;
+  const stableCode = Number(stable && stable.code) || 0;
+  if (!betaCode) { console.error('✘ 拒绝提升：beta manifest 里没有 code'); return 1; }
+  if (betaCode <= stableCode) {
+    console.error('✘ 拒绝提升：beta code ' + betaCode + ' ≤ 正式 code ' + stableCode
+      + '（客户端拒绝降级，正式用户会装不上）');
+    return 1;
+  }
+  const zipName = (/^zip=(.+)$/m.exec(Buffer.from(beta.payload, 'base64').toString('utf8')) || [])[1];
+  if (!zipName || !fs.existsSync(path.join(outDir, zipName))) {
+    console.error('✘ 拒绝提升：manifest 指向的 zip 不在 ' + outDir + '（' + (zipName || 'payload 里没有 zip=') + '）');
+    return 1;
+  }
+  const man = Object.assign({}, beta, { channel: 'stable', promotedAt: new Date().toISOString() });
+  fs.mkdirSync(path.dirname(toPath), { recursive: true });
+  fs.writeFileSync(toPath, JSON.stringify(man, null, 2) + '\n', 'utf8');
+  console.log('✔ 已提升为正式包：' + beta.v + '（code ' + betaCode + '，此前正式 code ' + stableCode + '）');
+  console.log('  ' + fromPath + ' → ' + toPath);
+  console.log('  下一步：把 manifest.json 传到服务器 web-bundles 目录覆盖旧文件（zip 已在服务器上就不用重传）。');
   return 0;
 }
 
@@ -425,12 +492,14 @@ const cmd = opts._[0];
 let rc = 0;
 if (cmd === 'keygen') rc = keygen(opts);
 else if (cmd === 'pack') rc = pack(opts);
+else if (cmd === 'promote') rc = promote(opts);
 else if (cmd === 'verify') rc = verify(opts);
 else if (cmd === 'selftest') rc = selftest();
 else {
   console.log('用法：');
   console.log('  node scripts/hot-bundle.mjs keygen                      生成签名密钥对');
-  console.log('  node scripts/hot-bundle.mjs pack [--version v] [--code n] [--min-native c] [--out dir]');
+  console.log('  node scripts/hot-bundle.mjs pack [--version v] [--code n] [--min-native c] [--channel stable|beta] [--out dir]');
+  console.log('  node scripts/hot-bundle.mjs promote [--out dir] [--from f] [--to f]   beta → 正式（含 code/zip/签名守卫）');
   console.log('  node scripts/hot-bundle.mjs verify <manifest.json> [zip]');
   console.log('  node scripts/hot-bundle.mjs selftest                    端到端自测（造样本 → 打包签名 → Java 真实验签/解包）');
   rc = 1;

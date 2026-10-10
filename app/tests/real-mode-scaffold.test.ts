@@ -15,6 +15,7 @@ import {
 import { manualForViewer, USAGE_MANUAL } from '../src/domain/assistant';
 import { visibleEntriesFor } from '../src/domain/ui';
 import { stripRealModeGuidance } from '../src/domain/cardwriter';
+import { __setEditionForTest } from '../src/lib/edition';
 
 const ROOT = path.resolve(__dirname, '..', '..');
 const presetSrc = fs.readFileSync(path.join(ROOT, 'app', 'src', 'domain', 'preset.ts'), 'utf8');
@@ -177,21 +178,20 @@ describe('真实模式：只在管理员模式里开放（2026-10-08）', () => 
     expect(ui).toContain('syncRealModeUI()');
   });
 
-  it('visibleEntriesFor：普通用户看不到真实模式条目，管理员全看；原数组一个字不动', () => {
+  it('visibleEntriesFor：普通用户看不到真实模式条目，系统版（管理员模式）全看；原数组一个字不动', () => {
     const entries = [
       { id: 'a', type: '角色', name: '千纱' },
       { id: 'b', type: '初始记忆', name: '千纱的开局' },
       { id: 'c', type: '部分人知道', name: '两人初中就认识' },
       { id: 'd', type: '世界观', name: '世界背景' },
     ];
-    const g = globalThis as unknown as Record<string, unknown>;
     try {
-      g.StorageManager = { get: (_k: string, d?: unknown) => d, set: () => undefined };
+      __setEditionForTest('normal');
       expect(visibleEntriesFor(entries).map((e: any) => e.id)).toEqual(['a', 'd']);
-      g.StorageManager = { get: (k: string, d?: unknown) => (k === 'adminMode' ? true : d), set: () => undefined };
+      __setEditionForTest('system', 'k-test');
       expect(visibleEntriesFor(entries).map((e: any) => e.id)).toEqual(['a', 'b', 'c', 'd']);
     } finally {
-      delete g.StorageManager;
+      __setEditionForTest('normal');
     }
     expect(entries.length).toBe(4);
   });

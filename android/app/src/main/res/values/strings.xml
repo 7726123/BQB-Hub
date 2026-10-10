@@ -4,4 +4,8 @@
     <string name="title_activity_main">BQB Hub</string>
     <string name="package_name">com.novelwriter.app</string>
     <string name="custom_url_scheme">com.novelwriter.app</string>
+    <!-- 系统版（内部构建）开关与机器凭据：正式版恒为 false/空；system flavor 用 resValue 覆盖
+         （system_key 的真实值来自 ~/.gradle/gradle.properties 的 BQB_SYSTEM_KEY，不入库）。 -->
+    <bool name="system_edition">false</bool>
+    <string name="system_key" translatable="false"></string>
 </resources>

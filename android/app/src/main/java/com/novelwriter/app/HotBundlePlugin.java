@@ -232,6 +232,17 @@ public class HotBundlePlugin extends Plugin {
             // 实际加载的目录（排查用）：'public' = 内置资源；热包时为绝对路径
             ret.put("serving", served == null ? "" : served);
             ret.put("isAsset", served == null || !served.startsWith(hotRoot().getAbsolutePath()));
+            // 系统版（内部构建）运行期判定：正式版资源里 system_edition=false / system_key 空。
+            // 前端据此打开管理员能力与内测渠道（见 app/src/lib/edition.ts）——判定随安装包走，
+            // 热更包改不了它，所以同一份签名网页包在正式版里行为零变化。
+            boolean systemEdition = false;
+            String sysKey = "";
+            try {
+                systemEdition = getContext().getResources().getBoolean(R.bool.system_edition);
+                sysKey = getContext().getResources().getString(R.string.system_key);
+            } catch (Throwable t) { /* 资源缺失按正式版处理 */ }
+            ret.put("edition", systemEdition ? "system" : "normal");
+            if (systemEdition && sysKey != null && !sysKey.isEmpty()) ret.put("systemKey", sysKey);
             // 回退事件读一次即清：前端负责把它展示给用户
             String rolled = sp.getString(K_ROLLBACK, "");
             if (!rolled.isEmpty()) { sp.edit().remove(K_ROLLBACK).apply(); ret.put("rolledBack", rolled); }

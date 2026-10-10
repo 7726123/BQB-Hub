@@ -1,7 +1,7 @@
 import { SM } from '../infra/gate';
 import { WorldBookManager } from './worldbook';
 import { visibleEntriesFor } from './ui';   // 普通用户看不到真实模式专用条目（同界面口径）
-import { AdminMode } from './adminmode'; // 管理员令牌（世界书接口按需附带）
+import { AdminMode } from './adminmode'; // 管理凭据（系统版才有；世界书接口按需附带）
 import { defaultServerBase } from '../lib/server-url';
 import { buildWbMetaPrompt, parseWbMeta } from '../lib/wbmeta';
 import { isClean } from '../lib/buildflags';
@@ -61,24 +61,22 @@ const CommunityChat: CommunityChatShape = {
     SM().set('communityUser', user);
   },
 
-  // 请求头：登录态 + 管理员令牌。管理员模式下才带上 X-Admin-Token，
+  // 请求头：登录态 + 管理凭据。只有系统版（管理员模式，见 domain/adminmode.ts）才有管理凭据，
   // 服务端据此放行 admin_only 数据集（测试世界书：仅管理员可见 / 可检索）。
-  // withAdmin=true 时附带管理员令牌（只有世界书接口需要；其余接口不带，减少暴露面）
-  /** 管理接口专用头：只要管理员令牌（/api/admin/review 与 /api/admin/stats 都只认它，不需要社区登录） */
+  // withAdmin=true 时附带管理凭据（只有世界书接口需要；其余接口不带，减少暴露面）
+  /** 管理接口专用头：系统版机器凭据（X-System-Key + X-Install-Id）；兜底令牌（X-Admin-Token）有则叠加 */
   adminHeaders(): any {
-    var h: any = {};
     try {
-      var tk = (typeof AdminMode !== 'undefined' && AdminMode.traceToken) ? AdminMode.traceToken() : '';
-      if (tk) h['X-Admin-Token'] = tk;
+      if (typeof AdminMode !== 'undefined' && AdminMode.adminRequestHeaders) return AdminMode.adminRequestHeaders();
     } catch (e) { /* 忽略 */ }
-    return h;
+    return {};
   },
   authHeaders(withAdmin?: any): any {
     var h: any = { 'Authorization': 'Bearer ' + this.token };
     try {
       if (withAdmin && typeof AdminMode !== 'undefined' && AdminMode.isOn && AdminMode.isOn()) {
-        var tk = AdminMode.traceToken ? AdminMode.traceToken() : '';
-        if (tk) h['X-Admin-Token'] = tk;
+        var ah = this.adminHeaders();
+        for (var k in ah) { if (Object.prototype.hasOwnProperty.call(ah, k)) h[k] = ah[k]; }
       }
     } catch (e) { /* 忽略 */ }
     return h;
@@ -338,10 +336,10 @@ const CommunityChat: CommunityChatShape = {
     else if (window.confirm('确定删除这份投稿吗？')) doDel();
   },
 
-  // ============================ 审核队列（管理员模式） ============================
-  // 入口只在管理员模式下注入到社区顶栏（连点 10 下「检查更新」进管理员模式）。
-  // 请求带 X-Admin-Token（authHeaders(true)），服务端 isAdminReq 校验；令牌 12 小时过期，
-  // 过期后重新进一次管理员模式即可（提示文案里写明了）。
+  // ============================ 审核队列（管理员模式，系统版专用） ============================
+  // 入口只在系统版（见 domain/adminmode.ts）注入到社区顶栏。
+  // 请求带机器凭据（authHeaders(true) → X-System-Key + X-Install-Id），服务端 isAdminReq 校验；
+  // 凭据无过期——401 只可能是服务端轮换了系统版凭据而 APK 还没重建（应急见角标长按换令牌）。
   _rvwType: '', _rvwStatus: 'pending', _rvwItems: [], _rvwPending: 0,
   _admStats: null as any,
   // 意见反馈（管理端）：当前筛选 + 列表缓存
@@ -544,7 +542,7 @@ const CommunityChat: CommunityChatShape = {
         var meta = document.getElementById('admStatMeta');
         if (meta) {
           meta.textContent = '统计加载失败（' + self._esc(String((e && e.message) || e)) + '）'
-            + '：管理员令牌 12 小时过期，重新连点 10 下「检查更新」进一次管理员模式即可。';
+            + '：管理凭据无效——服务端可能轮换了系统版凭据（需重建系统版 APK）；应急可长按顶部角标换令牌。';
         }
         var u = document.getElementById('admStatsUpdated');
         if (u) u.textContent = '';
@@ -612,7 +610,7 @@ const CommunityChat: CommunityChatShape = {
       .catch(function (e) {
         if (box) {
           box.innerHTML = '<div class="cup-empty">加载失败（' + self._esc(String(e && e.message || e)) + '）<br>'
-            + '管理员令牌 12 小时过期：重新连点 10 下「检查更新」进一次管理员模式即可。</div>';
+            + '管理凭据无效：服务端可能轮换了系统版凭据（需重建系统版 APK）；应急可长按顶部角标换令牌。</div>';
         }
       });
   },
