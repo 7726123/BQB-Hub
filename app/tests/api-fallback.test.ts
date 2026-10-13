@@ -1,5 +1,5 @@
 // APIHandler 原生 CORS 降级测试：fetch 被跨域拦截（TypeError）→ 自动走 CapacitorHttp 原生请求
-import { describe, it, expect, beforeEach, beforeAll } from 'vitest';
+import { describe, it, expect, beforeEach, beforeAll, afterEach, vi } from 'vitest';
 import { APIHandler } from '../src/domain/api';
 
 const anyG = globalThis as unknown as Record<string, unknown>;
@@ -20,7 +20,10 @@ function sseText(body: string): string {
 }
 
 describe('APIHandler 原生 CORS 降级（_nativeHttpFallback）', () => {
+  // 这一组都在走 api.ts 的直连重试退避（1.5s + 3s）：用假定时器把时钟推进走，测试不再真等 4.5 秒
+  // （走的是同一条代码路径，不是把等待删掉）。
   beforeEach(() => {
+    vi.useFakeTimers();
     // 默认：fetch 抛 CORS 类错误（WebView 对无 CORS 头端点的行为）
     anyG.fetch = async () => { throw new TypeError('Failed to fetch'); };
     anyG.Capacitor = { isNativePlatform: () => true, Plugins: {} };
@@ -28,16 +31,23 @@ describe('APIHandler 原生 CORS 降级（_nativeHttpFallback）', () => {
       request: async (opts: any) => ({ status: 200, data: sseText(''), options: opts }),
     };
   });
+  afterEach(() => { vi.useRealTimers(); });
+
+  /** 跑一次请求并把假时钟推过所有退避/节流定时器（30s 足够覆盖 1.5s+3s 与 25ms 分帧节流） */
+  async function drive<T>(p: Promise<T>): Promise<T> {
+    await vi.advanceTimersByTimeAsync(30000);
+    return p;
+  }
 
   it('fetch 被拒 → CapacitorHttp 原生请求 → onDone 收到完整正文', async () => {
     let chunks = ''; let done = '';
-    await APIHandler.fetchCompletions(
+    await drive(APIHandler.fetchCompletions(
       [{ role: 'user', content: 'yo' }],
       (c: string) => { chunks += c; },
       (full: string | null) => { done = full || ''; },
       (e: any) => { throw new Error('不应走 onError: ' + e); },
       { apiConfig: CFG, timeout: 0, idleTimeout: 0 }
-    );
+    ));
     expect(done).toContain('正文一');
     expect(done).toContain('正文二');
     expect(chunks).toContain('正文一'); // 节流后 onChunk 也被喂
@@ -50,11 +60,11 @@ describe('APIHandler 原生 CORS 降级（_nativeHttpFallback）', () => {
     const body = JSON.stringify({ error: { code: 'UnsupportedModel', message: 'The requested model does not support the coding plan...' } });
     (anyG as any).Capacitor.Plugins.CapacitorHttp = { request: async () => ({ status: 404, data: body }) };
     let errMsg = '';
-    await APIHandler.fetchCompletions(
+    await drive(APIHandler.fetchCompletions(
       [{ role: 'user', content: 'x' }], () => {}, () => {},
       (e: any) => { errMsg = String(e); },
       { apiConfig: CFG, timeout: 0, idleTimeout: 0 }
-    );
+    ));
     expect(errMsg).toContain('404');
     expect(errMsg).toContain('UnsupportedModel');
     expect(errMsg).toContain('不在该端点/套餐里');
@@ -72,13 +82,13 @@ describe('APIHandler 原生 CORS 降级（_nativeHttpFallback）', () => {
     const chunks: string[] = [];
     let full: any = 'unset';
     let aborted: any = null;
-    await APIHandler.fetchCompletions(
+    await drive(APIHandler.fetchCompletions(
       [{ role: 'user', content: 'yo' }],
       (c: string) => { chunks.push(String(c)); APIHandler.abort(); },   // 第一片后就点「停止」
       (f: string | null, a: boolean) => { full = f; aborted = a; },
       (e: any) => { throw new Error('不应走 onError: ' + e); },
       { apiConfig: CFG, timeout: 0, idleTimeout: 0 }
-    );
+    ));
     expect(chunks.length).toBe(1);          // 后面的段落不再回放
     expect(full).toBe(null);
     expect(aborted).toBe(true);             // 如实告诉上层"这是被中止的"
@@ -96,7 +106,7 @@ describe('APIHandler 原生 CORS 降级（_nativeHttpFallback）', () => {
       { apiConfig: CFG, timeout: 0, idleTimeout: 0 }
     );
     APIHandler.abort();
-    await p;
+    await drive(p);
     expect(called).toBe(0);
     expect(full).toBe(null);
     expect(aborted).toBe(true);
@@ -105,23 +115,23 @@ describe('APIHandler 原生 CORS 降级（_nativeHttpFallback）', () => {
   it('原生兜底也失败（网络层）→ 仍报原来的跨域提示', async () => {
     (anyG as any).Capacitor.Plugins.CapacitorHttp = { request: async () => { throw new Error('boom'); } };
     let errMsg = '';
-    await APIHandler.fetchCompletions(
+    await drive(APIHandler.fetchCompletions(
       [{ role: 'user', content: 'x' }], () => {}, () => {},
       (e: any) => { errMsg = String(e); },
       { apiConfig: CFG, timeout: 0, idleTimeout: 0 }
-    );
+    ));
     expect(errMsg).toContain('端点跨域受限或网络不可达');
   });
 
   it('reasoning 收集进 onDone 第三参', async () => {
     let reasoningOut = '';
-    await APIHandler.fetchCompletions(
+    await drive(APIHandler.fetchCompletions(
       [{ role: 'user', content: 'x' }],
       () => {},
       (_f: string | null, _a: boolean, reasoning?: string) => { reasoningOut = reasoning || ''; },
       () => { throw new Error('err'); },
       { apiConfig: CFG, timeout: 0, idleTimeout: 0 }
-    );
+    ));
     expect(reasoningOut).toContain('开始思考');
   });
 
@@ -132,13 +142,13 @@ describe('APIHandler 原生 CORS 降级（_nativeHttpFallback）', () => {
       'data: [DONE]\n\n';
     (anyG as any).Capacitor.Plugins.CapacitorHttp = { request: async () => ({ status: 200, data: toolSSE }) };
     let tools: any[] | null = null;
-    await APIHandler.fetchCompletions(
+    await drive(APIHandler.fetchCompletions(
       [{ role: 'user', content: '写' }],
       () => {},
       () => {},
       () => { throw new Error('err'); },
       { apiConfig: CFG, tools: [{ type: 'function', function: { name: 'upsert_entry', description: 'x', parameters: { type: 'object', properties: {} } } }], onTools: (c: any[]) => { tools = c; }, timeout: 0, idleTimeout: 0 }
-    );
+    ));
     expect(tools).toHaveLength(1);
     expect(tools![0].name).toBe('upsert_entry');
     expect(tools![0].arguments).toEqual({ type: '初始', name: 'x' });
@@ -147,13 +157,13 @@ describe('APIHandler 原生 CORS 降级（_nativeHttpFallback）', () => {
   it('CapacitorHttp 不可用（web 测试环境）→ 报网络错误，不白屏', async () => {
     anyG.Capacitor = undefined; anyG.CapacitorHttp = undefined;
     let err = '';
-    await APIHandler.fetchCompletions(
+    await drive(APIHandler.fetchCompletions(
       [{ role: 'user', content: 'x' }],
       () => {},
       () => {},
       (e: any) => { err = String(e); },
       { apiConfig: CFG, timeout: 0, idleTimeout: 0 }
-    );
+    ));
     expect(err).toContain('网络错误');
   });
 });
