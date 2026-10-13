@@ -1,7 +1,8 @@
-package bqbhub.server;
+package bqbhub.server.worldbook;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import bqbhub.server.Validators;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.util.ArrayList;
