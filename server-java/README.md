@@ -4,11 +4,14 @@
 契约写在 [`server/tests/CONTRACT.md`](../server/tests/CONTRACT.md)——环境变量、HTTP 接口、状态码、
 限流阈值、口令派生格式全部与 Node 版一致，所以同一套用例可以对着两个实现跑。
 
-**验收状态（2026-10-10）**：契约套件对 Java 目标 **84 例 = 81 通过 + 3 嵌入专用跳过 + 0 失败**
-（与 Node 版基线逐例一致，`npm run test:contract` 退出码 0）；TLS 双端口与协议感知 apkUrl 已进契约
-（`server/tests/tls.test.js`，Java 侧 4/4 通过，PKCS#8 与 PKCS#1 两种私钥格式都验过）。
+**验收状态（2026-10-13）**：契约套件对 Java 目标 **91 例 = 88 通过 + 3 嵌入专用跳过 + 0 失败**
+（`npm run test:contract` 退出码 0，CI 的 `java-server` job 每次推送都会跑）；TLS 双端口与协议感知 apkUrl
+也在契约里（`server/tests/tls.test.js`，PKCS#8 与 PKCS#1 两种私钥格式都验过）。
+Java 侧单测 **96 例**（`mvn test`：口令派生跨语言夹具 / 校验器 / 媒体与路径安全 / 迁移编号 / 各领域 Service /
+ArchUnit 分层边界，见下节）。
 **线上已切换**：2026-10-10 傍晚在真实数据上灰度演练 22/22 通过后切换，线上服务现由本实现提供
 （`bqbhub-java` active+enabled）；切换过程、证据与回滚命令见交接文档 §13.164。
+**Node 版已冻结**（新功能只落 Java，回滚只保证到冻结点），见 [`docs/adr/ADR-0004`](../docs/adr/ADR-0004-node-freeze.md)。
 
 ## 怎么构建 / 怎么跑
 
@@ -16,11 +19,26 @@
 # 构建（JDK 17+；本机 JAVA_HOME=/d/jdk-17.0.12，maven 在 /d/JAVAstudy/apache-maven-3.8.8）
 cd server-java && mvn -DskipTests package        # 产物 target/bqbhub-server-java.jar
 
+# 单测（不含 Spring 上下文：AppConfig 支持注入 map，DB 用临时文件；见各 *Test）
+cd server-java && mvn test
+
 # 运行：环境变量与 Node 版同名（见 CONTRACT.md 第一节）
 PORT=8899 DATA_DIR=/srv/data CONFIG_FILE=/srv/config.json \
 APP_VERSION_FILE=/srv/app-version.json WEB_BUNDLE_DIR=/srv/web-bundles \
 UPLOAD_DIR=/srv/uploads APK_DIR=/srv/apk ADMIN_KEY=... ADMIN_PW_HASH=... \
 java -Xmx384m -XX:MaxMetaspaceSize=128m -Xss512k -jar target/bqbhub-server-java.jar
+```
+
+## 包结构（功能包 + 三层，见 [ADR-0005](../docs/adr/ADR-0005-backend-layers.md)）
+
+```text
+src/main/java/bqbhub/server/
+├── 根包：基础设施（ServerApplication / AppConfig / Db / SchemaMigrations / Api* / TlsConfig）
+│        与共享内核（AuthService / Validators / Social / Media / Limiters / Scrypt / DayKey / AdminToken / …）
+├── support/   AdminGuard（管理员令牌）/ AdminKeyGuard（运维口令）/ Visibility（行级可见性）
+├── <域>/      XController → XService → XRepository
+│             域 = auth / worldbook / preset / plugin / card / review / feedback / system / proxy
+└── 边界由 test/…/LayeringTest（ArchUnit）执行：Controller 不碰 JdbcTemplate、功能包只有 *Repository 能碰
 ```
 
 **内存参数建议**（单机 2 核 / 1.6G / 无 swap 的现状，见交接文档 §13.161）：

@@ -28,4 +28,4 @@
 
 ## 关联
 
-- server/src/region.js、server/src/app.js（HTTP 中间件）、server/src/ws.js（upgrade 拦截）
+- `server/src/region.js`（Node 版原始实现，已冻结）、`server-java/.../Region.java`（线上实现，当前恒为 false）、`ApiFilter.java`（HTTP 中间件）

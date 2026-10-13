@@ -38,5 +38,5 @@
 ## 关联
 
 - www/modules/assistant.js（USAGE_MANUAL / ASSISTANT_SYSTEM / 标记剥离 / _uploadMissed）
-- server/src/routes/system.js（POST /api/usage-assistant/miss）
+- `server/src/routes/system.js`（Node 版原始实现，已冻结）、`server-java/.../system/TelemetryService.java`（线上实现）
 - server/data/assistant-misses.jsonl（反馈积累）

@@ -272,6 +272,8 @@ bash server/tools/scrypt-parity/run.sh    # Windows 直接跑 server\tools\scryp
 | 4 | CI/CD：GitHub Actions（server-test / java-server / web-build / android-apk） | ✅ |
 | 5 | 文档：架构图 + ADR | ✅ |
 | 6 | 前端模块 TypeScript 化迁移（30/30 管线化，全库 strict；单 bundle 完成） | ✅ |
+| 7 | 服务端换栈 Java（Spring Boot + SQLite）：契约套件对拍后上线，Node 冻结为回滚备份（ADR-0004） | ✅ |
+| 8 | 后端分层：9 个领域包 Controller/Service/Repository + ArchUnit 边界（ADR-0005）；迁移编号化（ADR-0006）；Java 单测 96 例 | ✅ |
 
 详见 [docs/engineering-architecture.md](docs/engineering-architecture.md)；代码级技术债清单在本地维护（不入库）。
 

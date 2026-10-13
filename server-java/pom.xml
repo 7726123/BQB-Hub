@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  BQB Hub 社区服务端 · Java 版（换栈第一步：只换语言，保留 SQLite）
-  契约：与 server/（Node 版）共用同一套验收测试 —— 见 server/tests/CONTRACT.md
-  运行：java -jar target/bqbhub-server-java-0.1.0.jar（环境变量与 Node 版同名，见 README）
+  BQB Hub 社区服务端 · Java 版（线上实现；换栈第一步：只换语言，保留 SQLite）
+  契约：与 server/（Node 版，已冻结为参考实现）共用同一套验收测试 —— 见 server/tests/CONTRACT.md
+  运行：java -jar target/bqbhub-server-java.jar（finalName 不带版本号；环境变量与 Node 版同名，见 README）
 -->
 <project xmlns="http://maven.apache.org/POM/4.0.0"
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
