@@ -29,6 +29,8 @@ import { avatarUrl } from '../lib/avatarurl';
 import { UsageStats } from '../lib/usage';
 import { chatFormatBlock, chatRoster } from './chatprompt';
 import { windowFromContext } from '../lib/contextbudget';
+import { ICON_SEND, ICON_STOP } from '../lib/icons';
+import { getWebVersion } from '../lib/webver';
 
 export interface ChatMsg {
   id: string;
@@ -74,6 +76,7 @@ export const ChatMode = {
   _loadedBookId: '',
   _window: RENDER_WINDOW,
   _sending: false,
+  _turnSeq: 0,   // 轮次令牌：每次发送 +1；停止时也 +1（作废这一轮）——迟到的回调据此丢弃
   _status: '',
   _acc: '',              // 流式累积（属于 _streamBookId 那本书）
   _streamBookId: '',
@@ -541,12 +544,17 @@ export const ChatMode = {
   },
 
   _renderHead(): void {
-    // 生成中：发送键换成停止键（与写作页同一对：蓝色发送 / 红色停止）
+    // 生成中：**发送键自己变成停止键**（同一颗按钮、同一个位置，图标 ⏹、变红）——与写作/真实模式一致。
+    // 2026-10-11 用户要求：以前是旁边另挂一颗 ✕ 停止键；而且那种做法一旦状态没复位，按钮就永远停在停止态。
     const sending = this.isSending();
-    const sendBtn = document.getElementById('chatSendBtn');
-    const stopBtn = document.getElementById('chatStopBtn');
-    if (sendBtn) sendBtn.style.display = sending ? 'none' : 'flex';
-    if (stopBtn) stopBtn.style.display = sending ? 'flex' : 'none';
+    const sendBtn = document.getElementById('chatSendBtn') as HTMLElement | null;
+    if (sendBtn) {
+      const self = this;
+      sendBtn.classList.toggle('is-stop', sending);
+      sendBtn.title = sending ? '停止生成' : '发送';
+      sendBtn.innerHTML = sending ? ICON_STOP : ICON_SEND;
+      sendBtn.onclick = sending ? function () { self.stop(); } : function () { self.send(); };
+    }
     const bb = document.getElementById('chatBiqiBtn');
     if (bb) {
       let on = false;
@@ -752,9 +760,24 @@ export const ChatMode = {
   },
 
   stop(): void {
+    // 真正的停止 = 三件事一起做（2026-10-11 修：以前只 abort + 改文案，_sending 没复位 →
+    // 按钮永远停在"停止"态；而走整段缓冲那条通道时 abort 根本掐不断，回放还在继续出字）：
+    //   ① 掐断这条通道（fetch/原生流式都能真断；缓冲通道断不掉，由 ②③ 兜住）
+    //   ② 立刻按"已中止"收尾：_sending 复位、状态清空、界面回到发送键（_finish 幂等，见下）
+    //   ③ 之后所有迟到的回调（chunk/思考/完成/错误）一律丢弃（onChunk 与 _finish 里都有 _sending 守卫）
     try { APIHandler.abort?.(); } catch (e) { /* ignore */ }
-    this._status = '已停止';
+    this._turnSeq++;            // 作废这一轮：它之后所有迟到回调都过不了令牌校验
+    this._finish(null, true, null);   // 复位 _sending/清状态/重画（幂等）
+    this._status = '已停止';          // _finish 会清空状态行，所以这句必须在它之后
     this._renderHead();
+    // 停止留档（诊断用，同签名 24h 去重）：用户报"点了停止还在思考/还在出字"时，
+    // 从服务器日志能看出他跑的是哪个网页包、当时是不是在生成中。
+    try {
+      const g: any = globalThis as any;
+      if (g.ClientLog && g.ClientLog.note) {
+        g.ClientLog.note('停止', '对话·停止已按下 | 网页包 ' + getWebVersion() + ' | 本轮思考 ' + String(this._reasoningChars || 0) + ' 字');
+      }
+    } catch (e) { /* 留档失败不影响停止 */ }
   },
 
   // ---------- 提示词 ----------
@@ -965,6 +988,9 @@ export const ChatMode = {
     }
     this._lastInstruction = instruction;
     this._sending = true;
+    // 这一轮的令牌：之后所有回调（chunk/思考/完成/错误）都要核对它。**停止时它会 +1**，
+    // 于是"停止后又立刻发下一条"时，上一轮迟到的回调也不会被当成新一轮的内容（2026-10-11）。
+    const turnToken = ++this._turnSeq;
     this._acc = '';
     this._reasoningChars = 0;
     this._streamBookId = this.bookId();
@@ -987,17 +1013,21 @@ export const ChatMode = {
         void APIHandler.fetchCompletions(
           msgs as any,
           (chunk: string) => {
+            if (turnToken !== this._turnSeq) return;            // 这一轮已作废（停止/换轮）：迟到的片段丢弃
+            if (!this._sending) return;                         // 已收尾：同理
             this._acc += String(chunk || '');
             if (this._streamBookId !== this.bookId()) return;   // 切书后台跑：不画，回来自会补
             this._status = '';
             this._paintStream();
           },
           (full: string | null, aborted?: boolean, reasoning?: string) => {
+            if (turnToken !== this._turnSeq) return;            // 已作废的轮次：不落库、不改状态
             if (reasoning && String(reasoning).trim()) this._reasoningChars = String(reasoning).replace(/\s/g, '').length;
             this._finish(full, !!aborted, finishReason);
             done();
           },
           (err: string) => {
+            if (turnToken !== this._turnSeq) return;            // 已作废：停止后的迟到错误不再打扰
             this._sending = false;
             this._status = '';
             this._acc = '';
@@ -1011,6 +1041,8 @@ export const ChatMode = {
             callLabel: 'chat',
             maxTokens: 65535,      // 推理模型会先花掉大量思考 token：绝不能按字数估（实测 2500 档被 12000 截断）
             onReasoning: (chunk: string) => {
+              if (turnToken !== this._turnSeq) return;          // 这一轮已作废：思考丢弃
+              if (!this._sending) return;                       // 已停止：思考也不再计数/显示
               this._reasoningChars += String(chunk || '').length;
               if (this._streamBookId === this.bookId()) {
                 this._status = REASONING_HINT + '（已想 ' + this._reasoningChars + ' 字）';
@@ -1034,6 +1066,9 @@ export const ChatMode = {
 
   // 收尾：剥思考块 → 存原文 → 诊断（截断 / 漂移）
   _finish(full: string | null, aborted: boolean, finishReason: string | null): void {
+    // 幂等守卫（2026-10-11）：stop() 已经按"已中止"收过尾（_sending=false），之后迟到的完成回调
+    // 必须**丢弃**——否则"被停止的那半段"会被当成正常完成落库、还多记一次用量。
+    if (!this._sending) return;
     let raw = String(full != null ? full : this._acc || '');
     try {
       const split = (globalThis as any)._splitThinkingBlocks;

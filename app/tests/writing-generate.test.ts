@@ -616,3 +616,88 @@ describe('初始条目注入开关（小说模式）', () => {
     expect(all).not.toContain('【不该注入】');
   });
 });
+
+// ============ 2026-10-11：发送键＝停止键（第二态）+ 停止要真停 ============
+describe('写作页：发送键的第二态（⏹ 停止）与真停止', () => {
+  /** 给某个假元素装一个真 classList（harness 的 Proxy 只给 noop，断言不了类名） */
+  function withClassList(elm: any): any {
+    const set = new Set<string>();
+    elm.classList = {
+      add: (c: string) => set.add(c),
+      remove: (c: string) => set.delete(c),
+      contains: (c: string) => set.has(c),
+      toggle: (c: string, on?: boolean) => {
+        if (on === undefined) { if (set.has(c)) set.delete(c); else set.add(c); }
+        else if (on) set.add(c); else set.delete(c);
+        return set.has(c);
+      },
+    };
+    return elm;
+  }
+
+  it('生成中：同一颗发送键变 is-stop + ⏹ 图标；结束后变回发送（幂等）', async () => {
+    const btn = withClassList(el('writingSendBtn'));
+    el('streamingOutput').checked = true;   // 走流式路径（appendStreaming/finishStreaming 才有意义）
+    let release: any = null;
+    G.APIHandler = {
+      _apiCalls: [], abort: () => {},
+      // 抓住 onDone：release() 时才"正常收尾"（真实契约是回调驱动，不是 Promise 驱动）
+      fetchCompletions: vi.fn((_m: any, _c: any, onDone: any) => new Promise<void>((res) => {
+        release = () => { onDone('正文一段。', false, ''); res(); };
+      })),
+    };
+    const p = App.generate('autoContinue');
+    await new Promise((r) => setTimeout(r, 0));   // generate 里有若干 await 才走到请求
+    expect(App.isGenerating).toBe(true);
+    expect(btn.classList.contains('is-stop')).toBe(true);
+    expect(String(btn.innerHTML)).toContain('<rect');          // ⏹（圆角方框＋实心方块）
+    expect(String(btn.title)).toContain('停止生成');
+    release();                                                  // 让这一轮正常收尾
+    await p;
+    await new Promise((r) => setTimeout(r, 0));
+    expect(btn.classList.contains('is-stop')).toBe(false);
+    expect(String(btn.innerHTML)).toContain('M12 19l9 2');      // 纸飞机回来了
+    expect(String(btn.title)).toBe('发送');
+  });
+
+  it('stopGeneration()：立刻复位按钮与锁；之后迟到的 chunk/完成回调不再写正文、不落盘', async () => {
+    const btn = withClassList(el('writingSendBtn'));
+    el('streamingOutput').checked = true;   // 同上：流式路径
+    const appended: string[] = [];
+    const finished = vi.fn();
+    const saved = vi.fn();
+    G.EditorManager = tolerant({
+      getContent: () => '', getPlainText: () => '', startStreaming: () => {}, appendStreaming: (c: string) => appended.push(String(c)),
+      finishStreaming: finished, insertAtCursor: () => {}, cancelStreaming: () => {}, appendReasoning: () => {},
+      _thinkingRequired: false,
+    });
+    App.saveCurrentChapter = saved;
+    let cb: any = null;
+    G.APIHandler = {
+      _apiCalls: [], abort: () => {},
+      // 抓住回调（模拟"通道掐不断、迟到的内容还会来"）
+      fetchCompletions: vi.fn((_m: any, onChunk: any, onDone: any) => { cb = { onChunk, onDone }; return new Promise(() => {}); }),
+    };
+    const p = App.generate('autoContinue');
+    await new Promise((r) => setTimeout(r, 0));   // 等它走到请求，回调才会被抓住
+    expect(App.isGenerating).toBe(true);
+    cb.onChunk('上半句');                       // 停止前的正常输出
+    App.stopGeneration();                       // 用户点停止（按钮就是它）
+    expect(App.isGenerating).toBe(false);
+    // 左下角状态行：不许再把"AI 正在创作中"（带 spinner 的那句）留着（2026-10-12 用户报的就是它）。
+    // 注：假元素的 textContent/innerHTML 是两块独立字段（真 DOM 里写 textContent 就等于换掉 innerHTML），
+    // 所以这里只断言 textContent。
+    expect(String(el('generationStatus').textContent)).toBe('已停止生成');
+    // 已写出来的半截正文要就地在停止那一刻收尾（以前靠迟到的 aborted 回调；现在由 stopGeneration 直接做）
+    expect(finished).toHaveBeenCalledTimes(1);
+    expect(String((finished.mock.calls[0] || [])[0] || '')).toContain('上半句');
+    expect(btn.classList.contains('is-stop')).toBe(false);      // 立刻变回发送（不再卡在停止态）
+    cb.onChunk('下半句');                       // 迟到：必须丢弃
+    cb.onDone('整段迟到的正文。', false, '');
+    await new Promise((r) => setTimeout(r, 0));
+    expect(appended).toEqual(['上半句']);                        // 下半句没上屏
+    expect(finished).toHaveBeenCalledTimes(1);                  // 只收尾那一次（迟到回调不再触发第二次）
+    expect(saved).not.toHaveBeenCalled();                       // 也没落盘
+    void p;
+  });
+});

@@ -28,6 +28,8 @@ function el(): any {
 
 beforeAll(async () => {
   await import('../src/domain/cardwriter'); // 顶层 init() 会读全局桩
+  // 真 _handleTools 快照：setupCard 会把它换成假桩，测"设计轮写入额度/自愈"的用例要先还原
+  (anyG as { _realHandleTools?: unknown })._realHandleTools = (anyG.CardWriterChat as { _handleTools: unknown })._handleTools;
 });
 
 const els = new Map<string, any>();
@@ -228,6 +230,7 @@ describe('B. 写卡 agent 循环契约', () => {
     c._writeOk = false;
     c._toolsOk = false;
     c._toolRounds = 0;
+    c._designGrace = 0;   // 设计轮"自愈放行"状态（2026-10-11）
     c._wbWritten = false;
     c._repeatKey = null;
     c._repeatCount = 0;
@@ -309,7 +312,7 @@ describe('B. 写卡 agent 循环契约', () => {
     expect(Cw()._writeOk).toBe(true);                         // 工具真的执行了
   });
 
-  it('设计轮收尾：提交过一轮后注入「不要再调工具」，轮数收在 2 轮内（不像操作轮磨到 24 轮）', async () => {
+  it('设计轮收尾：写入提交过一轮后注入收尾提示，轮数收得住（不会磨到 24 轮）', async () => {
     calls = [];
     (APIHandler as unknown as { fetchCompletions: unknown }).fetchCompletions = (
       messages: unknown[], onChunk: (c: string) => void, onDone: (...a: unknown[]) => void, _err: (...a: unknown[]) => void, overrides: Record<string, unknown>
@@ -327,13 +330,142 @@ describe('B. 写卡 agent 循环契约', () => {
     setupCard();
     (document.getElementById('cardwriterInput') as unknown as { value: string }).value = '我想做一个新角色：女高中生，怕黑';
     Cw().sendMessage();
-    // 设计轮 = 1 轮提交 + 1 轮收尾文字（第 3 次请求在拒绝后再给一轮），总之不会磨到 24 轮
+    // 设计轮 = 1 轮写入 + 1 轮收尾文字（第 3 次请求在拒绝后再给一轮），总之不会磨到 24 轮
     await vi.waitFor(() => expect(calls.length).toBe(3)); // 用重试等待：微任务里的后续轮次可能晚于 _isSending 翻转
     await vi.waitFor(() => expect(Cw()._isSending).toBe(false));
     const round1 = calls[1].messages as { role: string; content?: string }[];
     const nudge = round1.filter((m) => m.role === 'system' && String(m.content || '').includes('【设计轮·收尾】'));
     expect(nudge).toHaveLength(1);
-    expect(Cw()._toolRounds).toBe(2); // 模型连着调了两轮工具（第 2 轮在 _handleTools 里被拒，见批量用例）
+    // ② 文案不许替模型宣称"已经执行完"（2026-10-11：以前这句会让模型把被拦下的调用报成完成）
+    expect(String(nudge[0].content)).toContain('只有 ok:true 的才算做了');
+    expect(String(nudge[0].content)).not.toContain('工具提交已经执行完');
+    expect(Cw()._toolRounds).toBe(2); // 模型连着调了两轮写入（第 2 轮会被真实现拦/放行，见批量与自愈用例）
+  });
+
+  it('设计轮同回合自愈：被拦下的写入在下一轮原样重发 → 放行并真的落进草稿（不需要用户说「继续」）', async () => {
+    calls = [];
+    (APIHandler as unknown as { fetchCompletions: unknown }).fetchCompletions = (
+      messages: unknown[], onChunk: (c: string) => void, onDone: (...a: unknown[]) => void, _err: (...a: unknown[]) => void, overrides: Record<string, unknown>
+    ) => {
+      calls.push({ messages: (messages as unknown[]).slice(), overrides });
+      if (calls.length <= 3) {
+        (overrides.onTools as (t: { id: string; name: string; arguments: Record<string, unknown> }[]) => void)([
+          { id: 'call_' + calls.length, name: 'upsert_entry', arguments: { type: '其他', name: '第' + calls.length + '条', content: 'y' } },
+        ]);
+      } else {
+        onDone('写完了。', false, '');
+      }
+    };
+    // 真 _handleTools（不用 setupCard 的假桩）+ 最小可用的草稿/上下文状态
+    const c = Cw();
+    c._handleTools = (anyG as { _realHandleTools?: unknown })._realHandleTools;
+    c.refreshContext = () => {};
+    c._syncDraftFromWorldbook = () => {};
+    c._saveDraft = () => {};
+    c.renderDraft = () => {};
+    c._recentHistory = () => [];
+    c._context = null;
+    c._draft = { characters: [], entries: [], deleted: [] };
+    c._getTargetId = () => null;
+    c.messages = [];
+    c._isSending = false;
+    c._writeOk = false; c._toolsOk = false; c._toolRounds = 0; c._designGrace = 0;
+    c._wbWritten = false; c._repeatKey = null; c._repeatCount = 0; c._fixCount = 0;
+    (document.getElementById('cardwriterInput') as unknown as { value: string }).value = '我想做一个新角色：女高中生，怕黑';
+    c.sendMessage();
+    await vi.waitFor(() => expect(calls.length).toBe(4));   // 3 轮工具（第 3 轮 = 重发）+ 收尾文字
+    await vi.waitFor(() => expect(c._isSending).toBe(false));
+    // 第 2 轮的写入被拦下（它的 tool 结果里写着"未执行"），第 3 轮重发被放行 → 草稿里只有第 1、3 条
+    const round2Tools = (calls[2].messages as { role: string; content?: string }[]).filter((m) => m.role === 'tool');
+    expect(String((round2Tools[round2Tools.length - 1] || {}).content)).toContain('未执行');
+    const names = (c._draft.entries || []).map((e: { name: string }) => e.name);
+    expect(names).toContain('第1条');
+    expect(names).not.toContain('第2条');
+    expect(names).toContain('第3条');
+    expect(c._designGrace).toBe(2);                          // 放行已经用掉，之后一律拦
+  });
+
+  // 2026-10-11：写卡的「暂停」也要真停——停止后那条通道掐不断的迟到内容（整段缓冲回放）不许
+  // 写进气泡、更不许去执行工具（不然"停了还在改世界书/还在出图"）。
+  it('暂停（stopTurn）后：迟到的正文/工具调用一律丢弃（轮次令牌作废）', async () => {
+    const held: any = {};
+    (APIHandler as unknown as { fetchCompletions: unknown }).fetchCompletions = (
+      messages: unknown[], chunk: any, done: any, _err: any, overrides: Record<string, unknown>
+    ) => { held.msgs = messages; held.chunk = chunk; held.done = done; held.ov = overrides; return Promise.resolve(); };
+    const c = Cw();
+    c._handleTools = (anyG as { _realHandleTools?: unknown })._realHandleTools;
+    c.refreshContext = () => {};
+    c._syncDraftFromWorldbook = () => {};
+    c._saveDraft = () => {};
+    c.renderDraft = () => {};
+    c._recentHistory = () => [];
+    c._context = null;
+    c._draft = { characters: [], entries: [], deleted: [] };
+    c._getTargetId = () => null;
+    c.messages = [];
+    c._isSending = false;
+    c._writeOk = false; c._toolsOk = false; c._toolRounds = 0; c._designGrace = 0;
+    c._wbWritten = false; c._repeatKey = null; c._repeatCount = 0; c._fixCount = 0;
+    (document.getElementById('cardwriterInput') as unknown as { value: string }).value = '写入吧';
+    c.sendMessage();
+    await vi.waitFor(() => expect(held.ov).toBeTruthy());   // 请求发出去了（在等流）
+    c.stopTurn();                                            // 用户按「暂停」
+    const draftBefore = JSON.stringify(c._draft);
+    held.chunk('迟到的正文');                                 // 通道掐不断 → 迟到内容
+    held.ov.onTools([{ id: 'late1', name: 'upsert_entry', arguments: { type: '其他', name: '迟到', content: 'x' } }]);
+    held.done('迟到的整段', false, '');
+    await new Promise((r) => setTimeout(r, 0));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(JSON.stringify(c._draft)).toBe(draftBefore);      // 工具一个都没执行
+    const all = c.messages.map((m: { content?: string }) => String(m.content || '')).join('\n');
+    expect(all).not.toContain('迟到的正文');
+    expect(all).not.toContain('迟到的整段');
+    expect(c._isSending).toBe(false);
+  });
+
+  it('原生兜底通道：工具轮里紧跟的 onDone(null) 不会被误报成「思考过长被截断」（2026-10-11 系统版用户报）', async () => {
+    calls = [];
+    (APIHandler as unknown as { fetchCompletions: unknown }).fetchCompletions = (
+      messages: unknown[], onChunk: (c: string) => void, onDone: (...a: unknown[]) => void, _err: (...a: unknown[]) => void, overrides: Record<string, unknown>
+    ) => {
+      calls.push({ messages: (messages as unknown[]).slice(), overrides });
+      if (calls.length === 1) {
+        // 纯工具轮：只有思考 + 工具调用，没有正文（模型的常见形态）
+        (overrides.onReasoning as (r: string) => void)('先想想要写什么……');
+        (overrides.onToolCallStart as () => void)();
+        (overrides.onTools as (t: unknown[]) => void)([
+          { id: 'call_1', name: 'upsert_entry', arguments: { type: '其他', name: 'x', content: 'y' } },
+        ]);
+        // ！原生兜底（CapacitorHttp，整段缓冲那条通道）在 onTools 之后还会补一次 onDone(null,false)：
+        // 以前这里会走进"空回复"分支 → 气泡被写成「思考过长，输出额度耗尽被截断」的假提示
+        onDone(null as unknown as string, false);
+      } else {
+        onChunk('写好了。'); onDone('写好了。', false, '');
+      }
+    };
+    const c = Cw();
+    c._handleTools = (anyG as { _realHandleTools?: unknown })._realHandleTools;
+    c.refreshContext = () => {};
+    c._syncDraftFromWorldbook = () => {};
+    c._saveDraft = () => {};
+    c.renderDraft = () => {};
+    c._recentHistory = () => [];
+    c._context = null;
+    c._draft = { characters: [], entries: [], deleted: [] };
+    c._getTargetId = () => null;
+    c.messages = [];
+    c._isSending = false;
+    c._writeOk = false; c._toolsOk = false; c._toolRounds = 0; c._designGrace = 0;
+    c._wbWritten = false; c._repeatKey = null; c._repeatCount = 0; c._fixCount = 0;
+    (document.getElementById('cardwriterInput') as unknown as { value: string }).value = '写入吧';
+    c.sendMessage();
+    await vi.waitFor(() => expect(calls.length).toBe(2));
+    await vi.waitFor(() => expect(c._isSending).toBe(false));
+    const all = c.messages.map((m: { content?: string }) => String(m.content || '')).join('\n');
+    expect(all).not.toContain('思考过长');
+    expect(all).not.toContain('未收到有效回复');
+    expect(all).toContain('写好了');                       // 最终正文照常落在气泡上
+    expect((c._draft.entries || []).map((e: { name: string }) => e.name)).toContain('x');   // 工具真的跑了
   });
 
   it('说「已写入」但一次工具都没调：不做任何事后核对，文字原样保留（2026-10-06 删掉那套核对）', async () => {

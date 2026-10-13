@@ -33,6 +33,7 @@ public class MainActivity extends BridgeActivity {
     protected void onCreate(Bundle savedInstanceState) {
         registerPlugin(UpdateCheckerPlugin.class); // 整包更新插件
         registerPlugin(HotBundlePlugin.class);     // 网页包热更新（验签 / 回退 / 换资源目录）
+        registerPlugin(NativeStreamPlugin.class);  // 原生流式取数（B：端点被 CORS 拦下时也能真流式）
         super.onCreate(savedInstanceState);
         // === 原始版本的逻辑，保持不变 ===
         getBridge().getWebView().addJavascriptInterface(

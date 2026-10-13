@@ -118,6 +118,7 @@ export function createVisibleBudget(start: number, visible: boolean) {
 // 端点地址净化 + 归一化：实现移到了 lib/endpoint.ts（app.ts 也要用同一套逻辑，避免两份），
 // 这里 import 进来自己用，同时原样再导出，既有调用方不受影响。
 import { sanitizeEndpointUrl, chatCompletionsUrl, modelsUrl } from '../lib/endpoint';
+import { nativeStreamAvailable, nativeStreamFetch } from '../lib/nativestream';
 export { sanitizeEndpointUrl, chatCompletionsUrl, modelsUrl };
 
 // 代理端口统一解析：window.__PROXY_PORT__（Java 注入，每次 Activity 创建时刷新）
@@ -160,6 +161,28 @@ function _apiFailLog(label: string, status: number, body: string): void {
       ' | 代理端口 ' + (pp || 0) + (willProxy ? '(改写)' : '(直连)') +
       ' | 状态 ' + (status || '网络层') + ' | ' + detail);
   } catch (e) { /* 留档失败绝不影响报错 */ }
+}
+
+// 走的通道留档（2026-10-11）：端点在 WebView 里被 CORS 拦下时会落到**原生兜底**——那条通道是
+// CapacitorHttp 整段取回、再本地回放，**没有真流式**（用户看到"一次性吐出来"）；排查"这台设备为什么
+// 看不到流式"时先看这条留档：有没有它、是哪个端点、代理端口有没有生效（有端口且是 https 才会改写为
+// 本地代理，那条通道是真的边收边转发）。只记端点主机 + 模型 + 端口，不含 Key（走 ClientLog 同一套打码）。
+export function _noteTransport(tag: string): void {
+  try {
+    const g = globalThis as unknown as { ClientLog?: { note?: (k: string, m: string) => void }; PresetManager?: any };
+    if (!g.ClientLog || !g.ClientLog.note) return;
+    let ep = '', model = '';
+    try {
+      const cfg = (g.PresetManager && g.PresetManager.getActiveAPIConfig && g.PresetManager.getActiveAPIConfig()) || {};
+      ep = String(cfg.endpoint || ''); model = String(cfg.model || '');
+    } catch (e) { /* 拿不到配置就留空 */ }
+    let host = ep;
+    try { host = new URL(ep).host || ep; } catch (e) { /* 非法地址保留原文 */ }
+    const pp = resolveProxyPort();
+    const willProxy = !!(pp && /^https:\/\//i.test(ep));
+    g.ClientLog.note('接口', tag + ' | 端点 ' + (host || '(空)') + ' | 模型 ' + (model || '(空)') +
+      ' | 代理端口 ' + (pp || 0) + (willProxy ? '(已改写为本地代理)' : '(直连：http 端点或没有代理端口)'));
+  } catch (e) { /* 留档失败绝不影响请求 */ }
 }
 
 // ---- 模型兼容判定（modelcompat 纯函数模块，直接 import，见文件头） ----
@@ -952,11 +975,33 @@ export const APIHandler = {
             : _mc().explainUpstreamError(_requestError.status, _b)));
         return;
       }
+      // 原生流式（B，2026-10-11）：WebView fetch 被端点 CORS 拦下时，先试**原生流式插件**——
+      // 裸 socket 边收边给（http/https 都行、不看端点 CORS），比下面那条 CapacitorHttp 整段缓冲好得多。
+      // 插件不在（老 APK）/ 头都没拿到 → 这里抛错被吞掉，原样继续走老通道（对老设备零变化）。
+      let _nativeStreamed = false;
+      try {
+        const _realUrl = chatCompletionsUrl(apiConfig.endpoint || 'https://api.deepseek.com/v1');
+        const ns = await this._tryNativeStream(_realUrl, apiKey, body);
+        if (ns && ns.stream) {
+          _response = { body: ns.stream } as unknown as Response;
+          _requestError = null;
+          _nativeStreamed = true;
+          _noteTransport('端点无 CORS：走原生流式（B，真流式）');
+        } else if (ns && ns.status) {
+          // 非 2xx：与 CapacitorHttp 兜底同一口径——报真实状态码与错误体
+          const _nb = String(ns.bodyText || '');
+          _apiFailLog('生成(' + _label + '，原生流式)', ns.status, _nb);
+          _err('API 请求失败 (' + ns.status + '): ' + _nb + _mc().explainUpstreamError(ns.status, _nb));
+          return;
+        }
+      } catch (e) { /* 原生流式不可用/失败 → 静默回退老通道 */ }
+      if (!_nativeStreamed) {
       // 原生端 CORS 降级：endpoint 无 CORS 头时 WebView fetch 被浏览器拦截（TypeError: Failed to fetch），
       // 改用 CapacitorHttp 原生请求（不受 CORS 限制）。整段 SSE 文本返回后本地分帧、节流喂给同一解析逻辑。
       if (typeof (globalThis as any).Capacitor !== 'undefined' && (globalThis as any).Capacitor.isNativePlatform && (globalThis as any).Capacitor.isNativePlatform()) {
         try {
-          const ok = await this._nativeHttpFallback(url, apiKey, body, onChunk, _done, _resetIdle, overrides, chatCompletionsUrl(apiConfig.endpoint || 'https://api.deepseek.com/v1'));
+          _noteTransport('端点无 CORS：走原生兜底（整段缓冲，无真流式）');
+          const ok = await this._nativeHttpFallback(url, apiKey, body, onChunk, _done, _resetIdle, overrides, chatCompletionsUrl(apiConfig.endpoint || 'https://api.deepseek.com/v1'), _ac.signal);
           if (ok) { this.abortController = null; return; }
         } catch (e) { /* fallback 也失败 → 继续报原网络错误 */ }
         // 原生兜底拿到的是上游的真实状态码时，报它而不是"CORS 受限"——否则 400/404（模型不在套餐里
@@ -968,7 +1013,8 @@ export const APIHandler = {
           return;
         }
       }
-      const _errMsg = String(_requestError.message || _requestError || '');
+      const _reFinal: any = _requestError;   // 上面可能已把它清空（B 成功时）——这里要的是"原样的失败信息"
+      const _errMsg = String((_reFinal && _reFinal.message) || _reFinal || '');
       // 提示细分：Failed to parse URL 多为地址里混入了空格/全角字符；Failed to fetch 多为端点
       // 跨域策略拦截（如火山方舟 coding 端点的 CORS 不允许 Authorization 头）或网络不可达。
       const _hint = /failed to parse|invalid url/i.test(_errMsg) ? '（API 地址格式有误：请检查是否混入了空格或全角字符）'
@@ -976,6 +1022,7 @@ export const APIHandler = {
       _apiFailLog('生成(' + _label + '，直连失败)', 0, _errMsg);
       _err('网络错误: ' + (_errMsg || _requestError) + _hint);
       return;
+      }
     }
     const response = _response!;
     try {
@@ -1189,17 +1236,38 @@ export const APIHandler = {
     }
   },
 
+  // 原生流式（B，2026-10-11）：真流式的第三条通道——Android 插件 NativeStream 用裸 socket 边收边给
+  // （NativeStreamCore.java），http/https 都支持、不看端点 CORS。**只在 fetch 被 CORS 拦下时**才轮到它
+  // （调用点就在原生兜底之前）；插件不在（老 APK）或头都没拿到 → 返回 null，调用方原样回退老通道。
+  // 返回：{ stream } = 2xx（把响应体当流交给主解析逻辑）；{ status, bodyText } = 非 2xx；null = 不可用/失败。
+  async _tryNativeStream(realUrl: string, apiKey: string, body: Record<string, unknown>):
+    Promise<{ stream?: ReadableStream<Uint8Array>; status?: number; bodyText?: string } | null> {
+    if (!nativeStreamAvailable()) return null;
+    const signal = this.abortController ? this.abortController.signal : undefined;
+    const r = await nativeStreamFetch({
+      url: realUrl,
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + apiKey },
+      body: JSON.stringify(body || {}),
+      connectTimeoutMs: 8000,   // 端口/IP 不通时尽快让位给老通道（正常端点毫秒级就建连）
+      headTimeoutMs: 90000,     // 到响应头：思考型网关也可能压着不回，给足（App 自己另有 300s/120s 兜底）
+      signal: signal
+    });
+    if ('stream' in r && r.stream) return { stream: r.stream, status: r.status };
+    return { status: r.status, bodyText: (r as { bodyText?: string }).bodyText || '' };
+  },
+
   // 原生端 CORS 降级（仅 fetch 被跨域拦截时使用）：CapacitorHttp 原生请求不受 CORS 限制。
   // 服务端把整段 SSE 返回，本地按帧解析、节流喂给 onChunk（近似流式）。
   // realUrl：未走本地代理的真实 https 地址。传入后，若代理地址请求失败（本地代理进程
   // 已死/端口失效），再直连真实端点重试一次，避免两条通道一起失效。
   async _nativeHttpFallback(url: string, apiKey: string, body: Record<string, unknown>,
     onChunk: (c: string) => void, onDone: (full: string | null, aborted: boolean, reasoning?: string) => void,
-    resetIdle: () => void, overrides: any, realUrl?: string): Promise<boolean> {
+    resetIdle: () => void, overrides: any, realUrl?: string, signal?: AbortSignal): Promise<boolean> {
     // Capacitor 6：插件挂在 window.Capacitor.Plugins.CapacitorHttp（不是全局 CapacitorHttp）
     const g = globalThis as any;
     const Cap = (g.Capacitor && g.Capacitor.Plugins && g.Capacitor.Plugins.CapacitorHttp) || g.CapacitorHttp;
     if (!Cap || !Cap.request) return false;
+    if (signal && signal.aborted) { onDone(null, true); return true; }   // 已取消：不发
     console.log('[NativeFallback] 触发原生请求（无 CORS 端点）', url);
     this._lastFallbackError = null;
     resetIdle();
@@ -1258,6 +1326,9 @@ export const APIHandler = {
     let idx = 0, finished = false;
     const finish = (aborted: boolean) => {
       if (finished) return; finished = true;
+      // 用户点了「停止」（或超时 abort）：整段响应已经到手，但**不再回放**——直接按"已中止"收尾。
+      // 否则这一整段会被当成正常完成喂给上层（2026-10-11 用户报"点了停止还在继续出字/还会落库"）。
+      if (signal && signal.aborted) { onDone(null, true); return; }
       if (toolCalls.length > 0 && overrides.onTools) {
         const list = toolCalls.filter(Boolean).map(function (t: any) {
           let args: Record<string, unknown> = {};
@@ -1278,8 +1349,12 @@ export const APIHandler = {
       }
     };
     const step = () => {
+      if (signal && signal.aborted) { onDone(null, true); return; }   // 已取消：停止回放
       resetIdle();
       for (let guard = 0; guard < 300 && idx < lines.length; guard++) {
+        // 取消要**逐行**生效：一个 step 最多喂 300 行，只在 step 之间检查的话，
+        // 短响应（一次读完）根本拦不住——用户点了停止仍会把整段吐完（2026-10-11 实测）。
+        if (signal && signal.aborted) { onDone(null, true); return; }
         const line = (lines[idx++] || '').trim();
         if (!line) continue;
         // 与主循环同一套形态容错：`data:` 无空格也认；无前缀的裸 JSON 行按 NDJSON 处理

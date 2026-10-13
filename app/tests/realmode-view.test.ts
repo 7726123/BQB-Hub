@@ -23,7 +23,7 @@ const REAL_IDS = [
   'realSceneBar', 'realSceneText', 'realSceneEditBtn',
   'realStream', 'realStatus',
   'realSpeakerRow', 'realSpeakerSel', 'realNextSel', 'realAddCharBtn',
-  'realInput', 'realSendBtn', 'realStopBtn', 'realUndoBtn',
+  'realInput', 'realSendBtn', 'realUndoBtn',
 ];
 
 describe('真实模式：侧栏入口与 #tab-real 容器', () => {
@@ -48,11 +48,20 @@ describe('真实模式：侧栏入口与 #tab-real 容器', () => {
       'RealMode.openScene()',
       'RealMode.refreshSendLabel()',
       'RealMode.send()',
-      'RealMode.stop()',
       'RealMode.undoLast()',
     ]) {
       expect(html, '缺 ' + call).toContain(call);
     }
+  });
+
+  // 2026-10-11：停止不再是独立按钮——生成中**发送键自己变停止键**（图标 ⏹），
+  // 绑定在 RealMode.refreshSendLabel 里（inline 只留 send/继续），所以这里反过来守：
+  // 页面里不许再有独立停止键；代码里 refreshSendLabel 必须真绑 stop。
+  it('停止键是"发送键的第二态"（没有独立停止按钮；refreshSendLabel 里绑 stop + ⏹ 图标）', () => {
+    expect(html).not.toContain('realStopBtn');
+    expect(realmode).toContain("btn.classList.add('is-stop')");
+    expect(realmode).toContain('self.stop()');
+    expect(realmode).toContain('ICON_STOP');
   });
 
   it('内心 / 壳两条新样式进样式区（其余复用 chat 的 class）', () => {

@@ -38,7 +38,7 @@ function makeEl(id: string): any {
 }
 const els: Record<string, any> = {};
 function setupDom() {
-  ['chatStream', 'chatInput', 'chatSendBtn', 'chatStopBtn', 'chatUndoBtn', 'chatStatus', 'chatScrollBottom',
+  ['chatStream', 'chatInput', 'chatSendBtn', 'chatUndoBtn', 'chatStatus', 'chatScrollBottom',
     'chatProfileModal', 'chatProfileBody', 'chatProfileTitle',
     'chatBg', 'chatStreamWrap', 'chatBgBtn']
     .forEach(id => { els[id] = makeEl(id); });
@@ -543,6 +543,7 @@ describe('落库与诊断', () => {
     setupPreset(1000);
     (APIHandler as any).fetchCompletions = (msgs: any[], onDelta: any, onOk: any) => { onOk('', false, '只有思考'); };
     ChatMode._streamBookId = ChatMode.bookId();
+    ChatMode._sending = true;   // 白盒直调：先摆成生成中（_finish 有幂等守卫）
     ChatMode._finish('   ', false, 'stop');
     expect(ChatMode.log()).toHaveLength(0);
     expect(g.App.toast).toHaveBeenCalled();
@@ -555,6 +556,7 @@ describe('落库与诊断', () => {
     setupPreset(1000);
     ChatMode._streamBookId = ChatMode.bookId();
     ChatMode._reasoningChars = 7342;
+    ChatMode._sending = true;   // 白盒直调：先摆成生成中（_finish 有幂等守卫）
     ChatMode._finish('', false, 'length');
     const msg = (g.App.toast as any).mock.calls.map((c: any[]) => String(c[0])).join('\n');
     expect(msg).toContain('额度被思考吃满');
@@ -566,17 +568,20 @@ describe('落库与诊断', () => {
     seedBooks();
     setupPreset(1000);
     ChatMode._reasoningChars = 1200;
+    ChatMode._sending = true;   // 白盒直调：先摆成生成中（_finish 有幂等守卫）
     ChatMode._finish('林薇：「一」', false, 'length');
     let last = ChatMode.log().slice(-1)[0];
     expect(last.truncated).toBe(true);
     expect(last.reasoning).toBe(1200);                       // 落库带着思考字数
     expect(ChatMode._bubbleHtml(last)).toContain('思考已用掉约 1200 字额度');
     // 整段散文（没有任何说话人前缀）→ 漂移
+    ChatMode._sending = true;   // 白盒直调：先摆成生成中（_finish 有幂等守卫）
     ChatMode._finish('她把信放在桌上。'.repeat(10), false, 'stop');
     last = ChatMode.log().slice(-1)[0];
     expect(last.drift).toBe(true);
     // 正常演出 → 不报漂移、不带思考字数
     ChatMode._reasoningChars = 0;
+    ChatMode._sending = true;   // 白盒直调：先摆成生成中（_finish 有幂等守卫）
     ChatMode._finish('林薇：「你怎么才来。」\n林叶：我把笔帽扣上。', false, 'stop');
     last = ChatMode.log().slice(-1)[0];
     expect(last.drift).toBe(false);
@@ -912,7 +917,9 @@ describe('重演 / 删除 / 换书', () => {
     expect(els['chatInput'].value).toBe('第二轮要求');
   });
 
-  it('生成中：发送换成红色停止键（与写作页同一对按钮、同一个位置）', async () => {
+  // 2026-10-11 用户要求：**发送键自己变成停止键**（不再旁边另挂一颗 ✕；图标改 ⏹）。
+  // 这条同时守住"状态一定复位"：生成结束（含被停止）后必须回到"发送"外观。
+  it('生成中：同一颗发送键变红色 ⏹ 停止键；结束后变回发送', async () => {
     seedBooks();
     setupPreset(1000);
     // 异步返回，抢在回调前看按钮状态
@@ -920,11 +927,32 @@ describe('重演 / 删除 / 换书', () => {
       setTimeout(() => { onDelta('林薇：「一。」'); onOk('林薇：「一。」', false, ''); }, 0);
     };
     const p = ChatMode.generate('演一段');
-    expect(els['chatSendBtn'].style.display).toBe('none');
-    expect(els['chatStopBtn'].style.display).toBe('flex');
+    const btn = els['chatSendBtn'];
+    expect(btn.classList.contains('is-stop')).toBe(true);        // 变成停止态
+    expect(String(btn.innerHTML)).toContain('<rect');            // ⏹ 图标（圆角方框 + 实心方块）
+    expect(String(btn.title)).toBe('停止生成');
     await p;
-    expect(els['chatSendBtn'].style.display).toBe('flex');
-    expect(els['chatStopBtn'].style.display).toBe('none');
+    expect(btn.classList.contains('is-stop')).toBe(false);       // 回到发送态
+    expect(String(btn.title)).toBe('发送');
+    expect(String(btn.innerHTML)).toContain('M12 19l9 2');       // 纸飞机图标回来了
+  });
+
+  // 停止要**真的停**（2026-10-11 用户报"点了停止卡住、后面还在输出"）：
+  // ① 立刻复位（_sending=false、状态"已停止"、按钮回到发送）② 之后迟到的回调一律丢弃。
+  it('stop()：立刻复位成"已停止"并把发送键变回来；迟到的完成回调不再落库', () => {
+    seedBooks();
+    setupPreset(1000);
+    ChatMode._sending = true;
+    ChatMode._streamBookId = ChatMode.bookId();
+    ChatMode._acc = '半截';
+    ChatMode.stop();
+    expect(ChatMode._sending).toBe(false);
+    expect(ChatMode._status).toBe('已停止');
+    expect(els['chatSendBtn'].classList.contains('is-stop')).toBe(false);
+    expect(ChatMode.log()).toHaveLength(0);                      // 半截不落库
+    // 迟到的完成回调（通道掐不断时会出现）：令牌已作废 → 不写记录、不改状态
+    ChatMode._finish('林薇：「迟到的整段。」', false, 'stop');
+    expect(ChatMode.log()).toHaveLength(0);
   });
 
   it('换书改当前书并重载（用真实的 BookManager）', () => {

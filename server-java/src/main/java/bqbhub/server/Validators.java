@@ -77,6 +77,35 @@ public final class Validators {
         }
     }
 
+    /**
+     * 取长整数字段（毫秒时间戳这类会超出 32 位的值**必须**走这个）。
+     * 为什么要有它：num() 走的是 Number.intValue()，1791740506926 会被截成 739144494（1970 年）——
+     * 2026-10-11 线上实测：换 Java 之后 client_logs 的时间戳全被截断，新日志在 admin 查询里排到最旧，
+     * 还会被保留策略（ts < now - KEEP）当过期条目删掉；admin_traces 同理。
+     */
+    public static long numLong(Object o, long dflt) {
+        if (o instanceof Number n) {
+            long v = n.longValue();
+            return v == 0 ? dflt : v;
+        }
+        try {
+            double d = Double.parseDouble(str(o));
+            long v = (long) d;
+            return (Double.isNaN(d) || v == 0) ? dflt : v;
+        } catch (Exception e) {
+            return dflt;
+        }
+    }
+
+    public static long numLong(String s, long dflt) {
+        try {
+            long v = Long.parseLong(s.trim());
+            return v == 0 ? dflt : v;
+        } catch (Exception e) {
+            return dflt;
+        }
+    }
+
     /** 截断（对应 JS 的 String(v).slice(0, n)） */
     public static String cut(Object o, int n) {
         String s = str(o);

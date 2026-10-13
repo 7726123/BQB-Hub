@@ -14,6 +14,7 @@ import {
 } from './realprompt';
 import type { Msg } from './realprompt';
 import { parseBubbles } from '../lib/bubble';
+import { ICON_SEND, ICON_CONTINUE, ICON_STOP } from '../lib/icons';
 import { autoGrow, bindAutoGrow } from '../lib/inputgrow';
 import { WorldBookManager } from './worldbook';
 import { normalizeStoryWindow } from '../lib/contextbudget';
@@ -337,14 +338,25 @@ export const RealMode = {
     const ta = el('realInput');
     const btn = el('realSendBtn');
     if (!btn) return;
-    if (this._sending) { btn.disabled = true; btn.innerHTML = '<span style="font-size:18px;">…</span>'; return; }
+    if (this._sending) {
+      // 生成中：发送键**自己变成停止键**（同一颗按钮、同一个位置，图标 ⏹、变红）——与写作/对话模式一致。
+      // 2026-10-11 用户要求（以前是旁边另挂一颗 ✕，而且生成中这颗键还被 disabled 成一个「…」）。
+      const self = this;
+      btn.disabled = false;
+      btn.classList.add('is-stop');
+      btn.title = '停止生成';
+      btn.innerHTML = ICON_STOP;
+      btn.onclick = function () { self.stop(); };
+      return;
+    }
+    const self2 = this;
     btn.disabled = false;
+    btn.classList.remove('is-stop');
+    btn.onclick = function () { void self2.send(); };
     // 图标与对话模式同款：空输入 = 播放三角（继续/推进），有字 = 纸飞机（发送）
     const empty = !(ta && String(ta.value || '').trim());
     btn.title = empty ? '继续（让剧情自己走）' : '发送';
-    btn.innerHTML = empty
-      ? '<svg class="ic-20" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 4l14 8-14 8V4z"></path></svg>'
-      : '<svg class="ic-20 rot-90" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"></path></svg>';
+    btn.innerHTML = empty ? ICON_CONTINUE : ICON_SEND;
   },
   _renderHead(): void {
     const sc = this.scene();
@@ -534,14 +546,17 @@ export const RealMode = {
       try {
         A.fetchCompletions(
           msgs,
-          (chunk: string) => { if (!this._silent) this._status = ''; this._paint(chunk); },
-          (full: string | null) => { const out = (full == null ? this._acc : String(full)); done(out); },
-          (err: string) => { this._status = ''; toast('请求失败：' + err); done(null); },
+          // 停止（_stopped）后迟到的回调一律丢弃：不再往记录区画、也不再让这一轮落进记录
+          //（2026-10-11 与对话模式同一批修：以前停止后回放还会继续出字、甚至把这半轮存下来）。
+          (chunk: string) => { if (this._stopped) return; if (!this._silent) this._status = ''; this._paint(chunk); },
+          (full: string | null) => { if (this._stopped) { done(null); return; } const out = (full == null ? this._acc : String(full)); done(out); },
+          (err: string) => { if (this._stopped) { done(null); return; } this._status = ''; toast('请求失败：' + err); done(null); },
           {
             callLabel: label,
             maxTokens: 65535,
             timeout: 600000,
             onReasoning: (c: string) => {
+              if (this._stopped) return;                        // 已停止：思考不再计数/刷新
               this._reasonChars += String(c || '').length;
               this._status = '思考中（已想 ' + this._reasonChars + ' 字）';
               this._renderHead();
@@ -862,6 +877,7 @@ export const RealMode = {
     }
     this.render();
     const ok = await this._publicCall(this._playerCanon || text);
+    if (this._stopped) return;      // 用户按了停止：直接收尾，不走下面"场记失败"那套提示（stop() 已经反馈过）
     if (!ok) {
       // 「清空」按过之后：不回滚、不回填（快照是清空前的现场，回滚会把刚清掉的记录变回来）
       if (this._suppressRefill) return;

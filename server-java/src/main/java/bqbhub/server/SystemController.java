@@ -240,7 +240,9 @@ public class SystemController {
             for (Object o : list.subList(0, Math.min(list.size(), 8))) {
                 Map<String, Object> l = o instanceof Map<?, ?> mm ? castMap(mm) : Map.of();
                 Map<String, Object> it = new LinkedHashMap<>();
-                it.put("ts", Validators.num(l.get("t"), 0) != 0 ? Validators.num(l.get("t"), 0) : System.currentTimeMillis());
+                // 毫秒时间戳必须用 numLong（num() 会 intValue 截断成 1970 年，见 Validators.numLong 注释）
+                long lts = Validators.numLong(l.get("t"), 0L);
+                it.put("ts", lts != 0L ? lts : System.currentTimeMillis());
                 it.put("v", Validators.cut(l.get("v"), 40));
                 it.put("plat", Validators.cut(l.get("plat"), 20));
                 it.put("kind", Validators.cut(l.get("k"), 60));
@@ -309,7 +311,8 @@ public class SystemController {
         Map<String, Object> b = body == null ? Map.of() : body;
         Object recall = b.get("recall");
         String recallJson = (recall instanceof String s) ? s : toJson(recall == null ? List.of() : recall);
-        long ts = Validators.num(b.get("ts"), 0) != 0 ? Validators.num(b.get("ts"), 0) : System.currentTimeMillis();
+        long tsIn = Validators.numLong(b.get("ts"), 0L);   // 同上：毫秒时间戳不能走 int 版
+        long ts = tsIn != 0L ? tsIn : System.currentTimeMillis();
         var keyHolder = new org.springframework.jdbc.support.GeneratedKeyHolder();
         jdbc.update(con -> {
             var ps = con.prepareStatement("INSERT INTO admin_traces (ts, book, round, model, window_chars, budget, instruction, continuation, recall_json) "

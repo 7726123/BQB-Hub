@@ -12,6 +12,7 @@ import { PluginManager } from './plugins';
 import { hasNativeReasoning } from './modelcompat';
 import { WorldBookManager, selectInjectableEntries, WB_INJECT_MAX_CHARS, hasUserNamedEntry } from './worldbook';
 import { normalizeStoryWindow, storyWindowTrigger, STORY_WINDOW_DEFAULT, STORY_WINDOW_AUTO, MODEL_CONTEXT_DEFAULT, normalizeModelContext, windowFromContext, recallNeeded } from '../lib/contextbudget';
+import { ICON_SEND, ICON_STOP } from '../lib/icons';
 import { BookManager, parseSampler, normalizeQuotes } from './book';
 import { ProtagonistManager } from './protagonist';
 import { CharacterManager } from './character';
@@ -288,6 +289,8 @@ const FrozenContext = {
 
 const App: AppShape = {
   isGenerating: false,
+  _genSeq: 0,   // 写作页的轮次令牌（停止/新轮 +1；迟到回调据此丢弃）
+  _stopFinalize: null as any, // 「停止生成」时把已写出来的半截正文收尾的钩子（由 generate() 注册；见 stopGeneration）
   _lastInputText: '',  // 写作输入框上次发送的内容（撤回时恢复到输入框）
   _dbEpoch: 0,  // 撤回代际计数：**只有撤回**才 +1（回滚数据库快照时，飞行中的填表结果据此作废）。
   // 注意：不要再让"新生成"自增——填表结果描述的是已经写下的那段正文，新开一轮并不使它失效；
@@ -1054,6 +1057,9 @@ const App: AppShape = {
     const apiConfig = PresetManager.getActiveAPIConfig();
     if (!apiConfig.apiKey) { App.toast('请先在高级设置中配置 API Key'); return; }
     this.isGenerating = true;
+    // 本轮的令牌：停止时 +1 作废这一轮 —— 「停止后又立刻再点发送」时，上一轮迟到的回调
+    //（整段缓冲那条通道掐不断，回放还会来）不会被当成新一轮的内容（2026-10-11）。
+    const _genToken = ++App._genSeq;
     console.log('[Generate] editor content length:', EditorManager.getContent().length, 'plainText length:', EditorManager.getPlainText().length);
     console.log('[Generate] START mode=' + mode);
 	    // Save editor snapshot for undo
@@ -1074,7 +1080,7 @@ const App: AppShape = {
 	    this._lastContNumber = (SM().get<any>('uiSettings', {}).totalContinuationCount || 0) + 1;
     const statusEl = document.getElementById('generationStatus');
     statusEl!.innerHTML = '<span class="spinner-dark"></span> AI 正在创作中...';
-    document.getElementById('btnStop')!.style.display = 'block';
+    App._syncWriteSendBtn();   // 发送键变成停止键（同一颗按钮；以前是旁边多一颗 ✕）
 
     // Get system prompt — use modules if available, fall back to legacy system prompt
     let systemPrompt = '';
@@ -1736,9 +1742,24 @@ const App: AppShape = {
       _notifyUnclosedThink(_spAb);
     };
     let generated = ''; const _streaming = document.getElementById('streamingOutput')!.checked; if (_streaming) EditorManager.startStreaming();
+    // 「停止生成」要像"连接中断"那样把已经写出来的正文**就地收尾**（折叠思考/剥变量块后落进编辑器）：
+    // 收尾动作在这里注册给 stopGeneration() 直接调用——停止后迟到的完成回调会被令牌丢弃，
+    // 不能再指望它来做这件事（2026-10-12 用户报"点了停止左下角还挂着 AI 正在创作中"时一并发现）。
+    App._stopFinalize = function () {
+      try { if (generated) _flushPartial(''); else if (_streaming) EditorManager.cancelStreaming(); } catch (e) { /* ignore */ }
+    };
     await APIHandler.fetchCompletions(messages,
-      (chunk) => { generated += chunk; if (_streaming) EditorManager.appendStreaming(chunk); statusEl!.textContent = '生成中... ' + generated.replace(/\s/g, '').length + ' 字'; },
+      (chunk) => {
+        // 「停止生成」之后仍可能有迟到的回调（尤其走整段缓冲那条通道时掐不断、回放还在继续）：
+        // isGenerating 一复位，所有后续回调一律丢弃——不写正文、不落盘、不弹错（2026-10-11 用户报"点了停止还在出字"）。
+        if (_genToken !== App._genSeq) return;   // 这一轮已作废（被停止/已被新一轮顶掉）
+        if (!App.isGenerating) return;
+        generated += chunk; if (_streaming) EditorManager.appendStreaming(chunk); statusEl!.textContent = '生成中... ' + generated.replace(/\s/g, '').length + ' 字';
+      },
       (fullContent, aborted: any, reasoning: any) => {
+        // 这一轮已经被「停止生成」收掉了（或已被别的出口复位）→ 迟到的完成回调一律丢弃：
+        // 否则会把刚被停止的文本当成"生成完成"落盘、还把编辑器覆盖成整段（2026-10-11 用户报）。
+        if (_genToken !== App._genSeq || !App.isGenerating) return;   // 已作废：不落盘、不改编辑器
         if (aborted) { App._endGenerating(); statusEl!.textContent = '已停止生成'; if (generated) _flushPartial(reasoning); else if (_streaming) EditorManager.cancelStreaming(); UsageStats.endSession(generated ? generated.replace(/\s/g, '').length : 0); return; }
         if (fullContent || (reasoning && reasoning.trim())) {
           let _preProcessed = String(fullContent || '');
@@ -1765,6 +1786,7 @@ const stripped = _preProcessed.replace(/^#{1,3}\s+.*(\n|$)/gm, '').trim(); var _
             App._bumpContinuationCount(); App._endGenerating(); })().catch(function (e) { console.warn('[Generate] 续写后置处理异常:', e); App._endGenerating(); }); } else { statusEl!.textContent = '未收到有效回复'; UsageStats.endSession(0); App._endGenerating(); }
       },
       (error) => {
+        if (_genToken !== App._genSeq || !App.isGenerating) return;   // 已作废：迟到的错误不再打扰用户
         App._endGenerating(); UsageStats.endSession(0);
         const _kept = String(generated || '').replace(/\s/g, '').length;
         if (_kept >= 20) {
@@ -1787,15 +1809,46 @@ const stripped = _preProcessed.replace(/^#{1,3}\s+.*(\n|$)/gm, '').trim(); var _
     );
   },
 
-  stopGeneration() { APIHandler.abort(); App._endGenerating(); UsageStats.endSession(0); },
+  stopGeneration() {
+    APIHandler.abort();
+    App._genSeq++;              // 作废这一轮：之后迟到的 chunk/完成/错误回调一律丢弃
+    // 把已写出来的正文收尾（以前是迟到的那次 aborted 回调做的，现在被令牌丢掉了）
+    try { if (App._stopFinalize) App._stopFinalize(); } catch (e) { /* ignore */ }
+    App._endGenerating();
+    UsageStats.endSession(0);
+  },
+
+  /**
+   * 写作页的发送键：**生成中它就是停止键**（同一颗按钮、同一个位置，图标 ⏹、变红），
+   * 与对话/真实模式完全一致（用户 2026-10-11 要求：以前是发送键左侧另挂一颗红色 ✕）。
+   * 幂等：只按 isGenerating 画一次状态，任何出口都可以调。
+   */
+  _syncWriteSendBtn(): void {
+    try {
+      const btn = document.getElementById('writingSendBtn');
+      if (!btn) return;
+      const busy = !!App.isGenerating;
+      btn.classList.toggle('is-stop', busy);
+      btn.title = busy ? '停止生成（已经写出来的内容会保留）' : '发送';
+      btn.innerHTML = busy ? ICON_STOP : ICON_SEND;
+      btn.onclick = busy ? function () { App.stopGeneration(); } : function () { App.sendFromWritingInput(); };
+    } catch (e) { /* 按钮不在（老资源/测试环境）不影响生成流程 */ }
+  },
 
   // 生成轮次收尾（**幂等**）：isGenerating 是 generate() 的防重入锁，任何一个出口漏复位，
   // 之后每次点「发送」都会在 generate() 开头静默 return —— 正文不生成、连错误提示都没有，
   // 只能重启 App（v1.5.90 用户报告的「按发送完全没反应」就是这个卡死）。所有出口统一走这里。
   _endGenerating() {
     App.isGenerating = false;
-    const btnStop = document.getElementById('btnStop');
-    if (btnStop) btnStop.style.display = 'none';
+    App._stopFinalize = null;  // 本轮结束：钩子作废（避免下一轮/下一个动作误用它）
+    App._syncWriteSendBtn();   // 停止键变回发送键（幂等：任何出口都走这里，见上面注释）
+    // 左下角状态行兜底（2026-10-12 用户报"点了停止还挂着 AI 正在创作中"）：任何出口只要没写最终文案，
+    // 就不许把那句带 spinner 的"正在创作中"留着。正常完成/失败各自会先写好文案（'生成完成！'/'错误: …'），
+    // 这里只在还挂着"正在创作中"时收尾成"已停止生成"——停止路径尤其需要：它不再依赖被令牌丢弃的迟到回调。
+    try {
+      const _st = document.getElementById('generationStatus');
+      if (_st && String(_st.innerHTML || '').indexOf('正在创作中') >= 0) _st.textContent = '已停止生成';
+    } catch (e) { /* 状态行拿不到不影响收尾 */ }
     // 世界书「变量」条数徽标（输入栏上侧那颗箭头的角标）：本轮可能刚收上值
     try { if (typeof UIManager !== 'undefined' && UIManager.refreshVarBadge) UIManager.refreshVarBadge(); } catch (e) { /* ignore */ }
   },

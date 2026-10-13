@@ -10,6 +10,7 @@ import { ImageHost, AVATAR_STORE_SIZE } from './imagehost';
 import { probeHost, drawImageToStore, genImagesHtml, imageLabel, hydrateImages, lookAtImageTool, appendAttachSpec, countImageTurns, stripImageTurns, type AttachSpec, type HostStatusCache } from './imagedraw';
 import { ImageCache } from '../lib/imagecache';
 import { visionState, markVision, looksLikeVisionError } from '../lib/vision';
+import { getWebVersion } from '../lib/webver';
 import { resizeDataUrlLongSide, readFileAsDataUrl, measureDataUrl } from '../lib/imagedata';
 
 // 安全提示：本模块在 app.js 之前加载，加载期（init/_load）触发的兜底提示不能依赖
@@ -42,11 +43,25 @@ const _BATCH_MAX_ITEMS = 10;
 // 8 轮时「5 个调用/轮 × 9 轮 = 45 次」根本清不完上百条的大卡；提到 24 轮后配合批量参数，
 // 200 条级别的清理与改造能在一条消息里跑完。代价是最坏墙钟变长（每请求超时 5 分钟）。
 const _MAX_AGENT_ROUNDS = 24;
-// 设计轮（用户这一条没给写入/操作指令）里允许的工具轮数上限：只留一轮提交 + 一轮收尾文字。
+// 设计轮（用户这一条没给写入/操作指令）里允许的**写入**提交轮数上限：只留一轮提交。
 // 2026-09-26 用户：工具必须**随时可用**——前端靠关键词判"要不要给工具"，判漏时模型没有工具可用，
 // 却仍按提示词里的工具说明输出「已写入」→ 世界书其实一个字都没写（用户看到"报已写入但没写入"）。
 // 所以门控从「给不给工具」改成「只限轮数」：设计轮也能调工具，但最多一轮，不允许连环多轮。
 const _DESIGN_TOOL_ROUNDS = 1;
+// 设计轮整回合的最高轮序号（轮序号 0.._DESIGN_MAX_ROUNDS 都能发请求，即最多 _DESIGN_MAX_ROUNDS+1 次）。
+// 2026-10-11：设计轮的额度**只算写入类**（见 _DESIGN_BUDGET_TOOLS），生图/看图/头像一次流程天然要
+// 好几轮（先查头像 → 画 → 收尾；"出两张草稿" = 两轮；改图失败重试一次 = 两轮），整体轮数必须留够，
+// 否则模型画到一半就被轮数上限掐掉。写入仍只允许一轮（多的靠软约束 + 下面的一次性放行）。
+const _DESIGN_MAX_ROUNDS = 4;
+// 「写入额度」只算**会改世界书**的工具。生图/看图/头像这条视觉链（draw_image / set_avatar /
+// look_at_image / list_avatars）与只读工具（lookup_book / read_current_book_json / read_adapter_doc /
+// adapt_tavern_lorebook）**不占额度**——它们是用户点名要的活、而且天然分步；占了额度就会出现
+// 「模型调了 draw_image 但 App 没执行」，用户看到的就是「它说画好了、其实根本没跑」（2026-10-11 用户报）。
+const _DESIGN_BUDGET_TOOLS = ['apply_character', 'delete_character', 'update_worldview', 'upsert_entry', 'delete_entry', 'set_entry_type'];
+// 设计轮写入额度用完时的回传文案（给模型看）：先拦一次、并明确让它**原样重发**（软件会放行一次，
+// 同回合自愈）；同时**不许**把没做的事说成完成。也不再让用户当开关（2026-10-11 用户要求）。
+const _DESIGN_BUDGET_MSG = '失败：设计轮里写入类调用最多一轮，这次未执行（软件限制）。**不要告诉用户已经写入**；'
+  + '请在本回合下一轮**原样重发这个调用**（软件会放行一次），或者把还没提交的内容用正文说明、由用户决定要不要继续提交。';
 // 会改世界书的工具（其余 lookup_book / read_current_book_json / read_adapter_doc /
 // adapt_tavern_lorebook 是只读工具：它们返回 ok=true 只说明"读到了"，不代表写过任何东西）。
 // set_avatar 也算：它确实改了条目（头像），算进 _writeOk 才不会被"假已写入"兜底误判成空口声称。
@@ -151,8 +166,10 @@ const CardWriterChat: CardWriterChatShape = {
   _draft: null, // 世界书工作副本（世界书当前内容的模型；改动即时写回真实世界书，见 _doWriteToWorldbook）
   _draftTimer: null,
   _summarizing: false,
-  _designTurn: false, // 本轮是设计轮（用户没给写入/操作指令）：工具照给，只限制轮数（最多一轮提交），提示词软约束不许擅自写入
-  _toolRounds: 0, // 本条消息已经发生的工具轮数（设计轮据此收到 _DESIGN_TOOL_ROUNDS 轮内）
+  _designTurn: false, // 本轮是设计轮（用户没给写入/操作指令）：工具照给，只限制**写入**轮数（生图/看图/头像不占，见 _DESIGN_BUDGET_TOOLS），提示词软约束不许擅自写入
+  _toolRounds: 0, // 本条消息已发生的**写入**工具轮数（设计轮据此收在 _DESIGN_TOOL_ROUNDS 轮内；生图/看图/只读不计）
+  _turnSeq: 0, // 轮次令牌：每条用户消息 +1；「暂停」时也 +1（作废这一轮）——迟到的回调/工具调用据此丢弃
+  _designGrace: 0, // 设计轮写入额度的"自愈放行"状态：0=还没给过 / 1=已给过（等模型原样重发）/ 2=已用掉（之后一律拦）
   _writeOk: false, // 本轮是否有**成功写进世界书**的工具调用（只读工具不算；假「已写入」兜底据此判定）
   // 断线可续跑：本轮被系统中断（切后台/锁屏）时保留"重发这一轮"的闭包。
   // 已执行的工具调用是即时写库的、且工具调用只在整轮流完后才执行，所以重发同一轮是幂等的。
@@ -677,7 +694,8 @@ const CardWriterChat: CardWriterChatShape = {
     this._toolsHandled = false; // 本轮是否已通过工具提交变更（防止重复解析文字清单）
     this._toolsOk = false; // 本轮是否有**成功**的工具调用（收尾文案据此区分"已写入"与"没提交成功"）
     this._writeOk = false; // 本轮是否有成功的**写**工具调用（只读工具不算）
-    this._toolRounds = 0; // 本条消息已发生的工具轮数
+    this._toolRounds = 0; // 本条消息已发生的**写入**工具轮数
+    this._designGrace = 0; // 设计轮的"自愈放行"状态按消息重置（见 _handleTools）
     this._attachQueue = []; // 待附图队列（每条用户消息重新开始）
     this._imgStripped = false; // 摘图重试标记同理按消息重置
     this._repeatKey = null; // 重复调用守卫：上一轮工具调用链（相同工具+相同参数连续重复计数）
@@ -696,6 +714,9 @@ const CardWriterChat: CardWriterChatShape = {
 
   async _callAPI(userText: any) {
     this._isSending = true;
+    // 本轮令牌：之后所有流式回调 / 工具执行 / 收尾都要核对它。「暂停」（stopTurn）会 +1 作废这一轮，
+    // 于是那条通道掐不断的迟到内容（整段缓冲兜底）既不会写进气泡、也不会去执行工具（2026-10-11）。
+    const _turnToken = ++this._turnSeq;
     const apiConfig = PresetManager.getActiveAPIConfig();
     if (!apiConfig.apiKey) { App.toast('请先在高级设置中配置 API Key'); this._isSending = false; return; }
     this.refreshContext();
@@ -818,8 +839,11 @@ const CardWriterChat: CardWriterChatShape = {
         role: 'system', content: '【本轮：设计轮】用户这一条看起来只是讨论/构思，没有明确让你写入世界书。'
           + '默认只输出设计本身——设定草案、角色人设文字稿、方案要点、建议与需要用户拍板的问题——把这一轮说透就停，不要连环追问。'
           + '工具仍然可用，但只作兜底：如果你判断用户这一条其实有明确的写入/修改指令，就直接调用工具（不要空口说「已写入」）；'
-          + '**设计轮最多提交一轮工具**（这一轮里用并行 tool_calls 一次交完，最多 5 个调用），不要多轮循环打磨——剩余内容用文字说明，等用户说「继续」再提交。'
-          + '没有真的收到 {"ok":true} 的工具结果，就不许出现「已写入/已修改/已保存」，回复里也不要出现 status/origin 这类内部标记。'
+          + '**写入类调用（apply_character / delete_character / update_worldview / upsert_entry / delete_entry / set_entry_type）最多提交一轮**'
+          + '（这一轮里用并行 tool_calls 一次交完，最多 5 个调用），不要多轮循环打磨——剩余写入内容用文字说明，等用户说「继续」再提交。'
+          + '**生图/看图/头像（draw_image / set_avatar / look_at_image / list_avatars）不受这条限制**：用户要图就一次把要画的画完（比如"两张草稿"就并行发两个调用），不要分轮磨。'
+          + '没有真的收到 {"ok":true} 的工具结果，就不许出现「已写入/已修改/已保存」；**draw_image 没收到带 image_id 的 ok:true 也不许说「画好了/图已生成」**'
+          + '（被软件拦下或失败时如实说这轮没做成）；回复里也不要出现 status/origin 这类内部标记。'
       });
     }
 
@@ -848,23 +872,26 @@ const CardWriterChat: CardWriterChatShape = {
       // 强行写入，造成"先讨论后写入"和"多轮重复回答"；模型不调工具就自然结束。
       const requestMessages = messages;
       const runTurn = async (msgs: any, round: any) => {
-        // 设计轮收紧轮数：最多提交一轮工具（多出的调用在 _handleTools 里被拒），再留一轮收尾文字；
-        // 操作轮仍是 _MAX_AGENT_ROUNDS（大卡批量改造要跑很多轮）。
-        const maxRounds = this._designTurn ? _DESIGN_TOOL_ROUNDS + 1 : _MAX_AGENT_ROUNDS;
+        // 设计轮收紧的是**写入**（最多一轮提交，多出的写入调用在 _handleTools 里被拦/放行一次），
+        // 生图/看图/头像/只读不占额度，所以整回合的请求数要留够（查头像 → 看一眼 → 画 → 收尾 = 4 次；
+        // 出两张草稿 = 3 次）。操作轮仍是 _MAX_AGENT_ROUNDS（大卡批量改造要跑很多轮）。
+        const maxRounds = this._designTurn ? _DESIGN_MAX_ROUNDS : _MAX_AGENT_ROUNDS;
         if (round > maxRounds) {
-          // 工具轮数用尽：按已有输出收尾。已写入世界书的变更不会丢，让用户发一句「继续」接着跑
+          // 轮数用尽：按已有输出收尾。已写入世界书的变更不会丢，让用户发一句「继续」接着跑
           // 剩下的（大卡改造一条消息跑不完是正常的）。用 _writeOk 而不是 _toolsHandled：
           // 后者在任何工具调用（哪怕全部失败）后都为 true，会误报「变更已写入世界书」；
           // 也别用 _toolsOk——只读工具（read_current_book_json 等）成功也会把它置位。
           this._isSending = false;
           this._statusText = '';
           if (!this.messages[assistantIdx].content) {
+            // 措辞不能替模型宣称结果（2026-10-11）：之前写"设计轮最多一轮工具提交"，生图被拦时
+            // 用户看到的是"它说画好了、图却没有"；这里只陈述"先做到这"，真假由工具结果自己说话。
             this.messages[assistantIdx].content = this._writeOk
               ? (this._designTurn
-                ? '（设计轮最多一轮工具提交，已写入的变更都保留着——还有没处理完的说一句「继续」，我接着做）'
+                ? '（本轮先做到这——已写入的变更都保留着；还有没做完的说一句「继续」，我接着做）'
                 : '（已达工具调用轮数上限（' + _MAX_AGENT_ROUNDS + ' 轮），已写入的变更都保留着——发一句「继续」我接着处理剩下的）')
               : (this._designTurn
-                ? '（设计轮最多一轮工具提交，本轮没有成功提交任何变更——发一句「继续」重试）'
+                ? '（本轮先做到这——还没做完的说一句「继续」，我接着做）'
                 : '（已达工具调用轮数上限（' + _MAX_AGENT_ROUNDS + ' 轮），本轮没有成功提交变更——发一句「继续」重试，或减少单次处理量）');
           }
           this._clearPausedMarker(); // 轮数用尽也算本轮收尾：不留「待继续」按钮（提示里已让用户发「继续」）
@@ -900,6 +927,7 @@ const CardWriterChat: CardWriterChatShape = {
           };
           // 本轮失败的统一出口（onError 回调 / fetchCompletions 直接 reject 都走它）
           const onApiError = (error: any) => {
+            if (_turnToken !== this._turnSeq) return;   // 已作废（用户按了暂停）：迟到的失败不再提示/不挂续跑
             if (turnErrored) return; // 同一次失败可能既走 onError 又走 catch，只处理一次
             turnErrored = true;
             cancelStreamRender();
@@ -947,6 +975,7 @@ const CardWriterChat: CardWriterChatShape = {
           };
           const _p: any = APIHandler.fetchCompletions(msgs,
             (chunk) => {
+              if (_turnToken !== this._turnSeq) return;   // 这一轮已作废（暂停/已被新消息顶掉）：丢弃
               if (!turnText && turnReasoning && !turnToolStarted) archiveReasoning(); // 正文首字 = 思考结束 → 折叠
               turnText += chunk;
               if (!turnToolStarted) {
@@ -957,8 +986,15 @@ const CardWriterChat: CardWriterChatShape = {
               chunkCount++;
               if (chunkCount % 10 === 0) this._save();
             },
-            (fullContent) => {
+            (fullContent, aborted) => {
+              if (_turnToken !== this._turnSeq) return;   // 已作废：不写气泡、不改状态、不落盘
               cancelStreamRender();
+              // 工具轮（模型这一轮只调了工具、没有正文）：这一轮的文字本来就该丢弃，收尾由工具跑完后的
+              // 下一轮负责。主链路（WebView fetch）里 onTools 之后**不会**再回调 onDone；但**原生兜底通道**
+              // （端点被 CORS 拦下时走的那条，整段缓冲、没有真流式）在 onTools 之后会立刻回调 onDone(null)：
+              // 于是纯工具轮会走进下面的"空回复"分支、被误报成「思考过长…被截断」，用户每轮都看到这句假提示
+              //（2026-10-11 系统版用户报）。这里直接交给工具那条路收尾，什么都不写。
+              if (turnHadTools) return;
               this._isSending = false;
               this._statusText = '';
               archiveReasoning(); // 本轮结束：未归档的思考（纯思考/无正文轮）折叠进消息
@@ -970,7 +1006,10 @@ const CardWriterChat: CardWriterChatShape = {
                 // 前者自动展开最近一次完整思维链（用户要求：每次都能看到断在哪、想了什么）。
                 const _m = this.messages[assistantIdx];
                 const _thinkLen = String(_m.reasoning || '').replace(/\s/g, '').length;
-                if (_thinkLen > 0) {
+                if (aborted) {
+                  // 用户点了「暂停」/连接被掐断而停在这里：这不是"额度用尽"，如实说停在哪
+                  _m.content = _m.content || '（已停止本轮）';
+                } else if (_thinkLen > 0) {
                   _m._thinkOpen = true;
                   _m.content = '（思考过长，输出额度耗尽被截断，未产生回复——上方思维链已完整保留并展开，可直接重试）';
                   App.toast('思考达到输出上限，完整思维链已保留并展开');
@@ -998,6 +1037,7 @@ const CardWriterChat: CardWriterChatShape = {
               // 实时思维链：API 原生 reasoning_content 流式增量 → 显示"深度思考中"块
               // （思考强度为 off 时不累积、不显示，仅正文流式）
               onReasoning: (rc: string) => {
+                if (_turnToken !== this._turnSeq) return;   // 已作废：思考也不再累积/显示
                 if (App.thinkingLevel() === 'off') return;
                 turnReasoning += rc;
                 turnReasoningArchived = false;
@@ -1020,7 +1060,11 @@ const CardWriterChat: CardWriterChatShape = {
               onTools: (tools: any) => {
                 turnHadTools = true;
                 this._lastTurnTools = tools.map(function (t: any) { return t.name; });
-                this._toolRounds = (this._toolRounds || 0) + 1;
+                // 只有**写入类**才占设计轮额度（2026-10-11）：生图/看图/头像/只读跑多少轮都不算，
+                // 否则"先查头像 → 再画"这类两步流程会在第二步被拦下（= 用户报的"说画好了却没跑"）。
+                if (tools.some(function (t: any) { return _DESIGN_BUDGET_TOOLS.indexOf(String(t.name)) >= 0; })) {
+                  this._toolRounds = (this._toolRounds || 0) + 1;
+                }
                 // 完全访问模式：模型调工具直接执行（"做不做"完全由模型判断，
                 // 预设【授权判断/调用前自检】软约束负责引导；前端不做任何关键词拦截）
                 this._statusText = '正在应用第 ' + (round + 1) + '/' + maxRounds + ' 轮 · ' + tools.length + ' 项变更…';
@@ -1037,6 +1081,9 @@ const CardWriterChat: CardWriterChatShape = {
                 // 工具执行改成 async（出图要等），异步期间流式回调已结束 → turnText 快照一次最稳妥
                 const turnTextSnapshot = turnText;
                 void (async () => {
+                  // 用户已经按了暂停（这一轮已作废）→ 这批工具调用**一个都不执行**：
+                  // 不然"停了还在改世界书/还在出图"就发生了（2026-10-11 与停止按钮同一批修）。
+                  if (_turnToken !== this._turnSeq) return;
                   let results: any[] = [];
                   try { results = await this._handleTools(tools, userText); }
                   catch (e) {
@@ -1065,12 +1112,15 @@ const CardWriterChat: CardWriterChatShape = {
                     }
                   } catch (e) { /* 看图失败不影响本轮 */ }
                   if (repeatReminder) msgs.push({ role: 'system', content: repeatReminder });
-                  // 设计轮的软收尾：工具已经提交过一轮了，下一轮只该输出文字（工具还在，但别再多轮循环）
+                  // 设计轮的软收尾：**写入**已经提交过一轮了，剩下的写入先用文字说（生图/看图不在此限）。
+                  // 措辞必须只说真实的执行结果（2026-10-11）：以前这里写"工具提交已经执行完（结果见上）"，
+                  // 对被拦下的调用也照发 → 模型据此把没跑的调用说成"已完成"（用户看到"说画好了却没跑"）。
                   if (this._designTurn && this._toolRounds >= _DESIGN_TOOL_ROUNDS) {
                     msgs.push({
-                      role: 'system', content: '【设计轮·收尾】工具提交已经执行完（结果见上）。设计轮最多一轮提交：'
-                        + '现在**不要再调用任何工具**，直接用文字把结论和剩余设计讲清楚；还有没提交完的内容，用文字说明，'
-                        + '让用户回一句「继续」再提交。'
+                      role: 'system', content: '【设计轮·收尾】上面的工具结果就是本轮的真实执行情况——'
+                        + '**只有 ok:true 的才算做了**，被拒/失败/写着"未执行"的一律不算，不要当成完成了'
+                        + '（被拦下并让你"原样重发"的，按工具结果里说的做）。写入类调用本轮最多一轮：剩下的写入内容先用文字说清楚，'
+                        + '由用户决定要不要继续提交；生图/看图不受这条限制。'
                     });
                   }
                   // turnText 变量每轮重置（最终轮文字由 onChunk/onDone 写入气泡）
@@ -1148,6 +1198,17 @@ const CardWriterChat: CardWriterChatShape = {
   // 「暂停」（发送键在生成中的第二态）：掐断请求 + 释放发送锁。切后台后请求偶发既不 resolve 也不 reject，
   // 锁会一直挂着——此前没有任何入口能解开它，用户只能重启 App。这是那个自救入口。
   stopTurn() {
+    this._turnSeq++;   // 作废这一轮：之后迟到的 chunk/工具调用/收尾回调一律丢弃（见 _callAPI 的令牌）
+    // 把气泡上那块"实时思考"收起来（折叠进完整思维链）：否则停止后它仍挂在气泡里、
+    // 看上去还在"思考中"（2026-10-11 用户报"点了暂停左下角还是会思考"）。
+    try {
+      const _m: any = this.messages[this.messages.length - 1];
+      if (_m && _m.role === 'assistant') {
+        const _live = String(_m.reasoningLive || '').trim();
+        if (_live) _m.reasoning = (_m.reasoning ? _m.reasoning + '\n\n' : '') + _live;
+        _m.reasoningLive = '';
+      }
+    } catch (e) { /* 收不起来也不影响停止本身 */ }
     try { if (APIHandler && APIHandler.abort) APIHandler.abort(); } catch (e) { /* ignore */ }
     // 出图轮询也要一起停：draw_image 是 10 秒级的网络等待，只掐 LLM 请求停不掉它
     this._drawCancelled = true;
@@ -1157,6 +1218,15 @@ const CardWriterChat: CardWriterChatShape = {
     this._dropPaused(); // 停止后不再挂「待继续」，否则回前台会自动续跑一条用户已经放弃的请求
     this._save();
     this.renderMessages();
+    // 停止留档（诊断）：用户报"点了暂停没真停"时，靠这条能看出他在哪个模式、走哪条通道、
+    // 跑的是哪个网页包（服务器 client_logs 里 kind=接口 的这条）。同签名 24h 去重，不会刷屏。
+    try {
+      const _g: any = globalThis as any;
+      if (_g.ClientLog && _g.ClientLog.note) {
+        const _ch = (this._lastTurnTools && this._lastTurnTools.length) ? '工具轮' : '';
+        _g.ClientLog.note('停止', '写卡·暂停已按下 | 网页包 ' + getWebVersion() + ' | ' + _ch);
+      }
+    } catch (e) { /* 留档失败不影响停止 */ }
     cwToast('已停止本轮（已写入的设定都还在，可再发一条继续）');
   },
   _syncSendState() {
@@ -1298,6 +1368,7 @@ const CardWriterChat: CardWriterChatShape = {
         + '- 出图后交给用户看图，用一两句中文说明画的是什么；**不要点评画面好不好**（他没问就不评价），也不要主动问"要不要设为头像"——只有他本来就在做头像/主动问起时才谈头像；设头像**必须等用户明确同意**（"用这张 / 设为头像 / 就它了"）才调用 set_avatar，并把用户的原话填进 user_said；'
         + '**本轮刚用 apply_character 新建的角色也能直接设**——把 set_avatar 排在 apply_character 之后即可（软件会先把角色落地再挂头像）。\n'
         + '- 画图失败（主机离线 / ComfyUI 没开 / 主机不支持改图）就把原因如实告诉用户，不要重试超过一次，也不要说"正在画"。\n'
+        + '- **没真的收到 draw_image 的 {"ok":true} 结果（成功回执里带 image_id）就不许说「画好了 / 图已生成」**：被软件拦下（回执写着"未执行"）或失败时如实说"这轮没画成"，不要替它报成功。\n'
         + '- **如果更早的回复里说过"没有画图工具/画不了"**：那是当时连不上画图主机——现在工具就在你手里，直接按上面的规则办，不要再重复那句话。';
     }
     return '【生图】本轮你没有画图工具——用户还没配置画图主机，或者画图主机没在运行。因此：\n'
@@ -1934,22 +2005,31 @@ const CardWriterChat: CardWriterChatShape = {
   // 执行模型输出的工具调用（完全访问模式：onTools 已直接调用，此处执行并返回结构化结果）
   // **async**：画图工具（draw_image）要 10 秒级网络等待——顺序执行多个调用，await 前会先把状态条渲染出去。
   async _handleTools(tools: any, userText: any) {
-    // 设计轮的硬保险（不是"不给工具"，而是"最多一轮提交"）：第一轮照执行，之后多出来的调用
-    // 一律不执行并**明确告知模型**（ok=false + 原因）——静默吞掉才会重演"说写了其实没写"。
-    if (this._designTurn && (this._toolRounds || 0) > _DESIGN_TOOL_ROUNDS) {
-      try { if (!_cwHidden()) cwToast('设计轮最多提交一轮变更，多出的调用已跳过（已提交的都在）'); } catch (e) { /* ignore */ }
-      const blocked = tools.map(function () {
-        return JSON.stringify({ ok: false, message: '失败：设计轮最多一轮工具提交，本次调用未执行（软件限制）。请用文字说明剩余内容，让用户回一句「继续」再提交。' });
-      });
-      this._lastToolResults = blocked.map(function (r: any) { return JSON.parse(r); });
-      this.renderDraft();
-      return blocked;
+    // 设计轮的硬保险（不是"不给工具"，而是"写入最多一轮"）：**只拦写入类**（_DESIGN_BUDGET_TOOLS），
+    // 生图/看图/头像/只读工具不占额度、照跑——否则"先查头像 → 再画"这类两步流程会在第二步被拦，
+    // 用户看到的就是"它说画好了、其实没跑"（2026-10-11 用户报的正是这个）。
+    // 写入超额度时先拦一次并明确告知模型；模型在下一轮**原样重发**就放行一次（同回合自愈，
+    // 不再让用户当「继续」开关）；再超才长期拒绝（仍如实回传 ok=false，不静默吞掉）。
+    const _overBudget = this._designTurn && (this._toolRounds || 0) > _DESIGN_TOOL_ROUNDS;
+    const _isBudgetTool = function (t: any) { return _DESIGN_BUDGET_TOOLS.indexOf(String((t && t.name) || '')) >= 0; };
+    let _refuseBudget = false;
+    if (_overBudget && tools.some(_isBudgetTool)) {
+      if (this._designGrace === 1) this._designGrace = 2;                                   // 模型原样重发了 → 放行这一次
+      else if (this._designGrace === 0) { this._designGrace = 1; _refuseBudget = true; }    // 先拦一次，并留下重发机会
+      else _refuseBudget = true;                                                            // 放行已经用过 → 之后一律拦
     }
+    const _refusedIdx: number[] = [];                                   // 被拦下那条在 results 里的下标
     this._toolsHandled = true; // 已通过工具提交变更
     let writeOk = false; // 本轮是否有写工具真的成功（只读工具不算）——末尾按"最终结果"统一判定
     // 工具结果结构化 JSON 回传（成熟 agent 协议）：模型精确判断成功/失败，失败时自动修正
     const results: string[] = [];
     for (const t of tools) {
+      // 设计轮写入额度用尽的拦下（生图/看图/只读在上面已豁免；这批里其余的照跑）
+      if (_refuseBudget && _isBudgetTool(t)) {
+        _refusedIdx.push(results.length);
+        results.push(JSON.stringify({ ok: false, message: _DESIGN_BUDGET_MSG }));
+        continue;
+      }
       // 参数 JSON 解析失败：把解析错误原文回传给模型（区别于「缺少参数」——模型看不到
       // 根因会原样重试同样的坏转义）。消息以「失败」开头，命中下方 ok 判定。
       // 最常见成因是输出被 max_tokens 截断：这种失败不会写坏数据，但用户端此前完全无感
@@ -2000,10 +2080,14 @@ const CardWriterChat: CardWriterChatShape = {
     // 本轮「工具执行实录」：软件自己的事实记录（不信模型措辞）。挂在当前 assistant 气泡上——
     // ① 下一轮请求随历史带上（模型据此判断上一轮到底写没写，不用凭自己的话回忆）；
     // ② 气泡里渲染成「本轮已写入 …」小条（用户看到的是真实执行结果）。
+    // 设计轮被拦下的写入不计入（软件限制，模型已被明确告知"这次没执行"，气泡里不必再亮失败条）；
+    // 整批都被拦（什么都没跑）时干脆不记这一条实录（否则会渲染出"本轮没有写入任何内容"的误导小条）。
     {
+      const _allRefused = tools.length > 0 && _refusedIdx.length === tools.length;
       const _wrote: string[] = [], _failed: string[] = [];
       let _read = 0;
       tools.forEach(function (t: any, i: number) {
+        if (_refusedIdx.indexOf(i) >= 0) return;   // 软件拦下的：不进实录
         const o: any = _parsed[i] || {};
         const isWrite = _WRITE_TOOLS.indexOf(String(t.name)) >= 0;
         if (isWrite && o.ok) _wrote.push(String(o.message || t.name));
@@ -2011,7 +2095,7 @@ const CardWriterChat: CardWriterChatShape = {
         else _read++;
       });
       const lastMsg: any = this.messages[this.messages.length - 1];
-      if (lastMsg && lastMsg.role === 'assistant') {
+      if (!_allRefused && lastMsg && lastMsg.role === 'assistant') {
         lastMsg.toolSummary = (lastMsg.toolSummary || []).concat([{ wrote: _wrote, failed: _failed, read: _read }]);
         this._save();
       }
@@ -2237,7 +2321,7 @@ const CardWriterChat: CardWriterChatShape = {
           '<summary onclick="CardWriterChat.toggleThink(event,' + i + ')">已深度思考（' + n + ' 字）· 点击展开</summary>' +
           '<div class="cw-think-body">' + doneThink.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '<br>') + '</div></details>';
       }
-      // 长按消息（按住 550ms）选中整条文字 + 浮条（复制/删除/多选）；
+      // 长按消息（按住 500ms，与系统长按一致）选中文字 + 浮条（复制/全选/删除/多选）；
       // 多选模式下点击气泡 = 勾选整轮。浮条是 body 上的固定层，不进气泡 → 零布局位移
       const multiOn = !!this._multiMode;
       const multiAnchor = multiOn ? roundIndexOf(this.messages, i) : -1;
@@ -2367,11 +2451,12 @@ const CardWriterChat: CardWriterChatShape = {
 
   // ==================== 长按选择 / 复制 / 删除 / 多选 ====================
 
-  // 按住 800ms 且手指未移动（滚动/拖动）→ 选中这条消息 + 浮出操作条。
+  // 按住一会且手指基本不动（滚动/拖动）→ 选中这条消息 + 浮出操作条。
   // 全程不重建列表：旧实现把菜单塞进气泡并重刷 innerHTML，气泡变高 + 选区被清掉，
   // 导致"想复制某一段很难"，也顺便让下面的消息整体位移。
-  // 时长/位移阈值（2026-09-25 用户反馈）：550ms 太短，慢速滑动或按住看内容时会误触，
-  // 放到 800ms、位移阈值 12px，并且**列表一滚动就取消**（见 msgPressCancel + 容器的 onscroll）。
+  // 时长/位移阈值：2026-09-25 把 550→800ms 压误触；2026-10-11 用户要求「长按时长和安卓原生一样」
+  // → 回到 **500ms**（系统长按也是 500ms），并把位移容差放宽到 18px（按住时手指轻微移动不再判废），
+  // 真正的滑动/滚动仍由 msgPressCancel（容器 onscroll）取消。
   msgPressStart(e: any, i: any) {
     if (e.target && e.target.closest && e.target.closest('button, .cw-sel-bar, .cw-multi-bar')) return; // 点在按钮/浮条上不触发
     if (this._isSending) return; // AI 回复中不响应长按
@@ -2385,12 +2470,12 @@ const CardWriterChat: CardWriterChatShape = {
       self._pressTimer = null;
       if (self._pressMoved || self._isSending) return;
       self._beginSelect(i, self._pressStartX, self._pressStartY);
-    }, 800);
+    }, 500);
   },
   msgPressMove(e: any) {
     if (this._pressTimer == null) return;
     const dx = Math.abs(e.clientX - this._pressStartX), dy = Math.abs(e.clientY - this._pressStartY);
-    if (dx > 12 || dy > 12) { this._pressMoved = true; clearTimeout(this._pressTimer); this._pressTimer = null; }
+    if (dx > 18 || dy > 18) { this._pressMoved = true; clearTimeout(this._pressTimer); this._pressTimer = null; }
   },
   msgPressEnd() {
     // 松手时定时器还在 = 短点击：取消长按判定（点击不受影响）
@@ -2422,7 +2507,17 @@ const CardWriterChat: CardWriterChatShape = {
   _beginSelect(i: any, x: any, y: any) {
     const raw = this._msgRaw(i);
     const off0 = this._offsetAt(i, x, y);
-    const off = off0 >= 0 ? Math.max(0, Math.min(off0, raw.length)) : 0;
+    if (off0 < 0) {
+      // 坐标换算失败（部分 WebView 上 caretRangeFromPoint 拿不到文字节点）：以前会退化成
+      // "从第 0 字开始选一句"——用户看到的是"选错了地方，还得滑动去纠正"（2026-10-11 反馈）。
+      // 现在宁可**整条选中**：长按立刻得到一段完整、可直接复制/删除的选区。
+      if (this._selIdx >= 0 && this._selIdx !== i) { this._markSelRow(this._selIdx, false); this._clearSelPaint(this._selIdx); }
+      this._selIdx = i;
+      this._markSelRow(i, true);
+      this.selectMessage(i);
+      return;
+    }
+    const off = Math.max(0, Math.min(off0, raw.length));
     if (this._selIdx >= 0 && this._selIdx !== i) { this._markSelRow(this._selIdx, false); this._clearSelPaint(this._selIdx); }
     this._selIdx = i;
     this._markSelRow(i, true);
@@ -2673,8 +2768,12 @@ const CardWriterChat: CardWriterChatShape = {
     }
     if (act === 'del') {
       if (i < 0) return;
-      this.clearSelection();
-      this.deleteRound(i);
+      const self = this;
+      const UI = (globalThis as unknown as { UIManager?: { showConfirm?: (m: string, cb: () => void) => void } }).UIManager;
+      const doDel = function (): void { self.clearSelection(); self.deleteRound(i); };
+      // 二次确认（2026-10-11）：长按就会浮出这条，误点一下不该直接删掉一整轮对话
+      if (UI && UI.showConfirm) UI.showConfirm('删除这一轮对话？\n（只删这一轮，其他内容不受影响）', doDel);
+      else doDel();
       return;
     }
     if (act === 'multi') {
@@ -3001,7 +3100,7 @@ const CardWriterChat: CardWriterChatShape = {
         + '- **铁律**：本规则凌驾于其他一切规则之上。即使你认为"用户应该想要这个设定""设定还不完整""主动帮忙更好"，只要用户没有明确命令写入，就**禁止**调用任何工具。未经明确指令就调用工具 = 擅自篡改用户的作品，是用户最不能接受的行为，一旦发生用户将不再信任你。宁可什么都不做，也绝不可擅自写入。\n'
         + '**判定完即执行**：判定为「不写」→ 精力全部放到文字回复上；判定为「要写」→ 直接规划工具与内容。不要在两种结论之间来回摇摆。\n'
         + '【工作模式】根据用户语气自动切换（调用时机一律服从【授权判断】铁律）：\n'
-        + '0. 轮次只是口径，工具**任何时候都给你**：用户这一条给了写入/操作指令 → 操作轮（可多轮提交）；没给 → **设计轮**（工具同样可用，但只作兜底：用户的话里其实有明确写入指令时就直接调用工具，不要空口说「已写入」）。设计轮**最多提交一轮工具**（一轮内用并行 tool_calls 一次交完），不要多轮循环打磨；剩余内容用文字讲清楚，等用户说「继续」再提交。设计轮里没真的收到 {"ok":true} 的工具结果，就不许说「已写入」。\n'
+        + '0. 轮次只是口径，工具**任何时候都给你**：用户这一条给了写入/操作指令 → 操作轮（可多轮提交）；没给 → **设计轮**（工具同样可用，但只作兜底：用户的话里其实有明确写入指令时就直接调用工具，不要空口说「已写入」）。设计轮**最多提交一轮「写入世界书」的调用**（一轮内用并行 tool_calls 一次交完），不要多轮循环打磨；剩余写入内容用文字讲清楚，等用户说「继续」再提交。**生图/看图/头像（draw_image / set_avatar / look_at_image / list_avatars）不受这条限制**：用户要图就一次把要画的画完（"两张草稿"就并行发两个调用），别分轮磨，也别因为"设计轮只准一轮"就不画或假称画好了。设计轮里没真的收到 {"ok":true} 的工具结果，就不许说「已写入」；**draw_image 没收到带 image_id 的 ok:true 也不许说「画好了/图已生成」**（被软件拦下或失败就如实说这轮没做成）。\n'
         + '1. 讨论模式（默认）：用户征询/商量（带问号、你觉得呢、要不要、怎么样、帮我想想）→ 纯文字建议，不调用工具、不输出卡片格式；\n'
         + '2. 确认模式：用户明确说写入/保存/应用/就这样/按这个 → 把讨论中已确定的内容用工具提交，工具提交即写入世界书、立即生效；\n'
         + '3. 自主构建模式：用户**明确表达执行意图**（「直接写入」「直接建」「帮我构建好/创建好/搭好/做好/搞定」）→ 视为授权你**自主完成整个任务**：自行规划并直接创建一组完整基础设定（世界观条目拆成多条：世界背景/力量体系/国家地理/种族文明/核心冲突；角色按需创建；另外用 upsert_entry 创建一条「初始」类型条目，说明故事开始时处于什么时期、已经发生了什么、还没发生什么——该条目仅在正文为空、尚未开始写作时注入一次），用工具批量创建，**工具调用即写入世界书、立即生效（不需要额外操作）**，然后简短汇报创建了哪些内容并询问调整方向（汇报末尾可以顺手按【对话示例】给主要角色 2~3 组候选台词请用户挑一个——可选，用户不接就作罢）。用户给了具体设定就严格照做，没给的基于常见模板合理创作（可在汇报时说明哪些是自主补全的）。\n'
@@ -3118,7 +3217,9 @@ const CardWriterChat: CardWriterChatShape = {
       //      流程里去掉「亲密（可选）」这一步骤——软件定位是 RP 创作工具，成人向内容只作为用户自定义，不做出厂引导。
       // v31：自检模块**默认留空**（2026-10-09 用户要求「也默认留空」）——软件只提供这个自定义栏，
       //      出厂不带任何自检文案；两版历史出厂原文在 _loadBlocks 里会被清空，用户自己写过的保留。
-      __version: 31
+      // v32：base 的「工作模式」0 条把设计轮口径改成**只限写入类**（生图/看图/头像不占额度），
+      //      并补「draw_image 没 ok:true 不许说画好了」（2026-10-11 生图被额度拦下的那次用户报）。
+      __version: 32
     };
   },
 

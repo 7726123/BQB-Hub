@@ -75,6 +75,7 @@ function prime(): any {
   c._toolsOk = false;
   c._writeOk = false;
   c._toolRounds = 0;
+  c._designGrace = 0;   // 设计轮"自愈放行"状态逐例清干净（2026-10-11）
   return c;
 }
 
@@ -343,7 +344,7 @@ describe('批量结果回传模型：结构化 JSON 与 failed 明细', () => {
     }
   });
 
-  it('设计轮最多一轮提交：第 2 轮及以后的工具调用不执行，且明确回传 ok=false（不静默吞掉）', async () => {
+  it('设计轮写入额度：第 2 轮写入不执行（ok=false，不静默吞掉），并留下一次"自愈重发"机会', async () => {
     const c = prime();
     c._draft = { characters: [], entries: [entry('甲')], deleted: [] };
     WB_BOOKS = [{ id: 'wb1', name: '测试书', entries: [entry('甲')] }];
@@ -353,15 +354,72 @@ describe('批量结果回传模型：结构化 JSON 与 failed 明细', () => {
     let out = await c._handleTools([{ id: 'c1', name: 'upsert_entry', arguments: { type: '其他', name: '新条目', content: 'x' } }], '');
     expect(okOf(out[0]).ok).toBe(true);
     expect(c._writeOk).toBe(true);
-    // 第二轮：拒绝执行，草稿与世界书都不得有变化，并回传原因让模型改用文字
+    // 第二轮：拒绝执行，草稿与世界书都不得有变化，并回传原因（明确让模型**原样重发**，不是让用户说「继续」）
     const before = c._draft.entries.map((e: any) => e.name);          // 第一轮真的写进去过
     const beforeWb = (WB_BOOKS[0].entries as any[]).map((e: any) => e.name); // 直写也生效过
     c._toolRounds = 2;
     out = await c._handleTools([{ id: 'c2', name: 'upsert_entry', arguments: { type: '其他', name: '再一条', content: 'y' } }], '');
     expect(okOf(out[0]).ok).toBe(false);
-    expect(okOf(out[0]).message).toContain('设计轮最多一轮工具提交');
+    expect(okOf(out[0]).message).toContain('写入类调用最多一轮');
+    expect(okOf(out[0]).message).toContain('原样重发');                 // 2026-10-11 同回合自愈
+    expect(okOf(out[0]).message).not.toContain('让用户回一句');          // 不再把用户当开关
     expect(c._draft.entries.map((e: any) => e.name)).toEqual(before);                     // 没有被写入
     expect((WB_BOOKS[0].entries as any[]).map((e: any) => e.name)).toEqual(beforeWb);     // 世界书也没变
+    expect(c._designGrace).toBe(1);                                     // 已经给过一次重发机会
+  });
+
+  it('自愈重发：模型下一轮原样重发 → 放行一次（真的写进世界书）；之后一律拦（不会无限放行）', async () => {
+    const c = prime();
+    c._draft = { characters: [], entries: [], deleted: [] };
+    WB_BOOKS = [{ id: 'wb1', name: '测试书', entries: [] }];
+    c._designTurn = true;
+    c._toolRounds = 3;                 // 额度早就用完，且第一次拦下已经发生过
+    c._designGrace = 1;                // 正处在"等模型重发"的状态
+    let out = await c._handleTools([{ id: 'c3', name: 'upsert_entry', arguments: { type: '其他', name: '补救', content: 'z' } }], '');
+    expect(okOf(out[0]).ok).toBe(true);                                   // 放行
+    expect(c._draft.entries.map((e: any) => e.name)).toEqual(['补救']);
+    expect(c._designGrace).toBe(2);                                       // 放行已经用掉
+    out = await c._handleTools([{ id: 'c4', name: 'upsert_entry', arguments: { type: '其他', name: '再来', content: 'w' } }], '');
+    expect(okOf(out[0]).ok).toBe(false);                                  // 之后一律拦
+    expect(c._draft.entries.map((e: any) => e.name)).toEqual(['补救']);
+  });
+
+  it('生图/看图/头像/只读不占额度：写入额度用完后，第 2 轮起的 draw_image 照执行（用户报的"说画好了却没跑"）', async () => {
+    const c = prime();
+    c._draft = { characters: [], entries: [], deleted: [] };
+    c._designTurn = true;
+    c._toolRounds = 2;                 // 写入额度早用完
+    const out = await c._handleTools([
+      { id: 'c5', name: 'draw_image', arguments: { prompt: 'a girl' } },
+      { id: 'c6', name: 'list_avatars', arguments: {} }
+    ], '');
+    const draw = okOf(out[0]);
+    expect(String(draw.message)).not.toContain('软件限制');               // 没被设计轮额度拦下
+    expect(String(draw.message)).toContain('画图主机未配置');             // 真的执行到了出图代码（本文件没桩主机）
+    const list = okOf(out[1]);
+    expect(list.ok).toBe(true);
+    expect(String(list.message)).not.toContain('软件限制');               // 只读工具同样不被拦
+    expect(String(list.message)).toContain('世界书');                      // 真的执行到了（拿到了这本书的名）
+    expect(c._designGrace).toBe(0);                                       // 全程没动"自愈放行"状态
+  });
+
+  it('混合批：写入被拦下、同批的生图照跑；被拦的那条不进「执行实录」（气泡里不亮失败条）', async () => {
+    const c = prime();
+    c._draft = { characters: [], entries: [], deleted: [] };
+    WB_BOOKS = [{ id: 'wb1', name: '测试书', entries: [] }];
+    c.messages = [{ role: 'assistant', content: '' }];
+    c._designTurn = true;
+    c._toolRounds = 5;
+    c._designGrace = 2;                // 自愈放行已经用掉 → 写入一律拦
+    const out = await c._handleTools([
+      { id: 'c7', name: 'upsert_entry', arguments: { type: '其他', name: '甲', content: 'x' } },
+      { id: 'c8', name: 'draw_image', arguments: { prompt: 'a girl' } }
+    ], '');
+    expect(okOf(out[0]).ok).toBe(false);                                  // 写入被拦
+    expect(String(okOf(out[1]).message)).toContain('画图主机未配置');      // 生图照跑（没被一起拦掉）
+    const sum = c.messages[0].toolSummary || [];
+    const failed = sum.reduce((acc: string[], s: any) => acc.concat(s.failed || []), [] as string[]);
+    expect(failed.join('|')).not.toContain('upsert_entry');               // 软件拦下的写入不算"失败"给用户看
   });
 
   it('操作轮不受"一轮"限制：同样的第 2 轮调用照执行', async () => {
@@ -682,7 +740,9 @@ describe('轮次口径：工具常开（设计轮也给），靠软约束 + 设�
     expect(box.ov.tools.length).toBeGreaterThan(5);
     const tail = String(box.msgs[box.msgs.length - 1].content);
     expect(tail).toContain('【本轮：设计轮');
-    expect(tail).toContain('最多提交一轮工具');
+    expect(tail).toContain('写入类调用');                    // 2026-10-11：额度只算写入
+    expect(tail).toContain('最多提交一轮');
+    expect(tail).toContain('draw_image');                    // 生图/看图明确豁免（不再"最多一轮工具"一刀切）
     expect(tail).not.toContain('没有任何工具可用'); // 旧文案：谎称没工具
     expect(box.msgs.filter((m: any) => m.role === 'assistant' && m.tool_calls).length).toBe(0);
   });
@@ -728,7 +788,7 @@ describe('长按选择：自绘选区（不碰原生选择）', () => {
     c.messages = [{ role: 'assistant', content: '她说：器材室门口。然后就走了。' }];
   }
 
-  it('阈值 800ms：550ms 不触发、800ms 进入自绘选区（且不创建原生选区）', async () => {
+  it('长按阈值 500ms（与安卓/Chrome 原生长按一致）：400ms 不触发、500ms 进入自绘选区（且不创建原生选区）', async () => {
     vi.useFakeTimers();
     try {
       const c = Cw();
@@ -738,12 +798,59 @@ describe('长按选择：自绘选区（不碰原生选择）', () => {
       (globalThis as any).window = { getSelection: getSel, innerWidth: 360, innerHeight: 640 };
       c._beginSelect = (i: any, x: any, y: any) => { begun = { i: i, x: x, y: y }; };
       c.msgPressStart({ clientX: 10, clientY: 20, target: { closest: () => null } }, 0);
-      vi.advanceTimersByTime(550);
-      expect(begun, '550ms 不该触发').toBe(null);
-      vi.advanceTimersByTime(250);
+      vi.advanceTimersByTime(400);
+      expect(begun, '400ms 不该触发').toBe(null);
+      vi.advanceTimersByTime(100);
       expect(begun).toEqual({ i: 0, x: 10, y: 20 });
       expect(getSel, '不创建原生选区（系统菜单就无从出现）').not.toHaveBeenCalled();
     } finally { vi.useRealTimers(); }
+  });
+
+  it('位移容差 18px：按住时轻微移动（14px）仍触发长按；明显滑动（20px）取消', async () => {
+    vi.useFakeTimers();
+    try {
+      const c = Cw();
+      prime(c);
+      let begun: any = null;
+      c._beginSelect = (i: any) => { begun = i; };
+      // 轻微移动不判废
+      c.msgPressStart({ clientX: 10, clientY: 20, target: { closest: () => null } }, 0);
+      c.msgPressMove({ clientX: 24, clientY: 20 });      // 14px
+      vi.advanceTimersByTime(500);
+      expect(begun, '14px 移动不该取消长按').toBe(0);
+      // 明显滑动取消
+      begun = null;
+      c.msgPressStart({ clientX: 10, clientY: 20, target: { closest: () => null } }, 0);
+      c.msgPressMove({ clientX: 31, clientY: 20 });      // 21px
+      vi.advanceTimersByTime(500);
+      expect(begun, '21px 移动应取消长按').toBe(null);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('坐标换算失败（_offsetAt 返回 -1）→ 长按选中整条（不再退化成"从第 0 字开始选一句"）', async () => {
+    const c = Cw();
+    prime(c);
+    c._offsetAt = () => -1;
+    c._beginSelect(0, 0, 0);
+    expect(c._selText).toBe('她说：器材室门口。然后就走了。');
+    expect(c._selDrag.all).toBe(true);
+  });
+
+  it('「删除」二次确认：确认前不删，回调后才删这一轮', async () => {
+    const c = Cw();
+    prime(c);
+    c._selIdx = 0;
+    c.clearSelection = () => { /* 不碰 DOM */ };
+    let asked = ''; let cb: any = null; let deleted: any = null;
+    (globalThis as any).UIManager = { showConfirm: (m: string, f: () => void) => { asked = m; cb = f; } };
+    c.deleteRound = (i: any) => { deleted = i; };
+    try {
+      c.selBarAction('del');
+      expect(asked).toContain('删除这一轮');
+      expect(deleted, '确认前不能删').toBe(null);
+      cb();
+      expect(deleted).toBe(0);
+    } finally { delete (globalThis as any).UIManager; }
   });
 
   it('长按不动选中手指下那一句；按住拖动按字扩选（含区间反转）', async () => {

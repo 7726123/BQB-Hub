@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
-import { HotBundle, manualResultText } from '../src/domain/hotbundle';
+import { HotBundle, manualResultText, humanizeInstallError } from '../src/domain/hotbundle';
 import { offerHotApply } from '../src/domain/update';
 import { ClientLog } from '../src/domain/clientlog';
 import { formatVersion, getWebVersion, setWebVersion } from '../src/lib/webver';
@@ -203,6 +203,37 @@ describe('检查与安装', () => {
     expect(toasts).toEqual([]);                 // 本模块不提示，避免与调用方重复弹两条
     expect(seen).toEqual([{ installed: false }]); // 无 installed / 无 reason = 没有更新的包
     expect(notes).toEqual([]);
+  });
+
+  // 2026-10-11/12 线上各出现一次「安装失败：包校验失败：不比当前版本新（161035 ≤ 164002）」：
+  // 系统版偶发在 systemKey 还没就绪时请求，服务端按设计回落到**正式渠道**清单（code 161035），
+  // 客户端把这个更旧的包当真去装 → 原生拒绝 + 白发一次下载。现在按 code 先挡在下载之前。
+  test('清单的 code 不比当前跑的更新 → 既不下载也不安装（也不报"更新失败"）', async () => {
+    stateReply = { active: '1.6.1.2', pending: '', code: 164002, blocked: '', nativeCode: 164 };
+    HotBundle.init();
+    await flush();
+    stubFetch({ v: '1.5.100.35', payload: 'cGF5bG9hZA==', sig: 'c2ln', code: 161035 });
+    const seen: { installed?: boolean; reason?: string }[] = [];
+    HotBundle.check(true, (r) => seen.push(r));
+    await flush();
+    expect(calls.install.length).toBe(0);      // 不再白发一次下载/安装
+    expect(toasts).toEqual([]);                // 也不算"更新失败"
+    expect(seen).toEqual([{ installed: false }]);   // 就是"没有更新的包"
+  });
+
+  // 老 APK（versionCode 162）遇到 minNative 164 的包：别下载（原生 install 必拒），照旧走整包更新提示。
+  test('清单 minNative 高于本机 APK → 连下载都不发起，只留一条诊断', async () => {
+    stateReply = { active: '1.5.100.35', pending: '', code: 161035, blocked: '', nativeCode: 162 };
+    HotBundle.init();
+    await flush();
+    stubFetch({ v: '1.6.1.1', payload: 'cGF5bG9hZA==', sig: 'c2ln', code: 164001, minNative: 164 });
+    const seen2: { installed?: boolean; reason?: string }[] = [];
+    HotBundle.check(true, (r) => seen2.push(r));
+    await flush();
+    expect(calls.install.length).toBe(0);
+    expect(toasts).toEqual([]);
+    expect(notes.join('\n')).toContain('需要更新的 APK');
+    expect(seen2).toEqual([{ installed: false }]);
   });
 
   test('静默模式（启动时的检查）不发 toast，只在失败时留诊断', async () => {
@@ -1144,5 +1175,23 @@ describe('系统版：内测渠道与运行期判定', () => {
     expect(seen[0].url).toContain('channel=beta');
     expect(seen[0].headers && seen[0].headers['X-System-Key']).toBe('k-sys-1');
     expect(seen[0].headers && seen[0].headers['X-Install-Id']).toMatch(/^[0-9a-f]{32}$/);
+  });
+});
+
+// 2026-10-11 用户报「检查更新报更新失败，版本不匹配」：热包打了 minNative 163、手机上还是 162 的 APK，
+// 原生拒绝的原话用户看不懂。这里锁住"这两种原生拒绝要翻成人话"，判定仍归原生。
+describe('原生安装失败的原话 → 人话（只改显示）', () => {
+  test('需要更新的 APK → 明确告诉用户去装新版安装包', () => {
+    const out = humanizeInstallError('此包需要更新的 APK（163 > 162）');
+    expect(out).toContain('请先安装新版安装包');
+    expect(out).toContain('163 > 162');
+    expect(out).not.toContain('此包需要更新的 APK');
+  });
+  test('不比当前版本新 → 说明无需重复安装（正常状态，不当故障）', () => {
+    expect(humanizeInstallError('不比当前版本新（164001 ≤ 164001）')).toBe('当前已包含这个网页包，无需重复安装');
+  });
+  test('其它错误原样透出（签名/网络等真故障不能被美化掉）', () => {
+    expect(humanizeInstallError('签名校验失败')).toBe('签名校验失败');
+    expect(humanizeInstallError('')).toBe('');
   });
 });

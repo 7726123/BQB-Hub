@@ -342,7 +342,8 @@ public final class WbSearch {
             Map<String, Object> meta = parseMeta(Validators.str(row.get("meta")));
             double s = cand.getOrDefault(((Number) row.get("id")).longValue(), 0.0);
             s += Math.log10(1 + Validators.num(row.get("downloads"), 0)) * 0.12;
-            s += (Validators.num(row.get("created_at"), 0) / 1.7e12) * 0.15;
+            // created_at 是毫秒时间戳：用 num() 会被截断成 1970 → 这项权重恒等于 0（"新卡排前面"失效）
+            s += (Validators.numLong(row.get("created_at"), 0L) / 1.7e12) * 0.15;
             if (meta != null && !Validators.str(meta.get("audience")).isEmpty()) s += 0.05;
             if (!Validators.str(facets.get("audience")).isEmpty()
                     && meta != null && Validators.str(facets.get("audience")).equals(Validators.str(meta.get("audience")))) s += 0.25;

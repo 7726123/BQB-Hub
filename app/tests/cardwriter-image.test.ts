@@ -730,3 +730,86 @@ describe('图片本地存档：重开后水合 + 清空讨论删库', () => {
     expect(C._imgSeq).toBe(0);
   });
 });
+
+// ============ 2026-10-11 用户报的回归：设计轮里"先查头像 → 再画"第二步被 App 拦掉 ============
+// 症状：AI 声明"画好了"，但图根本没生成（用户：之前同一个模型不会，更像是工具调用之后的问题）。
+// 真因：写卡把"给林晚画一张头像"这类请求判成**设计轮**，而设计轮的硬保险是"最多一轮工具提交"——
+// 上一步 list_avatars 已经用掉额度，第二步 draw_image 就被拒（ok:false「本次调用未执行」），
+// 图从来没提交给主机。现在：写入类才占额度（生图/看图/头像/只读豁免）。
+describe('设计轮里出图不被写入额度拦掉（用户报的"说画好了却没跑"）', () => {
+  it('设计轮 + 两轮流程（list_avatars → draw_image）：draw 真的执行、图挂进气泡', async () => {
+    const anyG2 = globalThis as unknown as Record<string, any>;
+    const prevDoc = anyG2.document, prevApp = anyG2.App, prevApi = anyG2.APIHandler, prevSM = anyG2.StorageManager;
+    anyG2.StorageManager = { get: (_k: string, d: any) => d, set: () => undefined, remove: () => undefined };
+    const els = new Map<string, any>();
+    const el0 = (): any => ({
+      value: '', innerHTML: '', textContent: '', style: {}, checked: false,
+      classList: { add: () => undefined, remove: () => undefined, toggle: () => undefined, contains: () => false },
+      addEventListener: () => undefined, removeEventListener: () => undefined,
+      querySelector: () => null, querySelectorAll: () => [], appendChild: () => undefined,
+      closest: () => null, getAttribute: () => null, setAttribute: () => undefined,
+      scrollHeight: 0, scrollTop: 0, clientHeight: 0, offsetWidth: 100, offsetHeight: 30,
+      getBoundingClientRect: () => ({ left: 0, top: 0, right: 300, bottom: 100, width: 300, height: 100 })
+    });
+    anyG2.document = {
+      getElementById: (id: string) => { if (!els.has(id)) els.set(id, el0()); return els.get(id); },
+      createElement: () => el0(), addEventListener: () => undefined, removeEventListener: () => undefined,
+      querySelector: () => null, querySelectorAll: () => [], body: el0(), documentElement: el0(), visibilityState: 'visible'
+    };
+    anyG2.App = { toast: () => undefined, thinkingLevel: () => 'auto', resetChatInput: () => undefined };
+    const toolsPerRound: string[][] = [];
+    const seen: any[] = [];
+    let i = 0;
+    const script: any[] = [
+      { tools: [{ id: 'c1', name: 'list_avatars', arguments: {} }] },                       // 第一步：查头像
+      { tools: [{ id: 'c2', name: 'draw_image', arguments: { prompt: 'a girl' } }] },       // 第二步：画
+      { text: '画好了' }
+    ];
+    anyG2.APIHandler = {
+      abort: () => undefined,
+      fetchCompletions: (msgs: any, onChunk: any, onDone: any, _err: any, ov: any) => {
+        seen.push(msgs);
+        toolsPerRound.push(((ov && ov.tools) || []).map((t: any) => t.function.name));
+        const step = script[Math.min(i, script.length - 1)]; i++;
+        if (step.tools) {
+          if (ov && ov.onToolCallStart) ov.onToolCallStart();
+          if (ov && ov.onTools) ov.onTools(step.tools);
+        } else {
+          onChunk(step.text); onDone(step.text, false, '');
+        }
+        return Promise.resolve();
+      }
+    };
+    try {
+      C.messages = [];
+      C.renderMessages = () => undefined;
+      C._save = () => undefined;
+      C._saveDraft = () => undefined;
+      C.renderDraft = () => undefined;
+      C._getTargetId = () => 'wb1';
+      (anyG2.document.getElementById('cardwriterInput') as any).value = '给林晚画一张头像';
+      C.sendMessage();
+      for (let k = 0; k < 20; k++) await new Promise((r) => setTimeout(r, 0));
+      expect(C._designTurn).toBe(true);                       // 这句话本来就是设计轮（触发条件）
+      expect(toolsPerRound[1]).toContain('draw_image');        // 第二轮请求里工具确实挂着
+      expect(ih.drawCalls.length).toBe(1);                     // ★ 出图真的执行了（修复前这里是 0）
+      const last = C.messages[C.messages.length - 1];
+      expect(last.imageIds).toEqual(['img1']);                 // 图挂进了气泡
+      expect(C._imagesHtml(last)).toContain('<img');           // 渲染得出缩略图
+      // 模型收到的是成功回执（带 image_id）——它能理直气壮地说"画好了"
+      const drawResult = (seen[2] || []).filter((m: any) => m.role === 'tool').map((m: any) => String(m.content)).join('|');
+      expect(drawResult).toContain('"image_id":"img1"');
+      expect(drawResult).toContain('图片已生成并显示给用户');
+    } finally {
+      anyG2.document = prevDoc; anyG2.App = prevApp; anyG2.APIHandler = prevApi; anyG2.StorageManager = prevSM;
+    }
+  });
+
+  it('生图规则补了"没 ok:true 不许说画好了"（防模型嘴上补成功）', () => {
+    C._drawToolsOn = true;
+    C._hostStatus = { at: Date.now(), ok: true, model: 'anima', hint: 'tag', caps: ['img2img'] };
+    const rule = String(C._imageRuleMessage());
+    expect(rule).toContain('没真的收到 draw_image 的 {"ok":true} 结果');
+    expect(rule).toContain('不许说「画好了 / 图已生成」');
+  });
+});

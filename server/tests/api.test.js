@@ -213,10 +213,20 @@ test('客户端错误上报：查看需 admin key（未带 403 / 正确 200 且�
   const wrong = await req('GET', '/api/client-logs');
   assert.equal(wrong.status, 403);
 
+  // 时间戳自检条目（自包含；ts 给一个明显更大的值，保证它排在最前）
+  const _t1 = Date.now() + 5000;
+  const w = await req('POST', '/api/client-logs', { body: { logs: [{ t: _t1, k: '时间戳自检', m: 'ts round-trip ' + _t1 }] } });
+  assert.equal(w.status, 200);
+
   const r = await fetch(baseUrl + '/api/client-logs?limit=10', { headers: { 'x-admin-key': 'test-admin-key' } });
   assert.equal(r.status, 200);
   const j = await r.json();
   assert.ok(Array.isArray(j.logs) && j.logs.length >= 2);
-  assert.equal(j.logs[0].kind, '写卡发送'); // 按 ts DESC，最近写入在前
+  assert.equal(j.logs[0].kind, '时间戳自检'); // 按 ts DESC，最近写入在前
   assert.ok(typeof j.logs[0].msg === 'string' && j.logs[0].msg.length > 0);
+  // 时间戳必须**原样**存进去（毫秒级、约 1.79e12）：换 Java 后曾用 int 承接被截断成 1970 年
+  // （1791740506926 → 739144494），于是新日志在查询里排到最旧、还被保留策略当过期删掉；
+  // 只断言"顺序对"抓不住它（同批被截断后相对顺序仍然单调），所以这里直接断言数值。
+  assert.ok(Math.abs(Number(j.logs[0].ts) - _t1) < 60_000, 'ts 应原样保存（毫秒），实际 ' + j.logs[0].ts);
+  assert.ok(Number(j.logs[0].ts) > 1_000_000_000_000, 'ts 不该被截断成 32 位：' + j.logs[0].ts);
 });

@@ -251,11 +251,14 @@ label{font-size:13px;color:var(--text-secondary);display:block;margin-bottom:4px
 #writingInput,#chatInput,#realInput{flex:1;background:var(--bg-tertiary);color:var(--text);border:1px solid var(--border);border-radius:14px;padding:11px 14px;font-size:16px;font-family:inherit;line-height:1.5;resize:none;min-height:44px;max-height:calc(5 * 1.5em + 22px);outline:none;box-shadow:inset 0 1px 2px rgba(0,0,0,0.03);transition:all .2s;overflow-y:auto}
 #writingInput:focus,#chatInput:focus,#realInput:focus{background:var(--bg-secondary);border-color:var(--primary);box-shadow:0 0 0 3px var(--primary-light)}
 #writingInput::placeholder,#chatInput::placeholder,#realInput::placeholder{color:var(--text-muted)}
-#writingSendBtn,#writing-input-bar #btnStop,#writing-input-bar #btnUndo,#chatSendBtn,#chat-input-bar #chatStopBtn,#chat-input-bar #chatUndoBtn,#realSendBtn,#real-input-bar #realStopBtn,#real-input-bar #realUndoBtn{width:44px;height:44px;border-radius:12px;border:none;cursor:pointer;flex-shrink:0;display:flex;align-items:center;justify-content:center;transition:all .2s}
+#writingSendBtn,#writing-input-bar #btnUndo,#chatSendBtn,#chat-input-bar #chatUndoBtn,#realSendBtn,#real-input-bar #realUndoBtn{width:44px;height:44px;border-radius:12px;border:none;cursor:pointer;flex-shrink:0;display:flex;align-items:center;justify-content:center;transition:all .2s}
 #writingSendBtn,#chatSendBtn,#realSendBtn{background:var(--primary);color:#fff;box-shadow:0 2px 6px rgba(59,111,224,0.3)}
 #writingSendBtn:hover,#chatSendBtn:hover,#realSendBtn:hover{background:var(--primary-hover);transform:translateY(-1px);box-shadow:0 4px 10px rgba(59,111,224,0.35)}
 #writingSendBtn:active,#chatSendBtn:active,#realSendBtn:active{transform:translateY(0) scale(0.97)}
-#writing-input-bar #btnStop,#chat-input-bar #chatStopBtn,#real-input-bar #realStopBtn{background:#ef4444;color:#fff}
+/* 生成中：发送键**自己**变成停止键（同一颗按钮、同一个位置，图标 ⏹、红色）——三个模式一致。
+   以前是旁边多一颗独立红色 ✕ 停止键（写作页那颗在发送键左侧），点下去之后按钮常驻、状态不好恢复。 */
+#writingSendBtn.is-stop,#chatSendBtn.is-stop,#realSendBtn.is-stop{background:#ef4444;color:#fff}
+#writingSendBtn.is-stop:hover,#chatSendBtn.is-stop:hover,#realSendBtn.is-stop:hover{background:#dc2626;box-shadow:0 4px 10px rgba(239,68,68,.35)}
 #writing-input-bar #btnUndo,#chat-input-bar #chatUndoBtn,#real-input-bar #realUndoBtn{background:var(--bg-tertiary);color:var(--text-secondary)}
 #writing-input-bar #btnUndo:hover,#chat-input-bar #chatUndoBtn:hover,#real-input-bar #realUndoBtn:hover{background:var(--primary-light);color:var(--primary)}
 
@@ -1357,9 +1360,6 @@ label{font-size:13px;color:var(--text-secondary);display:block;margin-bottom:4px
         <div id="writing-input-row">
           <button id="btnUndo" onclick="App.undoLastGeneration()" title="撤回上一次续写" style="font-size:22px;">↩</button>
           <textarea id="writingInput" rows="1" placeholder="输入续写指示…（留空直接发送=自动续写）"></textarea>
-          <button id="btnStop" style="display:none;" onclick="App.stopGeneration()" title="停止生成">
-            <svg class="ic-20" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
-          </button>
           <button id="writingSendBtn" onclick="App.sendFromWritingInput()" title="发送">
             <svg class="ic-20 rot-90" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"></path></svg>
           </button>
@@ -1451,7 +1451,7 @@ label{font-size:13px;color:var(--text-secondary);display:block;margin-bottom:4px
                 </svg>
               </button>
             </div>
-            <!-- 底部输入条：与写作页同款（↩ 撤回在输入行左侧 / 输入框 / 红色停止 / 蓝色发送图标） -->
+            <!-- 底部输入条：与写作页同款（↩ 撤回在输入行左侧 / 输入框 / 发送键＝蓝色发送图标，生成中同一颗键变红色 ⏹ 停止） -->
             <div class="chat-input-area" id="chat-input-bar">
               <div class="var-strip">
                 <button id="chatVarToggleBtn" class="var-chev" onclick="UIManager.openVariablesPage()" title="查看当前变量（世界书「变量」条目，模型每轮回报）">
@@ -1462,9 +1462,6 @@ label{font-size:13px;color:var(--text-secondary);display:block;margin-bottom:4px
               <div id="chatInputRow">
                 <button id="chatUndoBtn" onclick="ChatMode.undoLast()" title="撤回上一轮演出（输入框里会留下这轮写的要求）" style="font-size:22px;">↩</button>
                 <textarea id="chatInput" rows="1" placeholder="写点要求，或直接发一句「我」的话（留空 = 接着往下演）" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();ChatMode.send()}"></textarea>
-                <button id="chatStopBtn" style="display:none;" onclick="ChatMode.stop()" title="停止生成">
-                  <svg class="ic-20" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
-                </button>
                 <button id="chatSendBtn" onclick="ChatMode.send()" title="发送">
                   <svg class="ic-20 rot-90" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"></path></svg>
                 </button>
@@ -1482,7 +1479,7 @@ label{font-size:13px;color:var(--text-secondary);display:block;margin-bottom:4px
             <button id="realClearBtn" class="ghost-btn danger" onclick="RealMode.clearAll()" title="清空这本书的真实模式记录与场景（参演名单和扮演的角色保留；世界书不动）">清空</button>
           </div>
           <div id="realStream"></div>
-          <!-- 底部输入条：与对话模式同款（左撤回 / 输入框 / 停止 / 发送；空输入时发送按钮显示「▶ 继续」） -->
+          <!-- 底部输入条：与对话模式同款（左撤回 / 输入框 / 发送键；空输入时显示「▶ 继续」，生成中同一颗键变红色 ⏹ 停止） -->
           <div class="chat-input-area" id="real-input-bar">
             <div class="var-strip">
               <div id="realStatus" style="font-size:13px;color:var(--text-secondary);min-height:18px;margin-bottom:4px;"></div>
@@ -1497,9 +1494,6 @@ label{font-size:13px;color:var(--text-secondary);display:block;margin-bottom:4px
             <div id="realInputRow">
               <button id="realUndoBtn" onclick="RealMode.undoLast()" title="撤回上一轮（输入框里会留下这轮写的内容）" style="font-size:22px;">↩</button>
               <textarea id="realInput" rows="1" placeholder="（动作）和台词一起写；留空发送＝让剧情自己走；选「上帝模式」时写的是客观推进" oninput="RealMode.refreshSendLabel()" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();RealMode.send()}"></textarea>
-              <button id="realStopBtn" style="display:none;" onclick="RealMode.stop()" title="停止生成">
-                <svg class="ic-20" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
-              </button>
               <button id="realSendBtn" onclick="RealMode.send()" title="发送">
                 <svg class="ic-20 rot-90" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"></path></svg>
               </button>
@@ -2187,7 +2181,7 @@ body[data-theme="dark"] #bootSplash .bs-glyph-path{fill:#f2dcae}
     <button type="button" class="bs-skip" id="bootSplashSkip">稍后</button>
   </div>
 </div>
-<script id="bootMain" data-src="modules/main.js?v=1696716512-162"></script>
+<script id="bootMain" data-src="modules/main.js?v=2938076115-164"></script>
 <script>
 (function () {
   var el = document.getElementById('bootSplash');

@@ -40,6 +40,23 @@ export interface HotBundleInstallResult { ok?: boolean; version?: string; code?:
 /** 一次检查的结论：installed=装了新包；ready=装好了等重启；reason=失败原因；都无 = 没有更新的包。 */
 export interface HotBundleResult { installed?: boolean; ready?: boolean; version?: string; reason?: string }
 
+/**
+ * 原生安装失败的原话 → 用户能看懂、能行动的说法（2026-10-11 用户报"检查更新报更新失败，版本不匹配"）：
+ * 那次是热包打了 `minNative 163`、而手机上还是 162 的 APK —— 原生判定本身是对的（防老 APK 装新 JS），
+ * 但原话「此包需要更新的 APK（163 > 162）」等于没说清"该干什么"。这里两条映射只改**显示**，
+ * 判定仍在原生（签名 / payload 一个字都没动）。
+ */
+export function humanizeInstallError(msg: string): string {
+  const m = String(msg || '');
+  if (/需要更新的 APK/.test(m)) {
+    return '这个网页包要求更新的 App——请先安装新版安装包（' + m.replace(/^[\s\S]*?需要更新的 APK/, '要求') + '）';
+  }
+  if (/不比当前版本新/.test(m)) {
+    return '当前已包含这个网页包，无需重复安装';
+  }
+  return m;
+}
+
 interface HotBundlePlugin {
   getState?: () => Promise<HotBundleState>;
   confirm?: (o: { version: string }) => Promise<{ ok: boolean }>;  install?: (o: { serverBase: string; payload: string; sig: string }) => Promise<HotBundleInstallResult>;
@@ -371,6 +388,28 @@ export const HotBundle = {
           finish({ installed: false });                            // 正在跑的就是最新
           return;
         }
+        // 清单的 code 不比当前跑的更新 → 当"没有更新"，连下载都不发起。
+        // 为什么需要这条（2026-10-11/12 线上各出现一次）：系统版偶尔会在 systemKey 还没就绪时请求，
+        // 服务端按设计**回落到正式渠道**清单（code 161035），App 就把这个更旧的包当真去装，
+        // 原生 install 以「不比当前版本新（161035 ≤ 164002）」拒绝 → 用户日志里多一条"安装失败"，
+        // 还白发一次下载。code 是清单里**未签名**的字段，这里只用来决定"跳不跳"，
+        // 装不装仍由原生按签名后的 payload 决定（与上面 v===active 的预处理同一个口径）。
+        const _serverCode = Number((j as { code?: unknown }).code) || 0;
+        const _runningCode = Number(st.code) || 0;
+        if (_serverCode && _runningCode && _serverCode <= _runningCode) {
+          finish({ installed: false });
+          return;
+        }
+        // 这个包要求更新的 APK（minNative > 本机 versionCode）→ 直接别下：原生 install 会以
+        // 「此包需要更新的 APK」拒绝，白发一次几百 KB 下载（每个老 APK 用户每次启动都要发一次）。
+        // 老用户该走的是整包更新提示（/api/app/version），这里连下载都不发起。
+        const _minNative = Number((j as { minNative?: unknown }).minNative) || 0;
+        const _nativeCode = Number(st.nativeCode) || 0;
+        if (_minNative && _nativeCode && _minNative > _nativeCode) {
+          ClientLog.note('热更新', '网页包 ' + v + ' 需要更新的 APK（' + _minNative + ' > ' + _nativeCode + '），跳过下载');
+          finish({ installed: false });
+          return;
+        }
         enterBootWait();
         BootSplash.text('正在同步最新版本…');
         // 安装本身（含"装好了记账"）与预算解耦：超时/稍后只是不再等，包装好后自己找机会生效
@@ -387,8 +426,9 @@ export const HotBundle = {
             if (!document.hidden && !boot && !manual) { try { HotBundle._offerApplyForeground(got); } catch (e) { /* 忽略 */ } }
             return { ok: true, version: got, msg: '' };
           }, function (err) {
-            const msg = String((err && (err as Error).message) || err || '未知错误');
-            ClientLog.note('热更新', '安装失败：' + msg);
+            const raw = String((err && (err as Error).message) || err || '未知错误');
+            const msg = humanizeInstallError(raw);
+            ClientLog.note('热更新', '安装失败：' + raw);
             return { ok: false, version: v, msg: msg };
           });
         const timeoutP = new Promise<string>(function (resolve) {
