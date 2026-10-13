@@ -104,10 +104,12 @@ class FeedbackServiceTest {
     void 裁剪_先删最旧的已查看_不够再动未查看() {
         long now = System.currentTimeMillis();
         // 库里有 1005 条：最旧的 3 条是已查看，其余未查看；再提交 1 条 → 超 6 条要裁
+        // 用批量插入（逐条 update 会让每条各成一个事务，这一步原本要 20 秒）
+        List<Object[]> batch = new java.util.ArrayList<>();
         for (int i = 0; i < 1005; i++) {
-            jdbc.update("INSERT INTO feedback (text, install_id, version, platform, created_at, read_at) VALUES (?, ?, '', '', ?, ?)",
-                    "旧" + i, installId(9), now - 10_000_000L + i, i < 3 ? 1L : null);
+            batch.add(new Object[]{"旧" + i, installId(9), now - 10_000_000L + i, i < 3 ? 1L : null});
         }
+        jdbc.batchUpdate("INSERT INTO feedback (text, install_id, version, platform, created_at, read_at) VALUES (?, ?, '', '', ?, ?)", batch);
         limiters.fbDevice.clear();
         limiters.fbIp.clear();
         svc.submit(body("新反馈", installId(10)), "5.5.5.5");
