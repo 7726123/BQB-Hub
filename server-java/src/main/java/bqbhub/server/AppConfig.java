@@ -9,6 +9,7 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 /**
  * 配置中心：环境变量 + 本地 config.json（对应 server/src/config.js）。
@@ -63,21 +64,29 @@ public class AppConfig {
     }
 
     public AppConfig() {
-        Path serverRoot = Paths.get("").toAbsolutePath();
-        this.port = intEnv("PORT", 8899);
-        this.dataDir = pathEnv("DATA_DIR", serverRoot.resolve("data"));
-        this.uploadDir = pathEnv("UPLOAD_DIR", serverRoot.resolve("uploads"));
-        this.apkDir = pathEnv("APK_DIR", serverRoot.resolve("apk"));
-        this.appVersionFile = pathEnv("APP_VERSION_FILE", serverRoot.resolve("app-version.json"));
-        this.webBundleDir = pathEnv("WEB_BUNDLE_DIR", serverRoot.resolve("web-bundles"));
-        this.configFile = pathEnv("CONFIG_FILE", serverRoot.resolve("config.json"));
-        this.tlsPort = intEnv("TLS_PORT", 80);
-        this.tlsCertFile = pathEnv("TLS_CERT_FILE", serverRoot.resolve("certs/server.crt"));
-        this.tlsKeyFile = pathEnv("TLS_KEY_FILE", serverRoot.resolve("certs/server.key"));
+        this(System.getenv());
+    }
 
-        String adminKey = env("ADMIN_KEY", "");
-        String adminPasswordHash = env("ADMIN_PW_HASH", "");
-        String systemKey = env("SYSTEM_KEY", "");
+    /**
+     * 环境变量从传入的 map 读（测试用：JUnit 里改不了进程环境，见 AppConfigTest / MediaTest）。
+     * Spring 有多个构造器时用**默认（无参）构造器**，所以注解与依赖注入行为不变。
+     */
+    AppConfig(Map<String, String> env) {
+        Path serverRoot = Paths.get("").toAbsolutePath();
+        this.port = intEnv(env, "PORT", 8899);
+        this.dataDir = pathEnv(env, "DATA_DIR", serverRoot.resolve("data"));
+        this.uploadDir = pathEnv(env, "UPLOAD_DIR", serverRoot.resolve("uploads"));
+        this.apkDir = pathEnv(env, "APK_DIR", serverRoot.resolve("apk"));
+        this.appVersionFile = pathEnv(env, "APP_VERSION_FILE", serverRoot.resolve("app-version.json"));
+        this.webBundleDir = pathEnv(env, "WEB_BUNDLE_DIR", serverRoot.resolve("web-bundles"));
+        this.configFile = pathEnv(env, "CONFIG_FILE", serverRoot.resolve("config.json"));
+        this.tlsPort = intEnv(env, "TLS_PORT", 80);
+        this.tlsCertFile = pathEnv(env, "TLS_CERT_FILE", serverRoot.resolve("certs/server.crt"));
+        this.tlsKeyFile = pathEnv(env, "TLS_KEY_FILE", serverRoot.resolve("certs/server.key"));
+
+        String adminKey = env(env, "ADMIN_KEY", "");
+        String adminPasswordHash = env(env, "ADMIN_PW_HASH", "");
+        String systemKey = env(env, "SYSTEM_KEY", "");
         List<String> systemInstallIds = List.of();
         boolean regionBlock = false;
         Smtp smtp = new Smtp("", 465, true, "", "", "");
@@ -128,22 +137,23 @@ public class AppConfig {
         this.smtp = smtp;
     }
 
-    private static String env(String k, String dflt) {
-        String v = System.getenv(k);
+    private static String env(Map<String, String> env, String k, String dflt) {
+        String v = env.get(k);
         return (v == null || v.isEmpty()) ? dflt : v;
     }
 
-    private static int intEnv(String k, int dflt) {
+    private static int intEnv(Map<String, String> env, String k, int dflt) {
+        String v = env.get(k);
+        if (v == null || v.isEmpty()) return dflt;
         try {
-            String v = System.getenv(k);
-            return (v == null || v.isEmpty()) ? dflt : Integer.parseInt(v.trim());
+            return Integer.parseInt(v.trim());
         } catch (NumberFormatException e) {
             return dflt;
         }
     }
 
-    private static Path pathEnv(String k, Path dflt) {
-        String v = System.getenv(k);
+    private static Path pathEnv(Map<String, String> env, String k, Path dflt) {
+        String v = env.get(k);
         return (v == null || v.isEmpty()) ? dflt : Paths.get(v);
     }
 
