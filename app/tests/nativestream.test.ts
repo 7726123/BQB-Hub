@@ -1,7 +1,7 @@
 // 原生流式通道（B）：lib/nativestream.ts 的包装语义 + 在 fetchCompletions 里的接线
 // ① 包装：2xx → 可读流（base64 → 字节，顺序不乱）；非 2xx → 状态 + 错误体；头前失败 → 抛错；取消 → close + AbortError
 // ② 接线：fetch 被 CORS 拦下时优先走 B（真流式）；B 不可用/失败 → 原样回退老的整段缓冲兜底
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { nativeStreamAvailable, nativeStreamFetch, b64ToBytes } from '../src/lib/nativestream';
 import { APIHandler } from '../src/domain/api';
 
@@ -113,10 +113,25 @@ describe('nativestream：一次请求的包装语义', () => {
 });
 
 describe('接线：fetch 被 CORS 拦下时优先走原生流式（B）', () => {
+  // 这一组会走 api.ts 的直连重试退避（1.5s + 3s）：用**假定时器**把时钟推进走，
+  // 测试不再真等 4.5 秒——走的是同一条代码路径，不是把等待删掉。
+  let store: Record<string, any>;
+  const savedProfiles = () => Object.values(store).filter((v: any) => v && typeof v === 'object');
   beforeEach(() => {
+    vi.useFakeTimers();
+    store = {};
+    anyG.StorageManager = { get: (k: string, d: any) => (k in store ? store[k] : d), set: (k: string, v: any) => { store[k] = v; } };
     anyG.fetch = async () => { throw new TypeError('Failed to fetch'); };
     anyG.Capacitor = { isNativePlatform: () => true, Plugins: {} };
+    delete (anyG as any).__PROXY_PORT__;
   });
+  afterEach(() => { vi.useRealTimers(); });
+
+  /** 跑一次请求，并把假时钟推过所有退避/节流定时器（30s 足够覆盖 1.5s+3s 与 25ms 分帧节流） */
+  async function drive<T>(p: Promise<T>): Promise<T> {
+    await vi.advanceTimersByTimeAsync(30000);
+    return p;
+  }
 
   it('B 可用 → 走它解析 SSE（正文 + 思维链都能到），不再走整段缓冲', async () => {
     const sse = [
@@ -131,19 +146,21 @@ describe('接线：fetch 被 CORS 拦下时优先走原生流式（B）', () => 
     (anyG as any).Capacitor.Plugins.NativeStream = api;
 
     let chunks = '', done: string | null = null, reasoning = '';
-    await APIHandler.fetchCompletions(
+    await drive(APIHandler.fetchCompletions(
       [{ role: 'user', content: 'yo' }],
       (c: string) => { chunks += c; },
       (full: string | null, _aborted: boolean, r?: string) => { done = full; reasoning = String(r || ''); },
       (e: any) => { throw new Error('不应走 onError: ' + e); },
       { apiConfig: CFG, timeout: 0, idleTimeout: 0 }
-    );
+    ));
     expect(done).toContain('正文一');
     expect(done).toContain('正文二');
     expect(chunks).toContain('正文一');
     expect(reasoning).toContain('想一下');
     expect(bufHttp).toBe(0);                        // 没有落到"整段缓冲"那条老通道
     expect(state.opened).toBe(1);
+    // B 成功 → 记进端点档案（下一次就不用再白等直连重试了）
+    expect(savedProfiles().some((p: any) => p.fetchFails === true)).toBe(true);
   });
 
   it('B 拿不到头（拒绝）→ 自动回退整段缓冲兜底（老设备/老通道行为不变）', async () => {
@@ -154,12 +171,12 @@ describe('接线：fetch 被 CORS 拦下时优先走原生流式（B）', () => 
     (anyG as any).Capacitor.Plugins.NativeStream = api;
 
     let done: string | null = null;
-    await APIHandler.fetchCompletions(
+    await drive(APIHandler.fetchCompletions(
       [{ role: 'user', content: 'yo' }], () => {},
       (full: string | null) => { done = full; },
       (e: any) => { throw new Error('不应走 onError: ' + e); },
       { apiConfig: CFG, timeout: 0, idleTimeout: 0 }
-    );
+    ));
     expect(done).toContain('兜底正文');
   });
 
@@ -171,13 +188,80 @@ describe('接线：fetch 被 CORS 拦下时优先走原生流式（B）', () => 
     (anyG as any).Capacitor.Plugins.NativeStream = api;
 
     let errMsg = '';
-    await APIHandler.fetchCompletions(
+    await drive(APIHandler.fetchCompletions(
       [{ role: 'user', content: 'x' }], () => {}, () => {},
       (e: any) => { errMsg = String(e); },
       { apiConfig: CFG, timeout: 0, idleTimeout: 0 }
-    );
+    ));
     expect(errMsg).toContain('404');
     expect(errMsg).toContain('UnsupportedModel');
     expect(bufHttp).toBe(0);
+  });
+
+  // ---------- 档案学习：同一个端点只白等一次（2026-10-13）----------
+  const sseOne = ['data: {"choices":[{"delta":{"content":"一"}}]}\n\n', 'data: [DONE]\n\n'];
+
+  async function runOnce(): Promise<string> {
+    let done = '';
+    await drive(APIHandler.fetchCompletions(
+      [{ role: 'user', content: 'yo' }], () => {},
+      (f: string | null) => { done = String(f || ''); },
+      (e: any) => { throw new Error('不应走 onError: ' + e); },
+      { apiConfig: CFG, timeout: 0, idleTimeout: 0 }
+    ));
+    return done;
+  }
+
+  it('学过之后：第二次请求一次直连都不试，直接走 B（省掉 1.5s+3s）', async () => {
+    let fetchCalls = 0;
+    anyG.fetch = async () => { fetchCalls++; throw new TypeError('Failed to fetch'); };
+    (anyG as any).Capacitor.Plugins.CapacitorHttp = { request: async () => ({ status: 200, data: '' }) };
+    (anyG as any).Capacitor.Plugins.NativeStream = fakePlugin({ frames: sseOne }).api;
+
+    expect(await runOnce()).toContain('一');
+    expect(fetchCalls).toBe(3);                     // 第一次：直连重试 3 次（1 + 2 次重试）后走 B
+    expect(savedProfiles().some((p: any) => p.fetchFails === true)).toBe(true);
+
+    expect(await runOnce()).toContain('一');         // 第二次：档案命中
+    expect(fetchCalls).toBe(3);                     // 一次直连都没有再试
+  });
+
+  it('B 与缓冲兜底都不行 → 清掉档案标记（下次重新直连，能自愈）', async () => {
+    let fetchCalls = 0;
+    anyG.fetch = async () => { fetchCalls++; throw new TypeError('Failed to fetch'); };
+    (anyG as any).Capacitor.Plugins.CapacitorHttp = { request: async () => { throw new Error('native down'); } };
+    (anyG as any).Capacitor.Plugins.NativeStream = fakePlugin({ rejectOpen: 'boom' }).api;
+
+    // 第一次：直连失败 → B 失败 → 兜底失败 → 报网络错误，并把档案里那条"直连会被拦"清掉
+    let errMsg = '';
+    await drive(APIHandler.fetchCompletions(
+      [{ role: 'user', content: 'x' }], () => {}, () => {},
+      (e: any) => { errMsg = String(e); },
+      { apiConfig: CFG, timeout: 0, idleTimeout: 0 }
+    ));
+    expect(errMsg).toContain('网络错误');
+    expect(savedProfiles().some((p: any) => p.fetchFails === true)).toBe(false);
+
+    // 第二次：因为没有标记，仍然会重新尝试直连（fetchCalls 继续涨）
+    const before = fetchCalls;
+    await drive(APIHandler.fetchCompletions(
+      [{ role: 'user', content: 'x' }], () => {}, () => {},
+      () => {}, { apiConfig: CFG, timeout: 0, idleTimeout: 0 }
+    ));
+    expect(fetchCalls).toBeGreaterThan(before);
+  });
+
+  it('在用本地代理（__PROXY_PORT__）时不吃档案：fetch 仍然优先（代理的意义就是让直连成功）', async () => {
+    (anyG as any).__PROXY_PORT__ = 18899;
+    let fetchCalls = 0;
+    anyG.fetch = async () => { fetchCalls++; throw new TypeError('Failed to fetch'); };
+    (anyG as any).Capacitor.Plugins.CapacitorHttp = { request: async () => ({ status: 200, data: '' }) };
+    (anyG as any).Capacitor.Plugins.NativeStream = fakePlugin({ frames: sseOne }).api;
+
+    await runOnce();                                 // 第一次学上：fetchFails = true
+    expect(savedProfiles().some((p: any) => p.fetchFails === true)).toBe(true);
+
+    expect(await runOnce()).toContain('一');          // 第二次：有代理 → 不走捷径
+    expect(fetchCalls).toBeGreaterThan(3);
   });
 });
