@@ -68,10 +68,10 @@ public class AppConfig {
     }
 
     /**
-     * 环境变量从传入的 map 读（测试用：JUnit 里改不了进程环境，见 AppConfigTest / MediaTest）。
+     * 环境变量从传入的 map 读（测试/feature 包用：JUnit 里改不了进程环境，见 AppConfigTest / MediaTest）。
      * Spring 有多个构造器时用**默认（无参）构造器**，所以注解与依赖注入行为不变。
      */
-    AppConfig(Map<String, String> env) {
+    public AppConfig(Map<String, String> env) {
         Path serverRoot = Paths.get("").toAbsolutePath();
         this.port = intEnv(env, "PORT", 8899);
         this.dataDir = pathEnv(env, "DATA_DIR", serverRoot.resolve("data"));

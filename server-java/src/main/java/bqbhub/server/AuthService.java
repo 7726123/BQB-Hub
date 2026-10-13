@@ -36,7 +36,8 @@ public class AuthService {
         public final String username;
         public final String email;
 
-        User(long id, String username, String email) {
+        /** 公开构造：feature 包（service/测试）要构造它做入参 */
+        public User(long id, String username, String email) {
             this.id = id;
             this.username = username;
             this.email = email;
