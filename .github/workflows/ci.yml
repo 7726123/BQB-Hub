@@ -23,6 +23,40 @@ jobs:
       - run: npm test
         working-directory: server
 
+  # 线上跑的其实是 Java 版（server-java/，2026-10-10 切换上线），但此前 CI 从来不构建、
+  # 不测试它——只有 Node 版的 npm test 在跑。这里补上：构建 jar，再用同一套契约用例
+  # （server/tests/run-contract.js）对着 jar 跑一遍（黑盒：只经环境变量 + HTTP + SQLite）。
+  java-server:
+    name: Java 服务器构建 + 契约测试
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+          cache-dependency-path: server-java/pom.xml
+      # 仓库没有 mvnw → 用 runner 预装的 Maven。`package` 会跑 surefire（Java 单测在
+      # server-java/src/test）。pom 的 <finalName> 固定产物为 target/bqbhub-server-java.jar
+      # （不带版本号），下面的 CONTRACT_CMD 依赖这个路径。
+      - run: mvn -B package
+        working-directory: server-java
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+      - run: npm ci
+        working-directory: server
+      # CONTRACT_CMD 由 helpers.tokenize() 自己切词、不经 shell，相对路径按 server/ 解析；
+      # run-contract.js 会给子进程带 CONTRACT=1 与 --experimental-sqlite（Node 24 满足）。
+      # TLS 用例用 openssl 现签自签证书（runner 预装），端口按文件固定（15100+ / 16100+）。
+      - run: npm run test:contract
+        working-directory: server
+        env:
+          CONTRACT_CMD: java -jar ../server-java/target/bqbhub-server-java.jar
+
   web-build:
     name: Web 构建（Vite + TS 类型检查 + 前端单测）
     runs-on: ubuntu-latest

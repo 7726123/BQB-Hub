@@ -259,7 +259,7 @@ bash server/tools/scrypt-parity/run.sh    # Windows 直接跑 server\tools\scryp
   - 社区检索修复：单字/短词（「剑」「灰」）此前被丢弃导致"搜了没反应"，现在正常命中，无结果时明确提示。
   - 内容字段安全加固：封面/头像改为整串校验（`server/src/media.js`），客户端所有 `src` 插值改属性转义，修掉可构造的存储型 XSS。
 - 历史版本以各次 Release 说明为准（公开仓库的提交历史从开源当日起算）。质量护栏：前端 vitest 1617 例 + 服务端 node:test 111 例（含 UI 引用完整性、id 唯一性、酒馆卡导入真实存储路径回归、切后台超时与断线续跑（含退出/重载后续跑）、写卡批量工具与「主角占位符」保留语义、记忆数据库填表解析/写库与「只统计真实写入」回归、`**小标题**` 高亮渲染、网页包热更新（离线签名验签、篡改与路径穿越拒绝、从安装包资源补齐、回退与确认判定）、匿名使用统计（上报体字段白名单、安装标识复用、心跳与离线补报、统计页渲染与口径）、「反 AI 味」预设条目与老设备补装/一次性覆盖迁移（默认开启、注入管线约束、只补一次、删掉不加回、开关状态不被改动）、API 地址归一化（误粘接口后缀/Ollama 原生入口/查询串保留，且请求链路实测只拼一次路径）、已删除的隐形后台调用不得回归（场景状态注入/写库、变量自动更新）、面板可达性（每个 tab 都必须有导航入口）、比奇对话窗的高度拖拽与吸附/键盘模式（夹取上下限、吸附与解除、输入聚焦切满屏、失焦还原、开窗重置半屏）、意见反馈（300 字按码点校验、2 条/分钟与三条兜底限流、去重、超 1000 条优先清理已查看、未读流转与删除、只有 2xx 才感谢、渲染转义））。
-- **CI**（`.github/workflows/ci.yml`）：server-test / web-build / android-apk 三个 job。Android 产物用 runner 临时 debug 签名，与正式包不同，仅供冒烟测试；账号 Actions 存储配额满时产物上传会被跳过，不影响构建结果。
+- **CI**（`.github/workflows/ci.yml`）：server-test / java-server / web-build / android-apk 四个 job。其中 java-server 构建 `server-java` 的 jar 并用契约套件对着 jar 跑（黑盒：只经环境变量 + HTTP + SQLite）；Android 产物用 runner 临时 debug 签名，与正式包不同，仅供冒烟测试；账号 Actions 存储配额满时产物上传会被跳过，不影响构建结果。
 
 **工程化路线图**
 
@@ -269,7 +269,7 @@ bash server/tools/scrypt-parity/run.sh    # Windows 直接跑 server\tools\scryp
 | 1 | 前端构建骨架：Vite 工程 + 依赖分析 + 迁移路线 | ✅ |
 | 2 | 服务端工程化：单文件转分层（路由 / 中间件 / 错误处理 / 日志） | ✅ |
 | 3 | 测试体系：前端 vitest + 服务端 node:test | ✅ |
-| 4 | CI/CD：GitHub Actions（server-test / web-build / android-apk） | ✅ |
+| 4 | CI/CD：GitHub Actions（server-test / java-server / web-build / android-apk） | ✅ |
 | 5 | 文档：架构图 + ADR | ✅ |
 | 6 | 前端模块 TypeScript 化迁移（30/30 管线化，全库 strict；单 bundle 完成） | ✅ |
 
