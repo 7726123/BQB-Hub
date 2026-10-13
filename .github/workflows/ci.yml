@@ -52,10 +52,12 @@ jobs:
       # CONTRACT_CMD 由 helpers.tokenize() 自己切词、不经 shell，相对路径按 server/ 解析；
       # run-contract.js 会给子进程带 CONTRACT=1 与 --experimental-sqlite（Node 24 满足）。
       # TLS 用例用 openssl 现签自签证书（runner 预装），端口按文件固定（15100+ / 16100+）。
+      # JVM 参数只为"测试提速"：每个用例文件的 clearLimiters() 都是一次冷启动，
+      # TieredStopAtLevel=1 省掉 C2 编译 → 整套 120s 降到约 50s（本地实测）。生产 unit 不用这些。
       - run: npm run test:contract
         working-directory: server
         env:
-          CONTRACT_CMD: java -jar ../server-java/target/bqbhub-server-java.jar
+          CONTRACT_CMD: java -XX:TieredStopAtLevel=1 -XX:+UseSerialGC -Xss512k -jar ../server-java/target/bqbhub-server-java.jar
 
   web-build:
     name: Web 构建（Vite + TS 类型检查 + 前端单测）

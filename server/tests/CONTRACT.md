@@ -14,8 +14,13 @@
 npm run test:contract
 
 # 再验收 Java 版（Windows PowerShell: $env:CONTRACT_CMD="java -jar ..."）
-CONTRACT_CMD="java -jar ../server-java/target/app.jar" npm run test:contract
+# 惯例加上这三个 JVM 参数：每个用例文件的 clearLimiters() 都要重启目标进程，
+# TieredStopAtLevel=1 省掉 C2 编译 → 整套从约 120s 降到约 50s（2026-10-13 实测，CI 同款）
+CONTRACT_CMD="java -XX:TieredStopAtLevel=1 -XX:+UseSerialGC -Xss512k -jar ../server-java/target/bqbhub-server-java.jar" npm run test:contract
 ```
+
+- 只跑单个文件（日常改动用，几秒到几十秒）：
+  `CONTRACT=1 CONTRACT_CMD="java -XX:TieredStopAtLevel=1 -jar ../server-java/target/bqbhub-server-java.jar" node --experimental-sqlite --test tests/card.test.js`
 
 - 额外参数原样转给 `node --test`：`npm run test:contract -- --test-name-pattern=爆破`
 - `CONTRACT_BOOT_MS`（默认 30000）：目标进程启动等待上限，Java 冷启动慢就调大

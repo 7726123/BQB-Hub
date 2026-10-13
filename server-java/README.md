@@ -54,9 +54,12 @@ Spring Boot 冷启动约 3 秒（契约测试默认 30 秒等待，够）。
 
 ```bash
 cd ../server
-CONTRACT_CMD="java -jar \"C:/Users/a7726/BQB Hub/server-java/target/bqbhub-server-java.jar\"" npm run test:contract
-# 或单文件：
-CONTRACT=1 CONTRACT_CMD="java -jar ..." node --experimental-sqlite --test tests/card.test.js
+# 三个 JVM 参数是给测试提速的（clearLimiters 每次都重启目标进程；省掉 C2 编译）：
+# 整套约 120s → 约 50s，CI 用的是同一条命令；生产 unit 不用这些参数。
+JVM="-XX:TieredStopAtLevel=1 -XX:+UseSerialGC -Xss512k"
+CONTRACT_CMD="java $JVM -jar \"C:/Users/a7726/BQB Hub/server-java/target/bqbhub-server-java.jar\"" npm run test:contract
+# 或单文件（日常改动只跑相关的那几个，几秒到几十秒）：
+CONTRACT=1 CONTRACT_CMD="java -XX:TieredStopAtLevel=1 -jar ..." node --experimental-sqlite --test tests/card.test.js
 ```
 
 连线说明：契约模式会 spawn 这个 jar，通过环境变量给它隔离目录（`DATA_DIR` 等），
