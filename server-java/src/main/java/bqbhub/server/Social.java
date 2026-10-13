@@ -10,7 +10,7 @@ import java.util.Map;
 
 /**
  * 卡片社交的读侧工具 + 级联清理（对应 server/src/routes/card.js 里被世界书/预设共用的几个函数）。
- * 写侧（点赞/评论接口）在 CardController 里；这里只有三件事：
+ * 写侧（点赞/评论接口）在 card/CardService 里；这里只有三件事：
  *   · withLiked：给列表项补 liked（当前登录用户是否已赞）
  *   · activeScores：24 小时活跃分（点赞数 + 3×去重评论人数）
  *   · purgeCard：内容被删时级联清掉它的点赞与评论
