@@ -133,7 +133,9 @@ public class AccountService {
             userId = repo.insertUser(username, hp[1], hp[0], System.currentTimeMillis(), email);
         } catch (Exception e) {
             String msg = Validators.str(e.getMessage());
-            if (msg.contains("idx_users_email")) throw ApiError.of(409, "该邮箱已注册");
+            // SQLite 报的是列名（"UNIQUE constraint failed: users.email"），不是索引名——
+            // 原写法查 "idx_users_email" 是死分支，重复邮箱会被误报成「用户名已被占用」（Node 版同样如此）
+            if (msg.contains("users.email")) throw ApiError.of(409, "该邮箱已注册");
             if (msg.contains("UNIQUE")) throw ApiError.of(409, "用户名已被占用");
             throw e;
         }

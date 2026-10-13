@@ -110,13 +110,11 @@ class AccountServiceTest {
         // 用户名被占用（换邮箱、给有效验证码）
         seedCode("dup-user@example.com", "111111", "register");
         assertEquals("用户名已被占用", err(() -> svc.register(Map.of("username", "alice", "password", "pw1234", "email", "dup-user@example.com", "code", "111111"), "2.2.2.2")));
-        // 邮箱已注册（换用户名、给有效验证码）
-        // ⚠ 现状（与 Node 版一致）：SQLite 报的是 "UNIQUE constraint failed: users.email"，
-        // 而代码查的是 "idx_users_email" → 该分支是死代码，这里会落到「用户名已被占用」。
-        // 重构阶段先按现状钉住（下一步的 fix 提交再修文案与测试）。
+        // 邮箱已注册（换用户名、给有效验证码）—— 文案要区分于「用户名已被占用」：
+        // SQLite 报 "UNIQUE constraint failed: users.email"，据此映射到「该邮箱已注册」
         seedUser("dup-mail@example.com", "someone", "pw1234");
         seedCode("dup-mail@example.com", "222222", "register");
-        assertEquals("用户名已被占用", err(() -> svc.register(Map.of("username", "brandnew", "password", "pw1234", "email", "dup-mail@example.com", "code", "222222"), "3.3.3.3")));
+        assertEquals("该邮箱已注册", err(() -> svc.register(Map.of("username", "brandnew", "password", "pw1234", "email", "dup-mail@example.com", "code", "222222"), "3.3.3.3")));
     }
 
     @Test
