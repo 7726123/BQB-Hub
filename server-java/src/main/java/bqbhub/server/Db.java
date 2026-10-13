@@ -16,7 +16,7 @@ import java.nio.file.Files;
  *   Node 版是单连接同步、天然串行，从没见过 SQLITE_BUSY；Java 多线程 + 连接池会撞写锁。
  *   这里的做法：WAL + busy_timeout=5000 + transaction_mode=IMMEDIATE（URL 参数交给驱动），
  *   连接池默认 4（可用 DB_POOL_SIZE 调；单写者场景设 1 即复刻 Node 语义）。
- *   多语句写事务（反馈插入+裁剪）走同一连接，见 FeedbackController 的 TransactionTemplate。
+ *   多语句写事务（反馈插入+裁剪）走同一连接，见 feedback/FeedbackService 的 TransactionTemplate。
  */
 @Component
 public class Db {
