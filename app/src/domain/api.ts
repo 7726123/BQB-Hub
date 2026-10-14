@@ -332,6 +332,7 @@ export interface EndpointProfile {
   maxTokensCap?: number;            // 该端点接受的输出上限（报"太大"时学到；发送前取 min）
   contextCap?: number;              // 该端点接受的上下文上限（token；报"上下文超长"时学到；Windows 预算取 min）
   fetchFails?: boolean;             // 该端点直连会被跨域拦下（B 通道成功时学到）→ 后续请求直接走原生，不再白等重试
+  fetchFailsPp?: boolean;           // 学到上面那条时"本地代理是否在跑"：没代理时学的，遇到后来出现的代理要再试一次直连
 }
 
 function _profileKey(endpoint: string, model: string): string {
@@ -381,6 +382,8 @@ function _saveEndpointProfile(endpoint: string, model: string, learned: string[]
     // 这个必须能自愈：端点/网络会变（网关改配置、用户后来开了代理），所以原生通道也失败时会清掉它。
     if (delta.fetchFails !== undefined) next.fetchFails = delta.fetchFails;
     else if (cur.fetchFails) next.fetchFails = true;
+    if (delta.fetchFailsPp !== undefined) next.fetchFailsPp = delta.fetchFailsPp;
+    else if (cur.fetchFailsPp) next.fetchFailsPp = true;
     sm.set(_profileKey(endpoint, model), next);
   } catch (e) { /* 档案写入失败不影响请求本身 */ }
 }
@@ -877,9 +880,13 @@ export const APIHandler = {
     let _response: Response | null = null;
     let _requestError: { status?: number; body?: string; name?: string; message?: string } | null = null;
     // 端点档案记着「这个端点直连会被跨域拦下」（上次 B 通道成功时学到的）→ 这次不再白等 1.5s+3s 重试，
-    // 直接按"直连失败"往下走原生通道（B / 整段兜底）。本地代理在用时（pp>0）不走这条捷径——
-    // 代理存在的意义正是让 fetch 成功（系统版的真流式通道），不能因为旧档案把它跳过。
-    const _skipDirect = _profile.fetchFails === true && resolveProxyPort() === 0;
+    // 直接按"直连失败"往下走原生通道（B / 整段兜底）。
+    // 但要连同"学的时候有没有代理在跑"一起看：**没代理时学的**遇到后来出现的代理（换装系统版 APK、
+    // 注入端口）不能一概跳过——代理正是让直连成功的通道，这时候得再试一次直连。
+    // 实测（2026-10-13）：系统版即使有代理端口（日志「代理端口 4051」），这个端点照样走 B ——
+    // 那种情况学到的 fetchFailsPp=true，命中档案直接跳过重试，正是这个修复要省的 4.5 秒。
+    const _ppNow = resolveProxyPort();
+    const _skipDirect = _profile.fetchFails === true && (_ppNow === 0 || _profile.fetchFailsPp === true);
     if (_skipDirect) {
       _requestError = { name: 'TypeError', message: 'Failed to fetch（端点档案：该端点直连被跨域策略拦下）' };
     }
@@ -1000,7 +1007,8 @@ export const APIHandler = {
           _nativeStreamed = true;
           _noteTransport('端点无 CORS：走原生流式（B，真流式）');
           // 学到"这个端点直连会被拦"：下次请求直接走这里，省掉 1.5s+3s 的直连重试等待
-          _saveEndpointProfile(_compatEndpoint, _compatModel, [], { fetchFails: true });
+          // （连"当时有没有代理"一起记下来，见上面 _skipDirect 的说明）
+          _saveEndpointProfile(_compatEndpoint, _compatModel, [], { fetchFails: true, fetchFailsPp: _ppNow > 0 });
         } else if (ns && ns.status) {
           // 非 2xx：与 CapacitorHttp 兜底同一口径——报真实状态码与错误体
           const _nb = String(ns.bodyText || '');
@@ -1034,7 +1042,7 @@ export const APIHandler = {
       const _hint = /failed to parse|invalid url/i.test(_errMsg) ? '（API 地址格式有误：请检查是否混入了空格或全角字符）'
         : (/failed to fetch|load failed|networkerror/i.test(_errMsg) ? '（端点跨域受限或网络不可达）' : '');
       // 档案记的"直连会被拦"这次没兑现（B 与整段兜底都不行）→ 清掉标记，下次重新直连试一次（可自愈）
-      if (_skipDirect) _saveEndpointProfile(_compatEndpoint, _compatModel, [], { fetchFails: false });
+      if (_skipDirect) _saveEndpointProfile(_compatEndpoint, _compatModel, [], { fetchFails: false, fetchFailsPp: false });
       _apiFailLog('生成(' + _label + '，直连失败)', 0, _errMsg);
       _err('网络错误: ' + (_errMsg || _requestError) + _hint);
       return;

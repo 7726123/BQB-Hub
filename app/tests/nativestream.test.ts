@@ -251,17 +251,33 @@ describe('接线：fetch 被 CORS 拦下时优先走原生流式（B）', () => 
     expect(fetchCalls).toBeGreaterThan(before);
   });
 
-  it('在用本地代理（__PROXY_PORT__）时不吃档案：fetch 仍然优先（代理的意义就是让直连成功）', async () => {
-    (anyG as any).__PROXY_PORT__ = 18899;
+  it('学习时没代理、后来才有代理 → 不吃档案（代理可能让直连成功，仍要试 fetch）', async () => {
     let fetchCalls = 0;
     anyG.fetch = async () => { fetchCalls++; throw new TypeError('Failed to fetch'); };
     (anyG as any).Capacitor.Plugins.CapacitorHttp = { request: async () => ({ status: 200, data: '' }) };
     (anyG as any).Capacitor.Plugins.NativeStream = fakePlugin({ frames: sseOne }).api;
 
-    await runOnce();                                 // 第一次学上：fetchFails = true
-    expect(savedProfiles().some((p: any) => p.fetchFails === true)).toBe(true);
+    await runOnce();                                 // 第一次：无代理 → 学上 fetchFails=true, fetchFailsPp=false
+    expect(savedProfiles().some((p: any) => p.fetchFails === true && p.fetchFailsPp === false)).toBe(true);
 
-    expect(await runOnce()).toContain('一');          // 第二次：有代理 → 不走捷径
-    expect(fetchCalls).toBeGreaterThan(3);
+    (anyG as any).__PROXY_PORT__ = 18899;             // 后来有了代理（换装系统版 APK / 注入端口）
+    const before = fetchCalls;
+    expect(await runOnce()).toContain('一');
+    expect(fetchCalls).toBeGreaterThan(before);      // 仍会重新试直连（代理通道不能被旧档案跳过）
+  });
+
+  it('学习时就有代理（代理也救不了这个端点）→ 照样跳过直连重试（省掉 4.5 秒）', async () => {
+    (anyG as any).__PROXY_PORT__ = 18899;             // 线上实测：系统版有代理端口，端点仍走 B
+    let fetchCalls = 0;
+    anyG.fetch = async () => { fetchCalls++; throw new TypeError('Failed to fetch'); };
+    (anyG as any).Capacitor.Plugins.CapacitorHttp = { request: async () => ({ status: 200, data: '' }) };
+    (anyG as any).Capacitor.Plugins.NativeStream = fakePlugin({ frames: sseOne }).api;
+
+    await runOnce();
+    expect(savedProfiles().some((p: any) => p.fetchFails === true && p.fetchFailsPp === true)).toBe(true);
+
+    const before = fetchCalls;
+    expect(await runOnce()).toContain('一');
+    expect(fetchCalls).toBe(before);                 // 一次直连都不再试
   });
 });
